@@ -1007,6 +1007,15 @@ if run_button:
     _MAX_RUNS_PER_SESSION = int(
         secret_or_env("APPLYSMART_MAX_RUNS_PER_SESSION", "3") or "3"
     )
+    
+    # Daily reset logic for session run counter
+    _today = datetime.now().date().isoformat()
+    _last_run_date = st.session_state.get("_runs_used_date")
+    if _last_run_date != _today:
+        # New day, reset the counter
+        st.session_state["_runs_used"] = 0
+        st.session_state["_runs_used_date"] = _today
+    
     _runs_used_this_session = int(st.session_state.get("_runs_used", 0))
     if _MAX_RUNS_PER_SESSION > 0 and _runs_used_this_session >= _MAX_RUNS_PER_SESSION:
         st.error(
