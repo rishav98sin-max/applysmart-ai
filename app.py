@@ -459,7 +459,7 @@ _DARK_CSS = """
         border-color: var(--accent) !important;
         color: var(--accent) !important;
     }
-    /* Dropzone helper text ("Drag and drop…", "Limit 200MB per file"). */
+    /* Dropzone helper text ("Drag and drop…", "Limit 25MB per file"). */
     .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"],
     .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] span,
     .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] small {
