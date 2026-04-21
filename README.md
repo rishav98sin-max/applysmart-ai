@@ -32,6 +32,16 @@ sees them.
 Built on **LangGraph + Groq (Llama-3.3 70B) + Streamlit + ChromaDB + PyMuPDF**.
 Designed to run end-to-end on free-tier API quotas.
 
+### Preview
+
+**The app** — one sidebar for inputs, one canvas for per-match results:
+
+![ApplySmart AI landing page](./docs/assets/app-landing.png)
+
+**Live Mixpanel dashboard** — 5-step outcome funnel (CV upload → run → review → send → applied), runs per day, segmentation by experience level, and weekly retention. Full schema in [`docs/MIXPANEL_DASHBOARD.md`](./docs/MIXPANEL_DASHBOARD.md).
+
+![Mixpanel dashboard for ApplySmart AI](./docs/assets/mixpanel-dashboard.png)
+
 ### Documentation
 
 | Doc | Purpose |

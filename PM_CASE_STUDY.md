@@ -22,6 +22,9 @@
 
 **Current bet:** The target market (job-seekers, especially adjacent-to-PM roles) will pay for *layout-preserving tailored applications at scale* more than they'll pay for another ChatGPT wrapper.
 
+![ApplySmart AI — landing page](./docs/assets/app-landing.png)
+*The v1 UI — sidebar captures CV + target role + experience level + run settings; the canvas explains the three-agent flow (Search / Tailor / Review).*
+
 ---
 
 ## 2. Problem Statement
@@ -297,14 +300,28 @@ Ran the codebase through Perplexity for a deep critique. 5 critical fixes came o
 - Match-to-send conversion rate (did the user actually send the generated application?)
 - Error rate per node (which agent fails most often?)
 
+### 7.3 Live product analytics dashboard
+
+Shipped in v1.1: a 5-report Mixpanel board that answers the five PM questions — *does the product drive applications, is usage growing, who is using it, is match quality good, and do users come back?*
+
+![ApplySmart AI — Mixpanel dashboard](./docs/assets/mixpanel-dashboard.png)
+
+- **Outcome funnel (hero):** `cv_uploaded → run_started → run_completed → send_completed → job_marked_applied`. Current seed shape shows **~33% end-to-end conversion** with the biggest drop at `send → applied` — a clear next-bet signal (tighter apply-tracker prompts).
+- **Match quality:** median `best_match_score` per day; healthy bar is ≥65.
+- **Runs per day** (totals, not uniques — activity signal, not reach).
+- **Runs by experience level:** segmentation across Entry / Mid / Senior / Lead.
+- **Weekly retention:** `session_opened → run_started` cohort heat-map.
+
+Full event schema, privacy guarantees, and reproduction steps live in [`docs/MIXPANEL_DASHBOARD.md`](./docs/MIXPANEL_DASHBOARD.md). KPI definitions are in [`docs/KPI_ANALYTICS_PLAN.md`](./docs/KPI_ANALYTICS_PLAN.md).
+
 ---
 
 ## 8. Roadmap
 
 ### Shipped (v0.9, April 20 2026)
 
-- Multi-agent LangGraph pipeline (supervisor + 7 workers)
-- Dual LLM routing (Gemma creative / Groq logic)
+- Multi-agent LangGraph pipeline (supervisor + 9 worker/reviewer agents)
+- Groq-only LLM routing with 3-key rotation pool (v1.1 — Gemma removed)
 - RAG over CV with ChromaDB
 - Live job scraping (LinkedIn, Indeed, Glassdoor, Jobs.ie, Builtin) with fallback
 - Diff-based CV tailoring with fabrication sanitizer
@@ -312,7 +329,7 @@ Ran the codebase through Perplexity for a deep critique. 5 critical fixes came o
 - Reviewer agent with retry
 - PDF in-place editing (preserves layout)
 - Cover letter generator
-- Email delivery via Resend
+- Email delivery via Gmail SMTP (app password)
 - **Experience-level dropdown** (6 tiers)
 - **YOE-based early-exit matcher** (saves 30-50% LLM budget)
 - Bulk send button with progress UI
