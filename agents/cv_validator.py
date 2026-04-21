@@ -50,7 +50,7 @@ import fitz   # PyMuPDF
 
 MIN_TEXT_CHARS        = 200
 ADVISED_TEXT_CHARS    = 400
-MAX_FILE_BYTES        = 25 * 1024 * 1024
+MAX_FILE_BYTES        = 7 * 1024 * 1024
 MAX_PAGES             = 12
 MIN_ASCII_RATIO       = 0.70
 MIN_SECTION_HITS      = 2
