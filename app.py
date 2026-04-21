@@ -712,6 +712,19 @@ with st.sidebar:
         "Your CV (PDF)", type=["pdf"], label_visibility="collapsed",
     )
     st.caption("Maximum file size: 7 MB")
+    # Replace Streamlit's default "Limit 200MB per file" text
+    st.components.v1.html("""
+    <script>
+    setInterval(function() {
+        const smallElements = document.querySelectorAll('[data-testid="stFileUploaderDropzoneInstructions"] small');
+        smallElements.forEach(function(el) {
+            if (el.textContent.includes('200')) {
+                el.textContent = 'Maximum file size: 7 MB';
+            }
+        });
+    }, 500);
+    </script>
+    """, height=0)
     # Activation-funnel top step: track the first CV upload per session.
     if uploaded_cv is not None and not st.session_state.get("_tracked_cv_upload"):
         track_event(
