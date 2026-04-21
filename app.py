@@ -417,6 +417,36 @@ _DARK_CSS = """
     .stTextInput input::placeholder, .stTextArea textarea::placeholder {
         color: #6E7681 !important;
     }
+
+    /* File uploader — the "Browse files" button ships with a hardcoded
+       white background from Streamlit's base CSS, which disappears on
+       our charcoal dropzone. Repaint it so it reads against the dark bg.
+       We target every known selector Streamlit uses across versions. */
+    .stFileUploader button,
+    .stFileUploader [data-testid="stBaseButton-secondary"],
+    [data-testid="stFileUploaderDropzone"] button {
+        background-color: #30363D !important;  /* var(--border), one step up from dropzone */
+        color: var(--text-strong) !important;
+        border: 1px solid #484F58 !important;
+    }
+    .stFileUploader button:hover,
+    [data-testid="stFileUploaderDropzone"] button:hover {
+        background-color: #3D444D !important;
+        border-color: var(--accent) !important;
+        color: var(--accent) !important;
+    }
+    /* Dropzone helper text ("Drag and drop…", "Limit 200MB per file"). */
+    .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"],
+    .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] span,
+    .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] small {
+        color: var(--text-muted) !important;
+    }
+    /* Uploaded-file chip background. */
+    .stFileUploader [data-testid="stFileUploaderFile"] {
+        background-color: #1C2128 !important;
+        color: var(--text-strong) !important;
+        border: 1px solid var(--border) !important;
+    }
     /* Job card + panel surfaces: lift onto the elevated charcoal. */
     .job-card, .stTabs [data-baseweb="tab-panel"] {
         background: var(--bg-card) !important;

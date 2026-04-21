@@ -112,14 +112,26 @@ RULES (strict):
    buzzwords ("dynamic", "passionate", "results-driven", etc.).
 
 2. bullets:
-   For each role, return a list of bullet objects. You MAY:
-   - REORDER: place the most job-relevant bullets first.
-   - REWRITE a bullet to lead with JD-relevant keywords and framing — but only
-     when the rewrite is clearly sharper than the original for this specific
-     JD. Use your judgement: if the original bullet is already well-aligned,
-     or if the role is only tangentially related to the JD, leave it verbatim
-     (text=null). Do NOT force rewrites that don't add clarity or fit — a
-     forced rewrite is worse than keeping the original.
+   For each role, return a list of bullet objects.
+
+   REWRITING IS THE PRIMARY JOB OF THIS STEP — the user came to this tool
+   explicitly asking for a per-JD tailored CV. A CV with 0-2 rewritten bullets
+   across all roles is a FAILED tailoring — do not ship it.
+
+   Mandatory rewrite targets (per role):
+     • HIGHLY RELEVANT role (job title, domain, or core tech match): rewrite
+       **at least 50% of bullets, ideally 60-70%**. Lead every rewrite with
+       JD keywords and verbs.
+     • PARTIALLY RELEVANT role (adjacent domain, transferable skills):
+       rewrite **at least 30% of bullets** — focus on the bullets whose
+       underlying skill matches the JD.
+     • TANGENTIAL role (different domain/industry, but same seniority or
+       soft skills): rewrite **at least 1 bullet** to reframe the
+       transferable skill using JD language.
+
+   You may REORDER freely — place the most job-relevant bullets first.
+   You may REWRITE more than the minimums above; more is almost always
+   better, provided the MUST NOT rules below are respected.
 
    You MUST NOT:
    - DROP / OMIT any bullet. Every original bullet MUST appear in your output exactly once.
@@ -415,12 +427,20 @@ def _build_feedback_addendum(
         parts.append("Reviewer said:")
         parts.append(feedback.strip())
     parts.append("")
+    # Force actual behaviour change on retry — the previous attempt was
+    # rejected by the reviewer, so returning the same (or another
+    # bullets-unchanged) diff is a non-fix.
     parts.append(
-        "Produce a NEW diff that addresses the feedback. You MAY reorder, "
-        "rewrite, or drop bullets per the RULES above; the only hard "
-        "constraints are (a) no fabrication — every fact must trace to the "
-        "original CV — and (b) same indices space (use the 'i' field to "
-        "reference original bullets)."
+        "Produce a NEW diff that directly addresses the feedback. On this "
+        "retry you MUST rewrite additional bullets — the reviewer's "
+        "critique cannot be satisfied by keeping bullets verbatim. If the "
+        "feedback mentions 'JD verbs', 'keywords', or 'rewrite bullets', "
+        "rewrite at least 50% of the bullets in each JD-relevant role, "
+        "leading with JD language. The only hard constraints are (a) no "
+        "fabrication — every fact must trace to the original CV — and "
+        "(b) same indices space (use the 'i' field to reference original "
+        "bullets). Returning the same bullets-untouched diff as last time "
+        "will be rejected again."
     )
     return "\n".join(parts)
 
@@ -518,9 +538,51 @@ def tailor_cv_diff(
 
     n_rewrites, n_dropped = _count_diff_edits(diff)
 
-    # No zero-rewrites retry — we trust the LLM's judgement on whether
-    # the JD is relevant enough to warrant rewrites for this role. If the
-    # original bullets already fit, a forced rewrite is worse.
+    # Zero-rewrite escape hatch — the LLM was instructed to rewrite at least
+    # 30-50% of bullets per relevant role. If it returned 0 rewrites across
+    # the whole CV, it defaulted to "safest path" and the tailoring is
+    # shallow. Force exactly one retry with a loud directive. Suppressed
+    # when we're already in a reviewer-driven retry (handled upstream).
+    if n_rewrites == 0 and not (feedback or previous_diff):
+        total_bullets = sum(len(r.get("bullets") or []) for r in outline.get("roles", []))
+        if total_bullets >= 3:
+            print(
+                f"   ↻  cv_diff_tailor: 0 rewrites on first pass — "
+                f"forcing bullet-rewrite retry (roles={len(outline.get('roles', []))}, "
+                f"bullets={total_bullets})."
+            )
+            enforce_rewrites = (
+                "YOUR PREVIOUS RESPONSE REWROTE 0 BULLETS. This violates the "
+                "RULES — a CV with 0 bullet rewrites is a failed tailoring. "
+                "Produce a new diff that rewrites AT LEAST 3 bullets across "
+                "the most JD-relevant role(s), leading with JD verbs and "
+                "keywords. Every fact must still trace to the original CV."
+            )
+            raw_text_rr = _call_llm(_render_prompt(extra=enforce_rewrites))
+            raw_json_rr = _extract_json(raw_text_rr)
+            diff_rr     = _sanitise_diff(raw_json_rr, outline)
+            n_rewrites_rr, n_dropped_rr = _count_diff_edits(diff_rr)
+            if n_rewrites_rr > 0:
+                # Preserve the BETTER summary — we forced this retry to fix
+                # bullets, not summary. If the retry produced a shorter or
+                # empty summary, keep the original. We compare by word count
+                # against the target band (90-115% of original). The closer
+                # to the band, the better.
+                prev_sum_words = new_words
+                rr_sum         = (diff_rr.get("summary") or "").strip()
+                rr_sum_words   = len(rr_sum.split()) if rr_sum else 0
+                keep_prev_summary = (
+                    rr_sum_words == 0
+                    or (prev_sum_words > 0 and rr_sum_words < prev_sum_words)
+                )
+                if keep_prev_summary and diff.get("summary"):
+                    diff_rr["summary"] = diff["summary"]
+                    rr_sum_words = prev_sum_words
+
+                diff        = diff_rr
+                n_rewrites  = n_rewrites_rr
+                n_dropped   = n_dropped_rr
+                new_words   = rr_sum_words or new_words
 
     tag = " (retry)" if feedback or previous_diff else ""
     print(
