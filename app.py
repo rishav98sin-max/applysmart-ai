@@ -778,7 +778,11 @@ with st.sidebar:
             "tomorrow or reduce the job count.",
             icon=None,
         )
-    match_threshold = st.slider("Match threshold (%)", 10, 95, 60, step=5)
+    match_threshold = st.slider(
+        "Minimum match score (JD vs CV %)",
+        10, 95, 60, step=5,
+        help="Only show jobs with at least this score. Lower = more jobs, higher = better matches."
+    )
 
     preview_mode = st.checkbox(
         "Preview before sending",
