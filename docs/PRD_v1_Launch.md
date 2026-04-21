@@ -1,7 +1,7 @@
 # PRD: ApplySmart AI v1.0 Launch
 
 > **Product Requirements Document**  
-> **Release:** v1.0 — Public portfolio launch  
+> **Release:** v1.0  
 > **Author:** Rishav Singh  
 > **Status:** Draft → Ready for build → **Active** (target launch: within 7 days)  
 > **Last updated:** April 22, 2026
@@ -10,7 +10,7 @@
 
 ## TL;DR
 
-Ship ApplySmart AI v1.0 as a public portfolio demo. Scope is locked: **single-column ATS CVs**, **six job boards**, **aggressive tailoring**, **YOE-based matching**, **consent-gated tracing**. Everything not in §5 is v1.1+.
+Ship ApplySmart AI v1.0. Scope is locked: **single-column ATS CVs**, **six job boards**, **aggressive tailoring**, **YOE-based matching**, **consent-gated tracing**. Everything not in §5 is v1.1+.
 
 A run succeeds if a user uploads a PDF CV, picks a role, and within 5 minutes receives tailored CV + cover letter PDFs for 3-10 matched jobs with zero fabricated facts.
 
@@ -25,10 +25,9 @@ Job-seekers applying to 20-50 roles per month spend 25+ hours on tailoring and s
 - Core pipeline (scrape → match → tailor → PDF → email) is shipped and works on my own CV.
 - Recent additions (aggressive tailoring + YOE filter) address the two biggest user complaints ("CVs look identical" and "matched to over-leveled roles").
 - Demand signal: three friends have already asked to use it.
-- Portfolio value: Recruiters will see it *if* it's live; a shelved project scores zero.
 
 ### 1.3 Strategic frame
-This is a **portfolio launch**, not a commercial launch. Success is measured in recruiter visibility and user feedback — not revenue. That shapes every trade-off: ship with rough edges where recruiters won't notice, lock down where a single bad experience would torpedo signal.
+This is a product launch focused on delivering a working end-to-end system. Success is measured by product quality and user experience — not revenue.
 
 ---
 
@@ -41,7 +40,6 @@ Early/mid-career professionals applying to white-collar roles (PM, engineering, 
 - Are comfortable with a tech-forward tool
 
 ### 2.2 Secondary
-- Hiring managers / recruiters viewing the portfolio post (evaluating me, not using the tool)
 - Friends and colleagues I personally send the link to
 
 ### 2.3 Not the target
@@ -52,7 +50,7 @@ Early/mid-career professionals applying to white-collar roles (PM, engineering, 
 ### 2.4 Jobs-to-be-done
 1. *"When I'm applying to a specific role, I want to tailor my CV in 2 minutes instead of 30, so I can actually apply to the volume I need without burning out."*
 2. *"When I'm unsure if my CV fits a role, I want a score and explanation, so I can decide whether to apply at all."*
-3. *"When I share this with a hiring manager, I want them to see professional craft, so it acts as a portfolio artifact."*
+3. *"When I share this with others, I want them to see professional craft, so it acts as a demonstration of the product."*
 
 ---
 
@@ -64,13 +62,7 @@ Early/mid-career professionals applying to white-collar roles (PM, engineering, 
 - **G3:** Zero fabricated facts across 10 manually-reviewed tailored CVs
 - **G4:** Total run time <5 minutes for 10-job batches
 
-### 3.2 Portfolio goals
-- **P1:** Portfolio post published within 7 days of PRD approval
-- **P2:** ≥10 hands-on demo runs from viewers within first week
-- **P3:** ≥3 external (non-friend) users complete at least one batch
-- **P4:** ≥2 recruiter DMs referencing the project within 14 days
-
-### 3.3 Non-goals (explicit)
+### 3.2 Non-goals (explicit)
 - Not targeting commercial revenue
 - Not building user accounts / auth
 - Not optimizing for mobile UI
@@ -97,7 +89,7 @@ Numbered for traceability to acceptance criteria in §8.
 
 **US-07:** *As an EU-resident user, I want to control whether my data is traced to third-party services, so I'm not unknowingly subject to cross-border data transfer.*
 
-**US-08:** *As a viewer, I want the demo to be usable within 3 clicks of landing on the app, so I can evaluate the project without reading setup docs.*
+**US-08:** *As a new user, I want the demo to be usable within 3 clicks of landing on the app, so I can evaluate the project without reading setup docs.*
 
 ---
 
@@ -278,11 +270,11 @@ Maps back to user stories in §4. Each criterion must pass before launch.
 | D-3 | Full live pipeline test; regression triage | Rishav |
 | D-2 | Consent banner (FR-17), `.env.example` (FR-22), key rotation (NFR-S2) | Rishav |
 | D-1 | README v1 (FR-23), demo video recording (FR-26) | Rishav |
-| D0 | Portfolio post + repo made public | Rishav |
+| D0 | Repo made public | Rishav |
 | D+1..7 | Monitor feedback, triage issues into v1.1 backlog | Rishav |
 | D+7 | Retro — ship v1.1 scope doc | Rishav |
 
-### Portfolio post structure (draft)
+### Release notes (draft)
 
 > *"I built an end-to-end agentic AI system that automates job application tailoring while preserving your CV's original layout. Four months. Seven architecture decisions. Two PRDs. One honest case study. Links in comments."*
 >
@@ -296,7 +288,7 @@ If something critical breaks post-launch:
 
 1. **Immediate (< 1hr):** Pin `README.md` badge to "under maintenance"; point app's welcome screen to a static "be right back" page.
 2. **Within 24hr:** Diagnose via crash snapshots; hotfix + redeploy.
-3. **If unrecoverable:** Take repo private, post portfolio update acknowledging the issue. Not worse than doing nothing — shows real-world rigor.
+3. **If unrecoverable:** Take repo private, post update acknowledging the issue. Not worse than doing nothing — shows real-world rigor.
 
 No rollback to a previous version is needed since this is the first release.
 
@@ -308,7 +300,6 @@ No rollback to a previous version is needed since this is the first release.
 - [ ] Eng review (self) — PR #... merged
 - [ ] Live pipeline test — passed
 - [ ] Privacy checklist — consent banner shipped; keys rotated; README privacy note live
-- [ ] Portfolio post drafted and scheduled
 
 ---
 
