@@ -383,6 +383,13 @@ COMPANY: {company}
 
 {cv_block}
 
+IMPORTANT — Skill classification rules:
+- matched_skills: Skills that appear in BOTH the JD and the CV
+- missing_skills: Skills that are EXPLICITLY required by the JD but NOT found in the CV
+- Do NOT mark a skill as "missing" if it's in the CV but not in the JD — that's normal
+- Do NOT mark a skill as "missing" if it's a general term not specifically required by the JD
+- Only mark skills as "missing" when they are clearly required by the JD and completely absent from the CV
+
 Respond ONLY with a JSON object (no markdown, no extra text):
 {{
   "match_score":    <integer 0-100>,

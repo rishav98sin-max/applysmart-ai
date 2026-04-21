@@ -55,6 +55,8 @@ EDIT 2 — PROFESSIONAL SUMMARY:
 EDIT 3 — SKILLS SECTION:
 ════════════════════════════════════════
 - Move skills that appear in the JD to the front of the skills list
+- CRITICAL: Keep ALL skills from the original CV — never remove any skill
+- Only reorder skills based on JD relevance, never delete them
 - Do NOT add skills that are not already in the CV
 
 ════════════════════════════════════════
