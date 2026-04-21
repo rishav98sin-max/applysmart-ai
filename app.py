@@ -709,11 +709,22 @@ with st.sidebar:
     )
     # Add file info below uploader in a single line
     st.caption("PDF • Max 7 MB")
-    # Hide Streamlit's default 200MB text using CSS
+    # Hide Streamlit's default 200MB text and reduce spacing
     st.markdown("""
     <style>
     div[data-testid="stFileUploaderDropzoneInstructions"] {
         display: none !important;
+    }
+    /* Reduce vertical spacing in sidebar */
+    .sidebar-h {
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    [data-testid="stSidebar"] > div {
+        padding-top: 1rem !important;
+    }
+    [data-testid="stSidebar"] > div > div {
+        gap: 0.5rem !important;
     }
     </style>
     """, unsafe_allow_html=True)
