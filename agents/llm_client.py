@@ -322,6 +322,29 @@ def chat_fast(prompt: str, max_tokens: int = 500, temperature: float = 0.1) -> s
     return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
 
 
+def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
+    """Call Gemini 2.5 Flash API for writing tasks."""
+    if genai is None:
+        raise RuntimeError("google.generativeai not installed")
+    
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not found in environment")
+    
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+    
+    response = model.generate_content(
+        prompt,
+        generation_config=genai.types.GenerationConfig(
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+        )
+    )
+    
+    return response.text.strip() if response.text else ""
+
+
 def chat_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
     """Use Gemini 2.5 Flash for writing tasks (CV tailoring, cover letters)."""
     print(f"   🤖 [GEMINI / WRITING] requesting {max_tokens} tokens...")
