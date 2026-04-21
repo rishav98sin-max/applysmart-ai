@@ -469,13 +469,6 @@ _DARK_CSS = """
     .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] small {
         display: none !important;
     }
-    /* Add custom 7MB text */
-    .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"]::after {
-        content: "Maximum file size: 7 MB";
-        display: block;
-        color: var(--text-muted) !important;
-        font-size: 0.85rem;
-    }
     /* Uploaded-file chip background. */
     .stFileUploader [data-testid="stFileUploaderFile"] {
         background-color: #1C2128 !important;
