@@ -707,7 +707,7 @@ with st.sidebar:
     uploaded_cv = st.file_uploader(
         "Your CV (PDF)", type=["pdf"], label_visibility="collapsed",
     )
-    st.caption("Maximum file size: 7 MB")
+    st.caption("Maximum file size: 7 MB • PDFs only")
     # Hide Streamlit's default 200MB text using CSS
     st.markdown("""
     <style>
