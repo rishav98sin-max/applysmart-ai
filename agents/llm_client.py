@@ -48,7 +48,7 @@ _GROQ_TOKENS_PER_KEY_PER_DAY: int = int(
 )
 
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-04-17")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 def _load_groq_keys() -> list:
