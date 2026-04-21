@@ -18,5 +18,5 @@ python-jobspy>=1.1,<2
 # Adds ~400 MB to the install footprint (PyTorch + MiniLM weights).
 # Disable at runtime by setting USE_VECTOR_RETRIEVAL=0; the agent
 # falls back to full-CV prompting with zero behaviour change.
-chromadb>=0.4,<0.6
+chromadb>=0.5,<0.7
 sentence-transformers>=2.2
