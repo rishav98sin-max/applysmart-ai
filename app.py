@@ -465,10 +465,6 @@ _DARK_CSS = """
     .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] small {
         color: var(--text-muted) !important;
     }
-    /* Hide Streamlit's default dropzone instructions entirely */
-    .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] {
-        display: none !important;
-    }
     /* Uploaded-file chip background. */
     .stFileUploader [data-testid="stFileUploaderFile"] {
         background-color: #1C2128 !important;
@@ -716,19 +712,17 @@ with st.sidebar:
     st.components.v1.html("""
     <script>
     (function() {
-        function replaceText() {
-            const elements = document.querySelectorAll('*');
-            elements.forEach(function(el) {
-                if (el.children.length === 0 && el.textContent && el.textContent.includes('200MB')) {
-                    el.textContent = 'Maximum file size: 7 MB';
-                }
-                if (el.children.length === 0 && el.textContent && el.textContent.includes('200 MB')) {
-                    el.textContent = 'Maximum file size: 7 MB';
+        const observer = new MutationObserver(function() {
+            document.querySelectorAll('*').forEach(function(el) {
+                if (el.childNodes.length === 1 && el.childNodes[0].nodeType === 3) {
+                    const text = el.childNodes[0].textContent;
+                    if (text && (text.includes('200MB') || text.includes('200 MB'))) {
+                        el.childNodes[0].textContent = 'Maximum file size: 7 MB';
+                    }
                 }
             });
-        }
-        replaceText();
-        setInterval(replaceText, 1000);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
     })();
     </script>
     """, height=0)
