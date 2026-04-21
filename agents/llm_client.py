@@ -3,6 +3,8 @@
 import os
 import time
 import random
+import json
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -29,8 +31,42 @@ _GROQ_CLIENTS: dict = {}  # key → Groq client instance
 
 # Per-key quota snapshot captured from Groq's x-ratelimit-* response headers
 # after every successful call. Kept mostly for the reset_tokens timestamp —
-# the primary "remaining" display is driven by _TOKENS_USED_SESSION below.
+# the primary "remaining" display is driven by file-based quota cache below.
 _GROQ_QUOTA: dict = {}
+
+# File-based quota cache for deployment-wide token tracking
+_QUOTA_FILE = Path(__file__).parent.parent / ".quota_cache.json"
+
+def _get_tokens_used_session() -> int:
+    """Get tokens used from file cache, defaulting to 0."""
+    try:
+        if _QUOTA_FILE.exists():
+            data = json.loads(_QUOTA_FILE.read_text())
+            # Check if it's a new day
+            today = __import__('datetime').datetime.now().date().isoformat()
+            if data.get("date") != today:
+                return 0
+            return data.get("tokens_used", 0)
+    except Exception:
+        pass
+    return 0
+
+def _set_tokens_used_session(value: int) -> None:
+    """Set tokens used in file cache."""
+    try:
+        today = __import__('datetime').datetime.now().date().isoformat()
+        data = {"date": today, "tokens_used": value}
+        _QUOTA_FILE.write_text(json.dumps(data))
+    except Exception:
+        pass
+
+def _increment_tokens_used_session(delta: int) -> None:
+    """Increment tokens used in file cache."""
+    try:
+        current = _get_tokens_used_session()
+        _set_tokens_used_session(current + delta)
+    except Exception:
+        pass
 
 # Cumulative tokens consumed across ALL keys since process start (or since
 # the last quota-reset detection). Incremented from `resp.usage.total_tokens`
@@ -38,31 +74,7 @@ _GROQ_QUOTA: dict = {}
 # display. On Streamlit Cloud the process persists across user sessions, so
 # this is effectively a shared deployment-wide counter until the daily
 # Groq quota rolls over (at which point we detect the reset and zero it).
-# Uses Streamlit session state for persistence across page refreshes.
-def _get_tokens_used_session() -> int:
-    """Get tokens used from session state, defaulting to 0."""
-    try:
-        import streamlit as st
-        return st.session_state.get("_tokens_used_session", 0)
-    except:
-        return 0
-
-def _set_tokens_used_session(value: int) -> None:
-    """Set tokens used in session state."""
-    try:
-        import streamlit as st
-        st.session_state["_tokens_used_session"] = value
-    except:
-        pass
-
-def _increment_tokens_used_session(delta: int) -> None:
-    """Increment tokens used in session state."""
-    try:
-        import streamlit as st
-        current = st.session_state.get("_tokens_used_session", 0)
-        st.session_state["_tokens_used_session"] = current + delta
-    except:
-        pass
+# Uses file-based storage for persistence across process restarts.
 
 # Groq free-tier daily budget per API key. 100K tokens/day matches the
 # free-tier cap on llama-3.3-70b-versatile. Override via env if you're on
