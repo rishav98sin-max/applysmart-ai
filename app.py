@@ -786,7 +786,7 @@ with st.sidebar:
     )
 
     st.markdown('<div class="sidebar-h">Run Settings</div>', unsafe_allow_html=True)
-    num_jobs = st.slider("Jobs to scrape", 1, 20, 5)
+    num_jobs = st.slider("Jobs to scrape", 1, 20, 3)
     if num_jobs > 3:
         st.warning(
             "For a trial run, we recommend **3 jobs**. Higher counts may "
