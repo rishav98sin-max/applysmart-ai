@@ -109,7 +109,7 @@ Tagged with priority: **P0** (must ship) / **P1** (should ship if time permits) 
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| FR-01 | Accept PDF CV upload ≤5MB via Streamlit file uploader | P0 | ✅ Shipped |
+| FR-01 | Accept PDF CV upload ≤7MB via Streamlit file uploader | P0 | ✅ Shipped |
 | FR-02 | Parse CV text + extract layout structure (sections, role blocks, bullets, skills) | P0 | ✅ Shipped |
 | FR-03 | Validate CV pre-flight (warn if sections undetected, bullets < threshold) | P0 | ✅ Shipped |
 | FR-04 | Scrape jobs from ≥1 of: LinkedIn, Indeed, Glassdoor, Jobs.ie, Builtin with fallback sequence | P0 | ✅ Shipped |
@@ -117,39 +117,41 @@ Tagged with priority: **P0** (must ship) / **P1** (should ship if time permits) 
 | FR-06 | Filter jobs by user-selected experience level with level-gap penalty + YOE early-exit | P0 | ✅ Shipped |
 | FR-07 | Generate per-job diff-tailor (summary rewrite, bullet reorder/rewrite/drop, skills order) | P0 | ✅ Shipped |
 | FR-08 | Apply diff to PDF in-place preserving original layout | P0 | ✅ Shipped |
-| FR-09 | Generate per-job cover letter | P0 | ✅ Shipped |
+| FR-09 | Generate per-job cover letter (Gemini 2.5 Flash with Groq fallback) | P0 | ✅ Shipped |
 | FR-10 | Second LLM pass (reviewer) checks for fabrication; triggers retry if score < threshold | P0 | ✅ Shipped |
 | FR-11 | Send tailored CV + cover letter as email attachments via Resend API | P0 | ✅ Shipped |
 | FR-12 | Save crash-safe snapshot of inputs, state, errors per run | P0 | ✅ Shipped |
+| FR-13 | Per-session run limit (3 runs/day) to prevent quota abuse | P0 | ✅ Shipped |
+| FR-14 | Deployment-wide quota tracking via file-based storage | P0 | ✅ Shipped |
 
 ### 5.2 UI / UX
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| FR-13 | Sidebar captures: CV, full name, email, job title, location, job board, experience level, num jobs, match threshold, preview toggle | P0 | ✅ Shipped |
-| FR-14 | Main area shows matched jobs as cards with score, reasoning, and actions | P0 | ✅ Shipped |
-| FR-15 | Bulk "Send all" button with progress indicator and per-job error handling | P0 | ✅ Shipped |
-| FR-16 | Error banner and retry button on crash | P0 | ✅ Shipped |
-| FR-17 | Consent banner for third-party tracing (off by default) | **P0** | **⏳ Pending** |
+| FR-15 | Sidebar captures: CV, full name, email, job title, location, job board, experience level, num jobs, match threshold, preview toggle | P0 | ✅ Shipped |
+| FR-16 | Main area shows matched jobs as cards with score, reasoning, and actions | P0 | ✅ Shipped |
+| FR-17 | Bulk "Send all" button with progress indicator and per-job error handling | P0 | ✅ Shipped |
+| FR-18 | Error banner and retry button on crash | P0 | ✅ Shipped |
+| FR-19 | Consent banner for third-party tracing (off by default) | **P0** | **⏳ Pending** |
 
 ### 5.3 Observability & safety
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| FR-18 | LLM budget cap per run with soft abort on exceed | P0 | ✅ Shipped |
-| FR-19 | Rate-limit handling with capped waits (max 60s per retry) | P0 | ✅ Shipped |
-| FR-20 | Prompt-injection hardening (fenced untrusted blocks, preambles) | P0 | ✅ Shipped |
-| FR-21 | Sanitizer enforces numeric preservation and length bounds on bullet rewrites | P0 | ✅ Shipped |
+| FR-20 | LLM budget cap per run with soft abort on exceed | P0 | ✅ Shipped |
+| FR-21 | Rate-limit handling with capped waits (max 60s per retry) | P0 | ✅ Shipped |
+| FR-22 | Prompt-injection hardening (fenced untrusted blocks, preambles) | P0 | ✅ Shipped |
+| FR-23 | Sanitizer enforces numeric preservation and length bounds on bullet rewrites | P0 | ✅ Shipped |
 
 ### 5.4 Documentation & launch
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| FR-22 | `.env.example` with all required keys placeholder-ed | **P0** | **⏳ Pending** |
-| FR-23 | README with setup, run, known limitations, privacy note | **P0** | **⏳ Pending** |
-| FR-24 | `PM_CASE_STUDY.md` public | P0 | ✅ Shipped |
-| FR-25 | `HANDOFF_SUMMARY.md` for engineer continuity | P0 | ✅ Shipped |
-| FR-26 | Demo video (90 sec, screen recording) | P1 | Pending |
+| FR-24 | `.env.example` with all required keys placeholder-ed | **P0** | **⏳ Pending** |
+| FR-25 | README with setup, run, known limitations, privacy note | **P0** | **⏳ Pending** |
+| FR-26 | `PM_CASE_STUDY.md` public | P0 | ✅ Shipped |
+| FR-27 | `HANDOFF_SUMMARY.md` for engineer continuity | P0 | ✅ Shipped |
+| FR-28 | Demo video (90 sec, screen recording) | P1 | Pending |
 
 ---
 

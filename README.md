@@ -199,6 +199,9 @@ First run downloads the MiniLM-L6 embedder (~80 MB) into
 | `VECTOR_EMBEDDER` | `sentence-transformers/all-MiniLM-L6-v2` | Embedder model |
 | `VECTOR_DB_DIR` | `data/chroma` | Where ChromaDB persists |
 | `APPLYSMART_SESSIONS_ROOT` | `sessions` | Root for per-session work dirs |
+| `APPLYSMART_MAX_RUNS_PER_SESSION` | `3` | Per-session run limit (browser session). Set `0` for unlimited |
+| `GROQ_TOKENS_PER_KEY_PER_DAY` | `100000` | Per-key daily token budget (free tier cap) |
+| `APPLYSMART_TOKENS_PER_RUN` | `20000` | Estimated tokens per full run (for "runs left" display) |
 | `MIXPANEL_TOKEN` | _(unset)_ | Optional product analytics (events: runs, sends, downloads, applied). See `docs/MIXPANEL_DASHBOARD.md` |
 | `MIXPANEL_REGION` | `US` | Set to `EU` if your Mixpanel project was created with EU data residency |
 
@@ -214,7 +217,7 @@ reads from both.
   see the banner *"Groq rate limit hit"*, wait for the per-minute window
   to roll over or the daily cap to reset at 00:00 Pacific.
 - **Gemini free tier.** 1,500 requests/day, 1M tokens/min. Used for CV tailoring
-  and cover letters. If you see rate limits, wait for the daily window to reset.
+  and cover letters. Falls back to Groq if unavailable or rate-limited.
 - **Rate-limit cap.** Any wait longer than `MAX_RATE_LIMIT_WAIT` aborts the
   run instead of hanging for 10-35 min.
 - **Scrape boards.** LinkedIn scraping is anti-bot-aggressive; Indeed /
@@ -222,6 +225,8 @@ reads from both.
 - **CV formats.** Text-based PDFs only. Scanned PDFs, password-protected
   files, and sub-500-char CVs are rejected by the pre-flight validator
   with a human-readable reason. See `docs/SUPPORTED_CV_FORMATS.md`.
+- **File size limit.** CV upload limited to 7 MB.
+- **Per-session run limit.** 3 runs per browser session per day to prevent quota abuse.
 
 ---
 

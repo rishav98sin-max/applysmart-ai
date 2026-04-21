@@ -1,6 +1,6 @@
 # ApplySmart AI — Product Decisions Register
 
-Last updated: 2026-04-20
+Last updated: 2026-04-22
 Owner: Rishav Singh
 
 This document is the concise "why" layer for portfolio and team handoff.
@@ -77,8 +77,24 @@ It complements `PM_CASE_STUDY.md` (narrative) with crisp product decisions.
 - **Decision:** Use Groq for fast tasks (matching, planning, review) and Gemini 2.5 Flash for writing tasks (CV tailoring, cover letters).
 - **Why:** Gemini excels at creative writing with long context windows, while Groq provides faster inference for structured tasks. This split optimizes both quality and latency.
 - **Options considered:** Single LLM for all tasks, Groq-only, Gemini-only.
-- **Chosen approach:** Dual-LLM architecture with task-specific routing.
-- **Trade-off:** Requires managing two API keys and rate limits, but delivers better writing quality at acceptable latency.
+- **Chosen approach:** Dual-LLM architecture with task-specific routing and automatic fallback to Groq if Gemini is unavailable.
+- **Trade-off:** Requires managing two API keys and rate limits, but delivers better writing quality at acceptable latency with graceful degradation.
+
+## Decision 10 — Per-Session Run Limit for Quota Protection
+
+- **Decision:** Limit each browser session to 3 runs per day to prevent quota abuse.
+- **Why:** Without authentication, a single user could drain the entire deployment-wide Groq quota by refreshing or opening new tabs.
+- **Options considered:** No limit, IP-based tracking, authentication-based tracking.
+- **Chosen approach:** Per-browser-session limit with daily reset via session state date tracking.
+- **Trade-off:** Determined users can bypass by opening new tabs/incognito, but this stops the most common abuse pattern (refreshing loop).
+
+## Decision 11 — File-Based Deployment-Wide Quota Tracking
+
+- **Decision:** Store deployment-wide token usage in a JSON file (`.quota_cache.json`) instead of in-memory variables.
+- **Why:** Session state is per-browser-tab and resets on new tabs, giving false quota readings. File-based storage ensures all tabs see the same quota counter.
+- **Options considered:** In-memory global, session state, file-based cache, database.
+- **Chosen approach:** File-based JSON cache with date-based daily reset.
+- **Trade-off:** Race condition possible with simultaneous writes, but acceptable given per-session run limit as primary abuse prevention.
 
 ---
 
@@ -89,6 +105,9 @@ It complements `PM_CASE_STUDY.md` (narrative) with crisp product decisions.
 - Reviewer catches low-quality/fabricated tailoring before send.
 - Fallback board search increases successful job discovery.
 - Preview mode reduces accidental sends.
+- Gemini fallback ensures cover letters always generate even if Gemini is unavailable.
+- Per-session limit prevents single-user quota drain.
+- Deployment-wide quota accurately reflects total usage across all tabs.
 
 ---
 
@@ -98,3 +117,4 @@ It complements `PM_CASE_STUDY.md` (narrative) with crisp product decisions.
 2. Measure early-exit filter savings as % of potential matcher calls.
 3. Measure reviewer retry impact on final acceptance/send rate.
 4. Measure fallback-board contribution to total matched jobs.
+5. Measure Gemini fallback frequency and quality degradation.
