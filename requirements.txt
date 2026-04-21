@@ -10,6 +10,7 @@ lxml
 langchain
 langchain-groq
 langchain-google-genai
+google-generativeai
 langgraph
 resend
 unidecode

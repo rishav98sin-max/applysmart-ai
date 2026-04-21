@@ -14,6 +14,11 @@ try:
 except Exception:
     Groq = None
 
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
+
 
 # ── Groq key rotation pool ──────────────────────────────────────────────────
 # Load up to 3 keys from env. On rate-limit, rotate to the next key.
@@ -43,6 +48,7 @@ _GROQ_TOKENS_PER_KEY_PER_DAY: int = int(
 )
 
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-04-17")
 
 
 def _load_groq_keys() -> list:
@@ -314,3 +320,9 @@ def chat_quality(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
 def chat_fast(prompt: str, max_tokens: int = 500, temperature: float = 0.1) -> str:
     print(f"   🤖 [GROQ / FAST] requesting {max_tokens} tokens...")
     return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
+
+
+def chat_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
+    """Use Gemini 2.5 Flash for writing tasks (CV tailoring, cover letters)."""
+    print(f"   🤖 [GEMINI / WRITING] requesting {max_tokens} tokens...")
+    return _call_gemini(prompt, max_tokens=max_tokens, temperature=temperature)

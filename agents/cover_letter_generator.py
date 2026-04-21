@@ -126,7 +126,7 @@ def generate_cover_letter(
 ) -> str:
     from agents.runtime       import track_llm_call, handle_rate_limit
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
-    from agents.llm_client    import chat_quality
+    from agents.llm_client    import chat_gemini
 
     jd_wrapped = wrap_untrusted_block(job_description, label="JOB_DESCRIPTION")
     cv_wrapped = wrap_untrusted_block(cv_text,         label="CANDIDATE_CV")
@@ -145,7 +145,7 @@ def generate_cover_letter(
         try:
             track_llm_call(agent="cover_letter")
 
-            raw = chat_quality(prompt, max_tokens=600, temperature=0.4)
+            raw = chat_gemini(prompt, max_tokens=600, temperature=0.4)
 
             if not raw:
                 print(f"   ⚠️  Cover letter empty on attempt {attempt + 1} — retrying...")

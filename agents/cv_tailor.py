@@ -146,7 +146,7 @@ def tailor_cv(
 ) -> str:
     from agents.runtime       import track_llm_call, handle_rate_limit
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
-    from agents.llm_client    import chat_quality
+    from agents.llm_client    import chat_gemini
 
     jd_wrapped = wrap_untrusted_block(job_description, label="JOB_DESCRIPTION")
     preamble   = untrusted_block_preamble(["JOB_DESCRIPTION"])
@@ -163,7 +163,7 @@ def tailor_cv(
         try:
             track_llm_call(agent="cv_tailor")
 
-            tailored = chat_quality(prompt, max_tokens=1400, temperature=0.2)
+            tailored = chat_gemini(prompt, max_tokens=1400, temperature=0.2)
 
             if not tailored:
                 print(f"   ⚠️  Tailor returned empty on attempt {attempt + 1} — retrying...")
@@ -192,7 +192,7 @@ def tailor_cv(
                         "This is the most important part of the task.\n\n"
                         "OUTPUT: The complete tailored CV as plain text."
                     )
-                    tailored = chat_quality(stronger, max_tokens=1400, temperature=0.3)
+                    tailored = chat_gemini(stronger, max_tokens=1400, temperature=0.3)
                     if not tailored or len(tailored) < original_len * 0.75:
                         return cv_text
 
