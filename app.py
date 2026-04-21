@@ -707,6 +707,7 @@ with st.sidebar:
     uploaded_cv = st.file_uploader(
         "Your CV (PDF)", type=["pdf"], label_visibility="collapsed",
     )
+    st.caption("Maximum file size: 7 MB")
     # Activation-funnel top step: track the first CV upload per session.
     if uploaded_cv is not None and not st.session_state.get("_tracked_cv_upload"):
         track_event(
