@@ -465,8 +465,8 @@ _DARK_CSS = """
     .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] small {
         color: var(--text-muted) !important;
     }
-    /* Hide Streamlit's default "Limit 200MB per file" text */
-    .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] small {
+    /* Hide Streamlit's default dropzone instructions entirely */
+    .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] {
         display: none !important;
     }
     /* Uploaded-file chip background. */
@@ -715,14 +715,21 @@ with st.sidebar:
     # Replace Streamlit's default "Limit 200MB per file" text
     st.components.v1.html("""
     <script>
-    setInterval(function() {
-        const smallElements = document.querySelectorAll('[data-testid="stFileUploaderDropzoneInstructions"] small');
-        smallElements.forEach(function(el) {
-            if (el.textContent.includes('200')) {
-                el.textContent = 'Maximum file size: 7 MB';
-            }
-        });
-    }, 500);
+    (function() {
+        function replaceText() {
+            const elements = document.querySelectorAll('*');
+            elements.forEach(function(el) {
+                if (el.children.length === 0 && el.textContent && el.textContent.includes('200MB')) {
+                    el.textContent = 'Maximum file size: 7 MB';
+                }
+                if (el.children.length === 0 && el.textContent && el.textContent.includes('200 MB')) {
+                    el.textContent = 'Maximum file size: 7 MB';
+                }
+            });
+        }
+        replaceText();
+        setInterval(replaceText, 1000);
+    })();
     </script>
     """, height=0)
     # Activation-funnel top step: track the first CV upload per session.
