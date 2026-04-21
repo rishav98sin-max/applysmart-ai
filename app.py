@@ -704,10 +704,14 @@ with st.sidebar:
         st.rerun()
 
     st.markdown('<div class="sidebar-h">Upload</div>', unsafe_allow_html=True)
-    uploaded_cv = st.file_uploader(
-        "Your CV (PDF)", type=["pdf"], label_visibility="collapsed",
-    )
-    st.caption("Maximum file size: 7 MB • PDFs only")
+    # Use columns to display caption beside uploader
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        uploaded_cv = st.file_uploader(
+            "Your CV (PDF)", type=["pdf"], label_visibility="collapsed",
+        )
+    with col2:
+        st.markdown('<div style="font-size: 0.75rem; color: #888; padding-top: 20px;">7 MB<br>PDF</div>', unsafe_allow_html=True)
     # Hide Streamlit's default 200MB text using CSS
     st.markdown("""
     <style>
