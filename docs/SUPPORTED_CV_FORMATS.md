@@ -16,7 +16,7 @@ quality.
 | Very short (< 400 chars) | ⚠ Runs but tailor agent has little material to work with |
 | Corrupt / malformed PDF | ✗ Blocked at upload |
 | PDF with tables for experience | ⚠ Bullets may not be detected; text is still parsed |
-| PDF > 25 MB or > 12 pages | ✗ Blocked / ⚠ warned (unusually large) |
+| PDF > 7 MB or > 12 pages | ✗ Blocked / ⚠ warned (unusually large) |
 
 ## How the pre-flight validator works
 
