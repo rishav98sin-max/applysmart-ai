@@ -465,6 +465,10 @@ _DARK_CSS = """
     .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] small {
         color: var(--text-muted) !important;
     }
+    /* Hide Streamlit's default "Limit 200MB per file" text */
+    .stFileUploader [data-testid="stFileUploaderDropzoneInstructions"] small {
+        display: none !important;
+    }
     /* Uploaded-file chip background. */
     .stFileUploader [data-testid="stFileUploaderFile"] {
         background-color: #1C2128 !important;
