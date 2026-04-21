@@ -23,14 +23,24 @@ _GROQ_KEY_INDEX: int = 0
 _GROQ_CLIENTS: dict = {}  # key → Groq client instance
 
 # Per-key quota snapshot captured from Groq's x-ratelimit-* response headers
-# after every successful call. Keyed by `key_index` (int) so the UI can
-# aggregate across all rotated keys. Fields mirror the Groq docs:
-#   remaining_tokens      — tokens left in the current window (day or minute)
-#   remaining_requests    — requests left in the current window
-#   limit_tokens          — full quota for this key's window
-#   reset_tokens          — e.g. "1h23m45s" or seconds-until-reset string
-#   updated_at            — unix epoch of last measurement
+# after every successful call. Kept mostly for the reset_tokens timestamp —
+# the primary "remaining" display is driven by _TOKENS_USED_SESSION below.
 _GROQ_QUOTA: dict = {}
+
+# Cumulative tokens consumed across ALL keys since process start (or since
+# the last quota-reset detection). Incremented from `resp.usage.total_tokens`
+# after every successful call. Drives the sidebar "tokens used / runs left"
+# display. On Streamlit Cloud the process persists across user sessions, so
+# this is effectively a shared deployment-wide counter until the daily
+# Groq quota rolls over (at which point we detect the reset and zero it).
+_TOKENS_USED_SESSION: int = 0
+
+# Groq free-tier daily budget per API key. 100K tokens/day matches the
+# free-tier cap on llama-3.3-70b-versatile. Override via env if you're on
+# a paid tier with a higher per-key budget.
+_GROQ_TOKENS_PER_KEY_PER_DAY: int = int(
+    os.getenv("GROQ_TOKENS_PER_KEY_PER_DAY", "100000")
+)
 
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
@@ -156,6 +166,19 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
             except Exception:
                 pass
             resp = raw.parse()
+            # Deduct actual tokens consumed from the deployment-wide budget.
+            # Groq's response mirrors OpenAI's shape: usage.total_tokens covers
+            # prompt + completion. Never let an accounting error break the
+            # real LLM response — hence the broad try/except.
+            try:
+                global _TOKENS_USED_SESSION
+                usage = getattr(resp, "usage", None)
+                if usage is not None:
+                    total = getattr(usage, "total_tokens", None)
+                    if isinstance(total, int) and total > 0:
+                        _TOKENS_USED_SESSION += total
+            except Exception:
+                pass
             return (resp.choices[0].message.content or "").strip()
         except Exception as e:
             if _is_rate_limit_error(e) or _is_auth_error(e):
@@ -179,52 +202,85 @@ _TOKENS_PER_RUN_AVG = int(os.getenv("APPLYSMART_TOKENS_PER_RUN", "20000"))
 
 def get_quota_summary() -> dict:
     """
-    Aggregate the last-measured quota across all rotated Groq keys.
+    Compute the deployment-wide daily budget.
 
-    Returns a dict the UI can render directly:
-        {
-            "keys_measured":  int,      # how many keys have at least 1 sample
-            "keys_total":     int,      # total keys configured
-            "remaining_tokens":   int,  # summed across measured keys
-            "remaining_requests": int,
-            "limit_tokens":   int,      # summed across measured keys
-            "est_runs_left":  int,      # remaining_tokens // tokens_per_run
-            "reset_tokens":   str,      # soonest reset (first-measured key)
-            "ready":          bool,     # True once any key has been measured
-        }
+    Model:
+      • The full daily pool is (num_keys × per_key_daily_limit) — by default
+        3 keys × 100K = 300K tokens/day on the free tier.
+      • Every successful Groq call adds `resp.usage.total_tokens` to a
+        process-wide counter (_TOKENS_USED_SESSION).
+      • `remaining = max(0, total_budget − used)`.
+      • `est_runs_left = remaining // _TOKENS_PER_RUN_AVG`.
+
+    This is intentionally simpler than per-key header arithmetic: it shows
+    users the full pool upfront (ready=True from the first page-load) and
+    deducts deterministically as calls land. On Streamlit Cloud the process
+    stays alive across user sessions, so this counter effectively tracks
+    the whole day's deployment usage until the Groq daily reset.
+
+    Edge case — process restart mid-day:
+      The counter zeroes, so the UI briefly over-reports available quota.
+      After the first call completes, header cross-check kicks in and we
+      reconcile (see `headers_remaining` vs `computed_remaining` below).
     """
     global _GROQ_KEYS
     if not _GROQ_KEYS:
         _GROQ_KEYS = _load_groq_keys()
 
-    keys_measured = 0
-    rem_tok = 0
-    rem_req = 0
-    limit_tok = 0
-    first_reset: Optional[str] = None
-    for idx, snap in _GROQ_QUOTA.items():
+    n_keys         = len(_GROQ_KEYS)
+    total_budget   = n_keys * _GROQ_TOKENS_PER_KEY_PER_DAY
+    used           = _TOKENS_USED_SESSION
+    computed_rem   = max(0, total_budget - used)
+
+    # Cross-check with Groq's server-side view — sum of remaining_tokens
+    # across keys we've already touched. If the server says we have LESS
+    # than our computed remaining (because the process restarted or an
+    # external caller used the same keys), trust the server.
+    headers_rem_sum:   Optional[int] = None
+    keys_with_headers: int           = 0
+    first_reset:       Optional[str] = None
+    for snap in _GROQ_QUOTA.values():
         if not snap:
             continue
-        keys_measured += 1
-        if snap.get("remaining_tokens") is not None:
-            rem_tok += snap["remaining_tokens"]
-        if snap.get("remaining_requests") is not None:
-            rem_req += snap["remaining_requests"]
-        if snap.get("limit_tokens") is not None:
-            limit_tok += snap["limit_tokens"]
+        rt = snap.get("remaining_tokens")
+        if rt is not None:
+            headers_rem_sum = (headers_rem_sum or 0) + rt
+            keys_with_headers += 1
         if first_reset is None and snap.get("reset_tokens"):
             first_reset = snap["reset_tokens"]
 
+    # Only trust the header sum when we've touched ALL keys, otherwise the
+    # un-hit keys contribute 0 and understate the real remaining.
+    remaining = computed_rem
+    if headers_rem_sum is not None and keys_with_headers >= n_keys and n_keys > 0:
+        remaining = min(computed_rem, headers_rem_sum)
+
+    est_runs_left = remaining // _TOKENS_PER_RUN_AVG if _TOKENS_PER_RUN_AVG > 0 else 0
+    pct_used      = int(100 * used / total_budget) if total_budget > 0 else 0
+
     return {
-        "keys_measured":     keys_measured,
-        "keys_total":        len(_GROQ_KEYS),
-        "remaining_tokens":  rem_tok,
-        "remaining_requests": rem_req,
-        "limit_tokens":      limit_tok,
-        "est_runs_left":     rem_tok // _TOKENS_PER_RUN_AVG if _TOKENS_PER_RUN_AVG > 0 else 0,
-        "reset_tokens":      first_reset or "",
-        "ready":             keys_measured > 0,
+        # Deployment-wide numbers (what the UI displays)
+        "total_budget":     total_budget,
+        "used":             used,
+        "remaining":        remaining,
+        "pct_used":         pct_used,
+        "est_runs_left":    est_runs_left,
+        "tokens_per_run":   _TOKENS_PER_RUN_AVG,
+        "tokens_per_key":   _GROQ_TOKENS_PER_KEY_PER_DAY,
+        "keys_total":       n_keys,
+        "reset_tokens":     first_reset or "",
+        # Ready from the first page load — we always know the full pool.
+        "ready":            n_keys > 0,
     }
+
+
+def reset_session_counter() -> None:
+    """
+    Manually zero the deployment-wide token counter. Useful for test harnesses
+    and for an admin 'reset now' button once the Groq daily window rolls over.
+    """
+    global _TOKENS_USED_SESSION
+    _TOKENS_USED_SESSION = 0
 
 
 def chat_quality(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:

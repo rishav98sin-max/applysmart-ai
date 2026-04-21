@@ -366,6 +366,30 @@ _CUSTOM_CSS = """
     div[data-testid="stFileUploader"] > section { border-radius: 8px; }
     hr { margin: 1rem 0; border-color: var(--border); }
 
+    /* Sidebar footer credit — theme-aware so it stays legible on both bgs. */
+    .sidebar-footer {
+        margin-top: 1.5rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border);
+        text-align: center;
+        font-size: 0.78rem;
+        color: var(--text-muted);
+    }
+    .sidebar-footer b { color: var(--text-strong); }
+
+    /* Inline code chips inside captions (e.g. `docs/PRIVACY.md`). Streamlit's
+       default styling is a light grey box that vanishes on the charcoal bg;
+       use theme variables so both modes render a readable chip. */
+    [data-testid="stCaptionContainer"] code,
+    .stCaption code,
+    .sidebar .stCaption code {
+        background: var(--border) !important;
+        color: var(--text-strong) !important;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 0.82em;
+    }
+
     @media (max-width: 980px) {
         .brand-header .name { font-size: 1.85rem; }
         .welcome h2 { font-size: 2.15rem; line-height: 1.1; }
@@ -773,16 +797,18 @@ with st.sidebar:
 
     if not _q.get("ready"):
         st.caption(
-            "💡 Your remaining daily budget appears here after the first run. "
-            "Groq's free tier resets every 24h."
+            "💡 No Groq API keys configured — daily-budget meter unavailable."
         )
     else:
-        _rem_tok  = _q.get("remaining_tokens", 0)
-        _lim_tok  = _q.get("limit_tokens", 0)
+        _total    = _q.get("total_budget", 0)
+        _used     = _q.get("used", 0)
+        _rem      = _q.get("remaining", 0)
+        _pct_used = _q.get("pct_used", 0)
         _runs     = _q.get("est_runs_left", 0)
-        _reset    = _q.get("reset_tokens", "")
-        _keys_m   = _q.get("keys_measured", 0)
+        _per_key  = _q.get("tokens_per_key", 0)
         _keys_t   = _q.get("keys_total", 0)
+        _per_run  = _q.get("tokens_per_run", 0)
+        _reset    = _q.get("reset_tokens", "")
 
         def _fmt_tokens(n: int) -> str:
             if n >= 1_000_000:
@@ -791,32 +817,41 @@ with st.sidebar:
                 return f"{n/1_000:.0f}K"
             return str(n)
 
-        _pct = int(100 * _rem_tok / _lim_tok) if _lim_tok else 0
+        # Two-metric display: how much of the pool is left + how many more
+        # full runs that buys us. Numbers are deployment-wide, not per-user.
         col1, col2 = st.columns(2)
         with col1:
             st.metric(
-                "Tokens left",
-                f"{_fmt_tokens(_rem_tok)}",
-                delta=f"of {_fmt_tokens(_lim_tok)}" if _lim_tok else None,
+                "Tokens left today",
+                _fmt_tokens(_rem),
+                delta=f"of {_fmt_tokens(_total)}",
                 delta_color="off",
             )
         with col2:
             st.metric(
                 "Runs left (est.)",
-                f"~{_runs}" if _runs >= 0 else "—",
-                delta=f"{_keys_m}/{_keys_t} keys" if _keys_t else None,
+                f"~{max(0, _runs)}",
+                delta=f"{_keys_t} keys × {_fmt_tokens(_per_key)}",
                 delta_color="off",
             )
 
-        if _rem_tok and _lim_tok and _pct < 20:
+        # Live progress of today's pool usage, 0-100%.
+        st.progress(
+            min(1.0, _pct_used / 100.0) if _pct_used else 0.0,
+            text=f"Used {_fmt_tokens(_used)} ({_pct_used}%) · ~{_fmt_tokens(_per_run)} per run",
+        )
+
+        pct_remaining = 100 - _pct_used
+        if _total and pct_remaining < 20:
             st.warning(
-                f"Only ~{_pct}% of today's Groq budget left. "
-                f"Consider waiting until it resets "
-                f"({_reset or 'in 24h'}) before your next large run.",
+                f"Only ~{pct_remaining}% of today's Groq budget left. "
+                f"Quota resets every 24h" +
+                (f" ({_reset})" if _reset else "") +
+                " — consider waiting before the next large run.",
                 icon="⚠️",
             )
         elif _reset:
-            st.caption(f"Resets in {_reset}")
+            st.caption(f"Resets in {_reset} (Groq daily window)")
 
     st.markdown('<div class="sidebar-h">Privacy</div>', unsafe_allow_html=True)
     trace_opt_in = st.toggle(
@@ -851,12 +886,11 @@ with st.sidebar:
         "See `docs/PRIVACY.md` for full details."
     )
 
+    # Footer uses theme CSS variables so both light and dark modes are legible.
+    # (Previously hardcoded rgba(0,0,0,*) which disappeared on charcoal bg.)
     st.markdown(
         """
-        <div style="margin-top: 1.5rem; padding-top: 1rem;
-                    border-top: 1px solid rgba(0,0,0,0.08);
-                    text-align: center; font-size: 0.78rem;
-                    color: rgba(0,0,0,0.55);">
+        <div class="sidebar-footer">
             Built by <b>Rishav Singh</b>
         </div>
         """,
