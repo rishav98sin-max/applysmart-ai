@@ -1,28 +1,131 @@
-# ApplySmart AI — Job Application Agent
+# ApplySmart AI — Agentic Job-Application Pipeline
 
-An agentic pipeline that turns one CV + one role search into a set of tailored
-PDF CVs and cover letters, ready to send or review. It scrapes live job boards,
-scores each listing against your CV, tailors both documents for the high-match
-roles, reviews the output for fabrication, and (optionally) emails them.
+**A multi-agent LLM system that turns one CV + one role query into a batch of
+per-job tailored PDF CVs and cover letters, ready to send or review.**
 
-Built on LangGraph + Groq + Streamlit. Designed to run frugally on free-tier
-API quotas.
+Most "AI CV" tools do one thing — rewrite a bullet, build a resume from a
+template, or forward a generic email. ApplySmart AI stitches the whole
+application workflow end-to-end: **live job scraping → deterministic
+pre-filter → vector-retrieved CV matching → per-job tailoring → fabrication
+review → in-place PDF edits → email delivery**. Every stage is an autonomous
+agent in a [LangGraph](https://langchain-ai.github.io/langgraph/)
+supervisor/worker topology; the supervisor picks the next step, each worker
+writes its output into a shared state object, and **self-correction loops**
+(reviewer agents) catch and retry low-quality outputs before the user ever
+sees them.
+
+### What makes it different
+
+- **In-place PDF editing** — tailored CVs preserve the user's original
+  layout, fonts, and colours via byte-level PyMuPDF edits. No generic
+  template swap.
+- **Honest tailoring** — a second LLM grades every cover letter (0-100) for
+  fabrication; sub-threshold outputs are retried with critique feedback. A
+  sanitiser layer strips fabricated metrics/companies before the reviewer
+  even runs.
+- **Deterministic filters before LLM spend** — YOE + experience-level
+  checks skip ~30-50% of LLM calls on broad scrapes.
+- **Crash-safe, budgeted, observable** — consent-gated LangSmith tracing
+  (PII-masked), full Mixpanel product-analytics dashboard, run-snapshot-on-
+  crash, Groq 3-key rotation pool, and hard per-run LLM call ceilings.
+
+Built on **LangGraph + Groq (Llama-3.3 70B) + Streamlit + ChromaDB + PyMuPDF**.
+Designed to run end-to-end on free-tier API quotas.
+
+### Documentation
+
+| Doc | Purpose |
+|---|---|
+| [`PM_CASE_STUDY.md`](./PM_CASE_STUDY.md) | Full product case study: problem, strategy, trade-offs, metrics |
+| [`ROADMAP.md`](./ROADMAP.md) | Release history + what's next |
+| [`docs/PRD_v1_Launch.md`](./docs/PRD_v1_Launch.md) | v1 launch PRD (scope, UX, guardrails, success criteria) |
+| [`docs/PRD_Privacy_Layer.md`](./docs/PRD_Privacy_Layer.md) | Privacy PRD: consent flow, PII handling, redaction |
+| [`docs/PRIVACY.md`](./docs/PRIVACY.md) | User-facing privacy statement |
+| [`docs/MIXPANEL_DASHBOARD.md`](./docs/MIXPANEL_DASHBOARD.md) | Event schema + live dashboard reference |
+| [`docs/KPI_ANALYTICS_PLAN.md`](./docs/KPI_ANALYTICS_PLAN.md) | KPI definitions used in case study |
+| [`docs/PRODUCT_DECISIONS.md`](./docs/PRODUCT_DECISIONS.md) | Log of key product trade-offs |
+| [`docs/PERF_DECISIONS_v1.1.md`](./docs/PERF_DECISIONS_v1.1.md) | v1.1 performance/cost decisions |
+| [`docs/SUPPORTED_CV_FORMATS.md`](./docs/SUPPORTED_CV_FORMATS.md) | What the pre-flight validator accepts |
+| [`HANDOFF_SUMMARY.md`](./HANDOFF_SUMMARY.md) | Developer handoff — architecture + recent changes + pending work |
 
 ---
 
-## What you get per run
+## Architecture — Multi-Agent System
+
+ApplySmart AI is a **LangGraph supervisor/worker graph** with 10 specialised
+worker agents, 2 reviewer agents (the self-correction loop), a deterministic
+pre-flight validator, and a shared state object that threads through every
+node.
+
+### Agent topology
 
 ```
-Upload CV  →  Pre-flight validator  →  Plan (keyword bundles)  →
-  ↓
-Scrape (LinkedIn / Indeed / Glassdoor / Builtin / JobsIE)  →
-  ↓
-Match (vector-retrieved or full-CV)  →
-  ↓
-Tailor CV + write cover letter + fabrication review  →
-  ↓
-Email (or preview & send per-card)
+                        ┌──────────────┐
+                        │  SUPERVISOR  │ ← LangGraph router (LLM-backed)
+                        └──────┬───────┘
+                               │ picks next node based on state
+   ┌───────────────────────────┼───────────────────────────────┐
+   ▼                           ▼                               ▼
+┌───────┐   ┌───────┐   ┌───────────┐   ┌──────────┐   ┌──────────────┐
+│Planner│──▶│Scraper│──▶│  Matcher  │──▶│  Tailor  │──▶│ Cover-Letter │
+│       │   │       │   │ (vector + │   │ (diff +  │   │  Generator   │
+│       │   │       │   │    LLM)   │   │in-place) │   │              │
+└───────┘   └───────┘   └─────┬─────┘   └────┬─────┘   └──────┬───────┘
+                              │              │                 │
+                              │              ▼                 ▼
+                              │        ┌───────────┐    ┌──────────────┐
+                              │        │CV Reviewer│    │Cover-Letter  │
+                              │        │  (score)  │    │  Reviewer    │
+                              │        │           │    │(fabrication) │
+                              │        └─────┬─────┘    └──────┬───────┘
+                              │              │ < 72?           │ < 70?
+                              │      retry Tailor ◀────────────┘
+                              ▼
+                       ┌──────────────┐
+                       │ Email Agent  │──▶ Gmail SMTP (or preview)
+                       └──────────────┘
 ```
+
+### The agents
+
+| # | Agent | File | Role | Why it's an agent (not a function) |
+|---|---|---|---|---|
+| 1 | **Supervisor** | `agents/job_agent.py` | Routes the graph — picks the next worker per turn | LLM-backed decision; can short-circuit on budget/critical error |
+| 2 | **Pre-flight Validator** | `agents/cv_validator.py` | Blocks incompatible CVs (scanned / password-locked / <500 chars / non-English) | Deterministic early-exit saves every downstream LLM call |
+| 3 | **Planner** | `agents/planner.py` | Generates 2-4 keyword bundles from CV + target role | LLM decides search strategy; not hard-coded |
+| 4 | **Scraper** | `agents/job_scraper.py` | Pulls live JDs from LinkedIn / Indeed / Glassdoor / Builtin / JobsIE | Multi-source fan-out with per-board fallback |
+| 5 | **Matcher** | `agents/job_matcher.py` | Scores every JD vs. the CV (0-100) | Vector retrieval (ChromaDB + MiniLM-L6) fused with LLM judgment |
+| 6 | **CV Tailor** | `agents/cv_diff_tailor.py` | Rewrites CV per JD, preserving original layout | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
+| 7 | **CV Reviewer** | `agents/reviewer.py` | Grades the tailored CV (0-100) against JD + original CV | Triggers retry cycles if score < 72 |
+| 8 | **Cover-Letter Generator** | `agents/cover_letter_generator.py` | 3-paragraph letter tied to the top-scoring CV signals | Consumes matcher scores + tailored-CV highlights |
+| 9 | **Cover-Letter Reviewer** | `agents/cover_letter_reviewer.py` | Grades fabrication (0-100) | Retries the generator with feedback if score < 70 |
+| 10 | **Email Agent** | `agents/email_agent.py` | Gmail SMTP delivery with PDF attachments | Preview mode gates sending; per-card manual send |
+
+### Shared state
+
+A single dict flows through every node (`agents/runtime.py → RunState`),
+carrying:
+
+- User inputs (CV bytes, role, experience level, match threshold)
+- Accumulated artefacts (scraped JDs, match scores, tailored CVs, letters)
+- **LLM budget ledger** (calls made, limit, rate-limit waits)
+- Crash-safe snapshot reference
+
+Each agent reads/writes only its own slice, enabling clean retries and
+partial recovery on failure.
+
+### Why multi-agent (not a monolithic prompt)
+
+- **Specialisation** — a matcher that's tuned for CV↔JD fit gets worse if
+  you ask the same prompt to also tailor, review, and write email bodies.
+- **Targeted retries** — only failed sub-steps (e.g., a low-scoring cover
+  letter) replay, not the whole pipeline.
+- **Budget control** — per-agent call counts let us abort cleanly when
+  Groq quota is exhausted, with a partial result usable in the UI.
+- **Observability** — each agent emits its own LangSmith trace span,
+  making a 9-node pipeline tractable to debug.
+
+### What the user sees per run
 
 Every match card shows: match score, reviewer score, render mode
 (`in_place` / `rebuilt` / `failed`), and a fabrication-details expander.
@@ -226,9 +329,12 @@ python scripts/smoke_vector.py
 python scripts/test_cv_corpus.py path\to\cv_folder
 ```
 
-### Run the agent headless
+### Test suites in `scripts/`
 ```powershell
-python test_pipeline.py
+python scripts/test_redaction.py       # privacy redaction unit tests
+python scripts/test_yoe_matcher.py     # experience-level filter logic
+python scripts/test_groq_rotation.py   # key-rotation pool behaviour
+python scripts/test_pdf_fix.py         # PDF editor regression suite
 ```
 
 ---
@@ -252,7 +358,7 @@ agents/
   reviewer.py            # tailored-CV quality review
   pdf_editor.py          # in-place PDF edits via PyMuPDF
   pdf_formatter.py       # rebuild path via ReportLab
-  email_agent.py         # Resend wrapper
+  email_agent.py         # Gmail SMTP delivery
   job_agent.py           # LangGraph supervisor + nodes
 app.py                   # Streamlit UI
 scripts/                 # smoke tests + batch CV validator
@@ -264,3 +370,6 @@ docs/                    # CV compatibility notes
 ## License
 
 Private project. All rights reserved unless explicitly stated otherwise.
+
+If you'd like to reuse portions of this codebase, please open an issue or
+reach out via GitHub.
