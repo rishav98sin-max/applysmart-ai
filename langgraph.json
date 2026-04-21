@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "job_application_agent": "./agents/job_agent.py:build_agent_graph"
+  },
+  "env": ".env"
+}

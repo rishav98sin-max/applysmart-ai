@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Project artefacts
+uploads/
+outputs/
+data/
+!data/.gitkeep
+
+# Per-session user data (CVs, generated PDFs) — contains PII, never commit
+sessions/
+
+# Runtime state / caches
+.langgraph_api/
+graphify-out/
+.graphify_*
+
+# Test scratch
+_probe*.py
+
+# Streamlit secrets (local only — on Streamlit Cloud use the UI instead)
+.streamlit/secrets.toml
+
+# Logs
+*.log
+
+# Personal CVs / test artefacts that must never ship publicly
+*_layout.txt
+_*.txt
+Rishav_Singh_*
+test_pdf_fix_*.pdf

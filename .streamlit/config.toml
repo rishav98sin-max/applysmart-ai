@@ -1,0 +1,28 @@
+[theme]
+base              = "light"
+primaryColor      = "#0F766E"
+backgroundColor   = "#FAFAF9"
+secondaryBackgroundColor = "#F5F5F4"
+textColor         = "#1C1917"
+font              = "sans serif"
+
+[server]
+headless          = true
+# Use polling instead of the default module-discovery watcher. Default
+# recursively scans every loaded Python module path to decide what to watch;
+# with torch / transformers / chromadb installed this surfaces noisy
+# "examining torchvision.ops" warnings on every rerun. Polling skips that
+# discovery entirely.
+fileWatcherType   = "poll"
+folderWatchBlacklist = [
+    "venv", ".venv", "__pycache__", ".git", "sessions", "outputs",
+    "chroma_db", ".chroma", "node_modules",
+]
+
+[browser]
+gatherUsageStats  = false
+
+[runner]
+# Don't pre-import modules on every rerun — speeds up the fast-rerun cycle
+# and avoids the transformers-weights warning spam.
+fastReruns        = true
