@@ -125,14 +125,37 @@ def _capture_quota_from_headers(headers, key_index: int) -> None:
     Read Groq's `x-ratelimit-*` response headers and cache them against the
     active key index. Runs after every successful call. All failures are
     swallowed — quota tracking is observability, never mission-critical.
+
+    Also detects the daily Groq quota reset: if the remaining-tokens value
+    jumps UP sharply between two consecutive calls on the same key (e.g.
+    5K → 95K), the daily window rolled over and we zero the deployment-wide
+    counter so the UI reflects the fresh 300K pool.
     """
+    global _TOKENS_USED_SESSION
     try:
         if not headers:
             return
+        new_rem = _parse_int(headers.get("x-ratelimit-remaining-tokens"))
+
+        # Daily-reset detection — fires when the new remaining jumps above
+        # the previous snapshot by more than half the per-key daily cap.
+        # That's only possible if Groq refilled the bucket between calls.
+        prev = _GROQ_QUOTA.get(key_index) or {}
+        prev_rem = prev.get("remaining_tokens")
+        if (
+            isinstance(new_rem, int) and isinstance(prev_rem, int)
+            and new_rem > prev_rem + (_GROQ_TOKENS_PER_KEY_PER_DAY // 2)
+        ):
+            print(
+                f"   🔄 Groq daily reset detected on key #{key_index + 1} "
+                f"({prev_rem} → {new_rem} tokens) — zeroing usage counter."
+            )
+            _TOKENS_USED_SESSION = 0
+
         # Prefer daily windows (`*-tokens`); Groq returns both per-minute and
         # per-day headers but the day values are what matters for UX.
         _GROQ_QUOTA[key_index] = {
-            "remaining_tokens":   _parse_int(headers.get("x-ratelimit-remaining-tokens")),
+            "remaining_tokens":   new_rem,
             "remaining_requests": _parse_int(headers.get("x-ratelimit-remaining-requests")),
             "limit_tokens":       _parse_int(headers.get("x-ratelimit-limit-tokens")),
             "limit_requests":     _parse_int(headers.get("x-ratelimit-limit-requests")),
