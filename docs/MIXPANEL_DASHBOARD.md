@@ -80,6 +80,7 @@ See `agents/analytics.distinct_id()` for the exact hashing.
 | `job_unmarked_applied` | User unticks "I applied" | `company`, `source`, `match_score` |
 | `privacy_tracing_consent_updated` | User toggles LangSmith consent | `enabled`, `source` |
 | `session_data_deleted` | User clicks "Delete my session data" | `had_trace_consent` |
+| `theme_changed` | User flips the sidebar theme toggle | `theme` (`"light"` / `"dark"`), `source` |
 
 ### 2.2 Infra events (fired from the agent layer)
 

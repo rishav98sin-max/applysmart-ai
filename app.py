@@ -378,6 +378,77 @@ _CUSTOM_CSS = """
 st.markdown(_CUSTOM_CSS, unsafe_allow_html=True)
 
 
+# ─── Dark mode override ─────────────────────────────────────────────
+# Activated by the sidebar theme toggle. Redefines the CSS variables so
+# the whole app re-themes without touching any widget code. Palette is
+# "charcoal teal" — inspired by Linear / Vercel dark + our brand teal.
+_DARK_CSS = """
+<style>
+    :root {
+        /* Brand stays teal but brighter for contrast on dark bg. */
+        --accent:         #14B8A6;   /* teal-500 */
+        --accent-hover:   #0D9488;   /* teal-600 */
+        --accent-soft:    #042F2E;   /* teal-950 for subtle fills */
+        --accent-ring:    #2DD4BF;   /* teal-400, hover rings */
+        --text-strong:    #E6E8EB;   /* soft white */
+        --text-muted:     #8B949E;   /* muted slate */
+        --text-faint:     #6E7681;   /* faint slate */
+        --border:         #30363D;   /* subtle slate divider */
+        --border-strong:  #484F58;
+        --bg-card:        #1C2128;   /* elevated surface (cards, inputs) */
+        --bg-soft:        #1C2128;   /* sidebar / subtle fills */
+        --bg-page:        #0F1419;   /* deep charcoal page */
+        /* Status palette — dark-mode variants with AA contrast. */
+        --green-bg:       #022C22;
+        --green-text:     #6EE7B7;
+        --amber-bg:       #3D2B11;
+        --amber-text:     #FCD34D;
+        --red-bg:         #450A0A;
+        --red-text:       #FCA5A5;
+    }
+    /* Override hardcoded input whites from base CSS. */
+    .stTextInput input, .stTextArea textarea,
+    .stSelectbox [data-baseweb="select"] > div,
+    .stFileUploader [data-testid="stFileUploaderDropzone"] {
+        background-color: #1C2128 !important;
+        color: var(--text-strong) !important;
+        border: 1px solid var(--border) !important;
+    }
+    .stTextInput input::placeholder, .stTextArea textarea::placeholder {
+        color: #6E7681 !important;
+    }
+    /* Job card + panel surfaces: lift onto the elevated charcoal. */
+    .job-card, .stTabs [data-baseweb="tab-panel"] {
+        background: var(--bg-card) !important;
+        border-color: var(--border) !important;
+    }
+    /* Slider track + thumb glow warmer against dark. */
+    .stSlider [data-baseweb="slider"] > div > div {
+        background: var(--accent) !important;
+    }
+    /* Brand mark retains gradient but glow tweaked for dark. */
+    .brand-header .mark {
+        box-shadow:
+            0 1px 2px rgba(20, 184, 166, 0.15),
+            0 8px 24px -6px rgba(20, 184, 166, 0.35),
+            inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+    }
+    /* Streamlit-generated alerts: darken bg, keep coloured text. */
+    div[data-testid="stAlert"] {
+        background-color: var(--bg-card) !important;
+        border: 1px solid var(--border) !important;
+    }
+</style>
+"""
+
+# Initialise theme state once per session.
+if "theme" not in st.session_state:
+    st.session_state["theme"] = "light"
+
+if st.session_state["theme"] == "dark":
+    st.markdown(_DARK_CSS, unsafe_allow_html=True)
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # BOOT GATE — preflight checks, optional password, session init
 # ═════════════════════════════════════════════════════════════════════════
@@ -556,6 +627,28 @@ _render_top_brand()
 # ═════════════════════════════════════════════════════════════════════════
 
 with st.sidebar:
+    # ─── Theme toggle ────────────────────────────────────────────────
+    # Segmented control at the very top of the sidebar. Writes to
+    # `st.session_state["theme"]`; the conditional dark CSS block above
+    # picks this up on the next rerun.
+    _theme_choice = st.radio(
+        "Theme",
+        options=["☀️ Light", "🌙 Dark"],
+        index=0 if st.session_state.get("theme", "light") == "light" else 1,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="_theme_radio",
+    )
+    _new_theme = "light" if _theme_choice.endswith("Light") else "dark"
+    if _new_theme != st.session_state.get("theme", "light"):
+        st.session_state["theme"] = _new_theme
+        track_event(
+            "theme_changed",
+            _ANON_DISTINCT_ID,
+            {"theme": _new_theme, "source": "sidebar_toggle"},
+        )
+        st.rerun()
+
     st.markdown('<div class="sidebar-h">Upload</div>', unsafe_allow_html=True)
     uploaded_cv = st.file_uploader(
         "Your CV (PDF)", type=["pdf"], label_visibility="collapsed",
@@ -635,6 +728,65 @@ with st.sidebar:
                 "PDFs but does NOT send them automatically. You'll get a "
                 "'Send now' button on each matched role.",
     )
+
+    # ─── Daily budget panel ─────────────────────────────────────────
+    # Live Groq quota read from the x-ratelimit-* response headers on
+    # every LLM call (see agents.llm_client.get_quota_summary). Shows
+    # tokens remaining + an estimate of how many more full runs fit
+    # into today's daily window. Aggregates across all rotated keys.
+    st.markdown('<div class="sidebar-h">Daily Budget</div>', unsafe_allow_html=True)
+    try:
+        from agents.llm_client import get_quota_summary
+        _q = get_quota_summary()
+    except Exception:
+        _q = {"ready": False}
+
+    if not _q.get("ready"):
+        st.caption(
+            "💡 Your remaining daily budget appears here after the first run. "
+            "Groq's free tier resets every 24h."
+        )
+    else:
+        _rem_tok  = _q.get("remaining_tokens", 0)
+        _lim_tok  = _q.get("limit_tokens", 0)
+        _runs     = _q.get("est_runs_left", 0)
+        _reset    = _q.get("reset_tokens", "")
+        _keys_m   = _q.get("keys_measured", 0)
+        _keys_t   = _q.get("keys_total", 0)
+
+        def _fmt_tokens(n: int) -> str:
+            if n >= 1_000_000:
+                return f"{n/1_000_000:.1f}M"
+            if n >= 1_000:
+                return f"{n/1_000:.0f}K"
+            return str(n)
+
+        _pct = int(100 * _rem_tok / _lim_tok) if _lim_tok else 0
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(
+                "Tokens left",
+                f"{_fmt_tokens(_rem_tok)}",
+                delta=f"of {_fmt_tokens(_lim_tok)}" if _lim_tok else None,
+                delta_color="off",
+            )
+        with col2:
+            st.metric(
+                "Runs left (est.)",
+                f"~{_runs}" if _runs >= 0 else "—",
+                delta=f"{_keys_m}/{_keys_t} keys" if _keys_t else None,
+                delta_color="off",
+            )
+
+        if _rem_tok and _lim_tok and _pct < 20:
+            st.warning(
+                f"Only ~{_pct}% of today's Groq budget left. "
+                f"Consider waiting until it resets "
+                f"({_reset or 'in 24h'}) before your next large run.",
+                icon="⚠️",
+            )
+        elif _reset:
+            st.caption(f"Resets in {_reset}")
 
     st.markdown('<div class="sidebar-h">Privacy</div>', unsafe_allow_html=True)
     trace_opt_in = st.toggle(
@@ -1256,7 +1408,13 @@ with tab_match:
                 if any(st.session_state.get(f"sent_{abs(hash((j.get('url') or j.get('title','')))) % (10**10)}") for j in sorted_matches):
                     st.success(
                         f"All {len(sorted_matches)} tailored application(s) emailed to "
-                        f"**{user_email}**. Check your inbox."
+                        f"**{user_email}**."
+                    )
+                    st.info(
+                        "📬 Can't find the email? First-time senders often land "
+                        "in **Spam / Junk / Promotions**. Mark as **Not spam** "
+                        "to train your provider for future messages.",
+                        icon="📬",
                     )
             else:
                 label = (
@@ -1310,6 +1468,21 @@ with tab_match:
                         n_fail = 0
                         progress.progress(1.0, text="Done.")
                         st.toast(f"Sent {n_ok} application(s) in one email to {user_email}", icon="✅")
+                        # Persistent spam-folder reminder — stays visible after
+                        # the toast auto-dismisses. First-time senders from a
+                        # new domain are frequently filtered to Spam/Junk by
+                        # Gmail/Outlook regardless of SPF/DKIM; this note
+                        # sets expectations and gives users a clear next step.
+                        st.info(
+                            "📬 **Heads up:** first-time emails from a new "
+                            "sender often land in **Spam / Junk / Promotions** "
+                            "— check those folders if you don't see it in "
+                            "your inbox within a minute. Marking the email "
+                            "as **Not spam** (or adding the sender to your "
+                            "contacts) trains your provider to deliver future "
+                            "messages straight to the inbox.",
+                            icon="📬",
+                        )
                     except Exception as send_err:
                         n_ok = 0
                         n_fail = len(sendable)
