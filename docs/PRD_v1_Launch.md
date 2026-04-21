@@ -226,8 +226,8 @@ Maps back to user stories in §4. Each criterion must pass before launch.
 ## 9. Dependencies
 
 ### 9.1 External services (must be working on launch day)
-- **Groq API** — matcher, supervisor, diff tailor, reviewer
-- **Google AI / Gemma** — cover letter, CV tailor fallback
+- **Groq API** — matcher, supervisor, reviewer (fast tasks)
+- **Gemini 2.5 Flash API** — CV tailoring, cover letter generation (writing tasks)
 - **Resend API** — email delivery
 - **ChromaDB** — local, bundled (no external dependency)
 - **SerpAPI / JSearch / Adzuna** — scraping augmentation

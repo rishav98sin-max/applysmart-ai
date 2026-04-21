@@ -29,8 +29,8 @@ sees them.
   (PII-masked), full Mixpanel product-analytics dashboard, run-snapshot-on-
   crash, Groq 3-key rotation pool, and hard per-run LLM call ceilings.
 
-Built on **LangGraph + Groq (Llama-3.3 70B) + Streamlit + ChromaDB + PyMuPDF**.
-Designed to run end-to-end on free-tier API quotas.
+Built on **LangGraph + Groq (Llama-3.3 70B) + Gemini 2.5 Flash + Streamlit + ChromaDB + PyMuPDF**.
+Designed to run end-to-end on free-tier API quotas. Uses a dual-LLM architecture: Groq for fast tasks (matching, planning, review), Gemini for writing tasks (CV tailoring, cover letters).
 
 ### Preview
 
@@ -98,18 +98,18 @@ node.
 
 ### The agents
 
-| # | Agent | File | Role | Why it's an agent (not a function) |
-|---|---|---|---|---|
-| 1 | **Supervisor** | `agents/job_agent.py` | Routes the graph — picks the next worker per turn | LLM-backed decision; can short-circuit on budget/critical error |
-| 2 | **Pre-flight Validator** | `agents/cv_validator.py` | Blocks incompatible CVs (scanned / password-locked / <500 chars / non-English) | Deterministic early-exit saves every downstream LLM call |
-| 3 | **Planner** | `agents/planner.py` | Generates 2-4 keyword bundles from CV + target role | LLM decides search strategy; not hard-coded |
-| 4 | **Scraper** | `agents/job_scraper.py` | Pulls live JDs from LinkedIn / Indeed / Glassdoor / Builtin / JobsIE | Multi-source fan-out with per-board fallback |
-| 5 | **Matcher** | `agents/job_matcher.py` | Scores every JD vs. the CV (0-100) | Vector retrieval (ChromaDB + MiniLM-L6) fused with LLM judgment |
-| 6 | **CV Tailor** | `agents/cv_diff_tailor.py` | Rewrites CV per JD, preserving original layout | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
-| 7 | **CV Reviewer** | `agents/reviewer.py` | Grades the tailored CV (0-100) against JD + original CV | Triggers retry cycles if score < 72 |
-| 8 | **Cover-Letter Generator** | `agents/cover_letter_generator.py` | 3-paragraph letter tied to the top-scoring CV signals | Consumes matcher scores + tailored-CV highlights |
-| 9 | **Cover-Letter Reviewer** | `agents/cover_letter_reviewer.py` | Grades fabrication (0-100) | Retries the generator with feedback if score < 70 |
-| 10 | **Email Agent** | `agents/email_agent.py` | Gmail SMTP delivery with PDF attachments | Preview mode gates sending; per-card manual send |
+| # | Agent | File | Role | LLM | Why it's an agent (not a function) |
+|---|---|---|---|---|---|
+| 1 | **Supervisor** | `agents/job_agent.py` | Routes the graph — picks the next worker per turn | Groq | LLM-backed decision; can short-circuit on budget/critical error |
+| 2 | **Pre-flight Validator** | `agents/cv_validator.py` | Blocks incompatible CVs (scanned / password-locked / <500 chars / non-English) | — | Deterministic early-exit saves every downstream LLM call |
+| 3 | **Planner** | `agents/planner.py` | Generates 2-4 keyword bundles from CV + target role | Groq | LLM decides search strategy; not hard-coded |
+| 4 | **Scraper** | `agents/job_scraper.py` | Pulls live JDs from LinkedIn / Indeed / Glassdoor / Builtin / JobsIE | — | Multi-source fan-out with per-board fallback |
+| 5 | **Matcher** | `agents/job_matcher.py` | Scores every JD vs. the CV (0-100) | Groq | Vector retrieval (ChromaDB + MiniLM-L6) fused with LLM judgment |
+| 6 | **CV Tailor** | `agents/cv_tailor.py` | Rewrites CV per JD, preserving original layout | Gemini 2.5 Flash | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
+| 7 | **CV Reviewer** | `agents/reviewer.py` | Grades the tailored CV (0-100) against JD + original CV | Groq | Triggers retry cycles if score < 72 |
+| 8 | **Cover-Letter Generator** | `agents/cover_letter_generator.py` | 3-paragraph letter tied to the top-scoring CV signals | Gemini 2.5 Flash | Consumes matcher scores + tailored-CV highlights |
+| 9 | **Cover-Letter Reviewer** | `agents/cover_letter_reviewer.py` | Grades fabrication (0-100) | Groq | Retries the generator with feedback if score < 70 |
+| 10 | **Email Agent** | `agents/email_agent.py` | Gmail SMTP delivery with PDF attachments | — | Preview mode gates sending; per-card manual send |
 
 ### Shared state
 
@@ -154,6 +154,7 @@ pip install -r requirements.txt
 # Create .env beside app.py
 @"
 GROQ_API_KEY=gsk_...
+GEMINI_API_KEY=your_gemini_key_here
 EMAIL_ADDRESS=you@gmail.com
 EMAIL_APP_PASSWORD=your_16_char_app_password
 "@ | Out-File -Encoding utf8 .env
@@ -172,7 +173,8 @@ First run downloads the MiniLM-L6 embedder (~80 MB) into
 
 | Variable | Purpose |
 |---|---|
-| `GROQ_API_KEY` | All LLM calls (matcher, planner, tailor, reviewers, supervisor) |
+| `GROQ_API_KEY` | Fast LLM tasks (matcher, planner, reviewers, supervisor) |
+| `GEMINI_API_KEY` | Writing tasks (CV tailoring, cover letters) - get from https://aistudio.google.com/app/apikey |
 | `EMAIL_ADDRESS` | Gmail account used as sender for SMTP delivery |
 | `EMAIL_APP_PASSWORD` | Gmail App Password (16-char; generate at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), requires 2FA) |
 
@@ -180,7 +182,8 @@ First run downloads the MiniLM-L6 embedder (~80 MB) into
 
 | Variable | Default | Effect |
 |---|---|---|
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Base model for every node |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Base model for fast tasks |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Model for writing tasks (CV tailoring, cover letters) |
 | `GROQ_SUPERVISOR_MODEL` | inherits `GROQ_MODEL` | Override supervisor only |
 | `GROQ_PLANNER_MODEL` | inherits `GROQ_MODEL` | Override planner only |
 | `GROQ_REVIEWER_MODEL` | inherits `GROQ_MODEL` | Override CV reviewer only |
@@ -210,6 +213,8 @@ reads from both.
   tuned for it: `MAX_LLM_CALLS_PER_RUN=20`, `max_scrape_rounds=2`. If you
   see the banner *"Groq rate limit hit"*, wait for the per-minute window
   to roll over or the daily cap to reset at 00:00 Pacific.
+- **Gemini free tier.** 1,500 requests/day, 1M tokens/min. Used for CV tailoring
+  and cover letters. If you see rate limits, wait for the daily window to reset.
 - **Rate-limit cap.** Any wait longer than `MAX_RATE_LIMIT_WAIT` aborts the
   run instead of hanging for 10-35 min.
 - **Scrape boards.** LinkedIn scraping is anti-bot-aggressive; Indeed /

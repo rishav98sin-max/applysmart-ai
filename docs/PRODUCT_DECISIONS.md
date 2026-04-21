@@ -72,6 +72,14 @@ It complements `PM_CASE_STUDY.md` (narrative) with crisp product decisions.
 - **Chosen approach:** Structured snapshots plus in-app insight surfaces.
 - **Trade-off:** Requires PII/privacy discipline before public scale.
 
+## Decision 9 — Dual-LLM Architecture for Quality vs Speed
+
+- **Decision:** Use Groq for fast tasks (matching, planning, review) and Gemini 2.5 Flash for writing tasks (CV tailoring, cover letters).
+- **Why:** Gemini excels at creative writing with long context windows, while Groq provides faster inference for structured tasks. This split optimizes both quality and latency.
+- **Options considered:** Single LLM for all tasks, Groq-only, Gemini-only.
+- **Chosen approach:** Dual-LLM architecture with task-specific routing.
+- **Trade-off:** Requires managing two API keys and rate limits, but delivers better writing quality at acceptable latency.
+
 ---
 
 ## Success Criteria Tied To Decisions

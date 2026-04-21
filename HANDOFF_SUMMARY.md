@@ -1,7 +1,7 @@
 # ApplySmart AI — Complete Handoff Summary
 
 **Generated:** April 20, 2026
-**Last updated:** April 21, 2026 (session 2: Groq-only migration, key rotation, CV-render fixes)
+**Last updated:** April 21, 2026 (session 3: Gemini 2.5 Flash integration, dual-LLM architecture)
 **Purpose:** Full context handoff to Cursor for continued development
 
 ---
@@ -19,18 +19,15 @@ ApplySmart AI is an **automated job application system** that:
 - Python 3.10+
 - Streamlit (UI)
 - LangGraph (multi-agent orchestration)
-- Groq Llama-3.3-70B (ALL LLM calls — logic, scoring, creative writing)
+- Groq Llama-3.3-70B (fast tasks — matching, planning, review)
   - Up to 3 API keys rotated automatically on 429/401 (≈300K tokens/day ceiling)
+- Gemini 2.5 Flash (writing tasks — CV tailoring, cover letters)
+  - 1,500 requests/day, 1M tokens/min on free tier
 - ChromaDB + Sentence-Transformers (vector retrieval)
 - PyMuPDF (fitz) (PDF parsing and editing)
 - Resend (email delivery)
 
-**LLM consolidation (April 21 2026):** Google Gemma was fully removed. All
-`chat_quality` and `chat_fast` calls now route to Groq via the centralized
-`agents/llm_client.py`. Every agent module that previously instantiated its
-own `Groq(api_key=...)` client has been refactored to use `chat_quality`/
-`chat_fast`, so rotation applies uniformly across planner, matcher, tailor,
-reviewer, supervisor, and cover-letter agents.
+**Dual-LLM architecture (April 21 2026):** Uses Groq for fast structured tasks (matching, planning, reviewers, supervisor) and Gemini 2.5 Flash for creative writing tasks (CV tailoring, cover letter generation). This split optimizes both quality and latency — Gemini excels at writing with long context windows, while Groq provides faster inference for structured tasks. All LLM calls route through centralized `agents/llm_client.py` with `chat_quality`/`chat_fast` (Groq) and `chat_gemini` (Gemini) functions.
 
 **Key Design Principles:**
 - Crash-safe snapshots for observability
@@ -222,14 +219,14 @@ class AgentState(TypedDict):
 - **Purpose:** Full CV summary rewrite (when diff tailoring is insufficient)
 - **Input:** CV text, job title, company, job description
 - **Output:** Full tailored CV text
-- **Model:** Google Gemma 4 26B via `chat_quality()`
+- **Model:** Gemini 2.5 Flash via `chat_gemini()`
 - **Usage:** Currently unused in pipeline (diff tailoring is primary)
 
 ### 4.7 Cover Letter Generator (`agents/cover_letter_generator.py`)
 - **Purpose:** Generate tailored cover letter per job
 - **Input:** CV text, job title, company, job description
 - **Output:** Cover letter text
-- **Model:** Google Gemma 4 26B via `chat_quality()`
+- **Model:** Gemini 2.5 Flash via `chat_gemini()`
 - **Key Logic:** 3-4 paragraphs, professional tone, references CV and JD
 
 ### 4.8 PDF Editor (`agents/pdf_editor.py`)
@@ -272,11 +269,12 @@ class AgentState(TypedDict):
 - **Purpose:** Centralized model routing with throttling and retry logic
 - **Models:**
   - `chat_fast()` → Groq Llama-3.3-70B (logic/scoring)
-  - `chat_quality()` → Google Gemma 4 26B (creative writing)
+  - `chat_quality()` → Groq Llama-3.3-70B (quality tasks)
+  - `chat_gemini()` → Gemini 2.5 Flash (creative writing: CV tailoring, cover letters)
 - **Key Config:**
-  - Gemma min gap: 3s (reduced from 60s)
+  - Groq key rotation: up to 3 keys via `GROQ_API_KEY`, `GROQ_API_KEY_2`, `GROQ_API_KEY_3`
+  - Gemini model: `gemini-2.5-flash` (configurable via `GEMINI_MODEL`)
   - Secret retrieval: `secret_or_env()` for Streamlit Cloud compatibility
-  - Model ID: `gemma-4-26b-a4b-it` (corrected from hallucinated ID)
 
 ---
 
@@ -501,6 +499,50 @@ All touched files pass `ast.parse` cleanly. End-to-end live run still pending
 to confirm: (a) rotation kicks in on TPM hit, (b) no 401s, (c) bullets render
 with `•`, (d) Accenture awards present, (e) no gap at role-block bottom.
 
+### 5.5 Session 3 — April 21, 2026 (Gemini 2.5 Flash Integration)
+
+**Context:** After Groq-only migration, user wanted to improve writing quality for CV tailoring and cover letter generation. Gemini 2.5 Flash offers better creative writing capabilities with long context windows (1M tokens) while maintaining acceptable latency (~210 tokens/sec vs Groq's ~315 tokens/sec).
+
+**A. Dual-LLM architecture implemented** (`agents/llm_client.py`)
+- Added `chat_gemini()` function for Gemini 2.5 Flash calls
+- Added `_call_gemini()` with retry logic for rate limits
+- Added GEMINI_MODEL configuration (default: `gemini-2.5-flash`)
+- Groq continues to handle fast tasks (matching, planning, reviewers, supervisor)
+- Gemini handles writing tasks (CV tailoring, cover letter generation)
+
+**B. CV Tailor switched to Gemini** (`agents/cv_tailor.py`)
+- Changed from `chat_quality()` (Groq) to `chat_gemini()` (Gemini)
+- Better writing quality for bullet rewrites and summary generation
+- Leverages Gemini's 1M token context window for full CV + JD processing
+
+**C. Cover Letter Generator switched to Gemini** (`agents/cover_letter_generator.py`)
+- Changed from `chat_quality()` (Groq) to `chat_gemini()` (Gemini)
+- Improved cover letter quality with more natural, personalized tone
+- Better at capturing company-specific motivation and value propositions
+
+**D. Environment configuration updated**
+- Added `GEMINI_API_KEY` to `.env.example` (get from https://aistudio.google.com/app/apikey)
+- Added `GEMINI_MODEL` to `.env.example` (default: `gemini-2.5-flash`)
+- Updated README.md with dual-LLM architecture explanation
+- Updated PRD_v1_Launch.md dependencies section
+- Updated PRODUCT_DECISIONS.md with Decision 9 (Dual-LLM Architecture)
+
+**E. Dependencies updated** (`requirements.txt`)
+- Added `google-generativeai` package for Gemini API
+- Upgraded `chromadb` from 0.4-0.6 to 0.5-0.7 for Python 3.14 compatibility
+
+**F. Streamlit Cloud Python version pinning**
+- Added `.python-version` file with content `3.11`
+- Added `runtime.txt` file with content `python-3.11`
+- This pins Python 3.11 for Streamlit Cloud deployment (required for chromadb/tokenizers compatibility)
+- User needs to delete and recreate the Streamlit Cloud app to pick up the Python version
+
+**G. Documentation updates**
+- README.md: Updated tech stack, agent table with LLM column, configuration section, known limits
+- PRD_v1_Launch.md: Updated dependencies to reflect Gemini
+- PRODUCT_DECISIONS.md: Added Decision 9 about dual-LLM architecture
+- HANDOFF_SUMMARY.md: Updated tech stack, agent descriptions, LLM client section
+
 ---
 
 ## 6. Current State
@@ -536,6 +578,7 @@ with `•`, (d) Accenture awards present, (e) no gap at role-block bottom.
 - ✅ **[Apr 21 PM] Fixed Resend/Gmail doc drift** — README `.env` example and Required-vars table wrongly listed `RESEND_API_KEY` + `SENDER_EMAIL`; actual code (`agents/email_agent.py`) uses Gmail SMTP via `EMAIL_ADDRESS` + `EMAIL_APP_PASSWORD`. README and `.env.example` now match the code.
 - ✅ **[Apr 21 PM] `pdf_editor.py` bullet glyph consistency fix** — `•` (U+2022) was silently downgraded to `·` (U+00B7) in two places in the Base14 fallback path (a `_UNICODE_FALLBACK` map entry + a post-sweep loop over `_BULLET_CHARS`). Because `•` is in WinAnsi encoding (0x95), Base14 Latin-1 fonts render it natively — the downgrade was over-cautious. Result: when one section's embedded font failed to install, its rewritten bullets showed `·` while other sections kept `•` (see IBM vs Accenture in user's Apr 21 screenshot).
 - ✅ **[Apr 21 PM] `pdf_editor.py` bullet wrap-width fix** — bullet rewrite path (line ~920) was computing `rect` as the union of original bullet bboxes WITHOUT extending `rect.x1` to page margin. Summary path (line ~840) already had the extension. Longer rewritten bullets were therefore wrapped against the narrowest original bullet's right edge, producing orphan words like "efficiency by 20%" on a new line. Added `rect.x1 = max(rect.x1, page.rect.width - 40)` to both bullet and skills paths for consistency.
+- ✅ **[Apr 21 PM] Gemini 2.5 Flash integration** — dual-LLM architecture implemented: Groq for fast tasks (matching, planning, reviewers, supervisor), Gemini for writing tasks (CV tailoring, cover letters). Added `chat_gemini()` function in `llm_client.py`, updated `cv_tailor.py` and `cover_letter_generator.py` to use Gemini. Added `GEMINI_API_KEY` and `GEMINI_MODEL` to `.env.example`. Updated README.md, PRD_v1_Launch.md, PRODUCT_DECISIONS.md with Decision 9. Added `google-generativeai` to requirements.txt. Added `.python-version` and `runtime.txt` for Streamlit Cloud Python 3.11 pinning.
 
 ### 6.2 Pending (High Priority)
 - **Live pipeline run** to validate aggressive tailoring + experience-level + YOE filters with a real LLM (~50 calls). Confirms:
