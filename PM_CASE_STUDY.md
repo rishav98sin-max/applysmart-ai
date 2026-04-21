@@ -4,7 +4,7 @@
 > 
 > **Author:** Rishav Singh  
 > **Role:** Product Manager (sole operator / PM-engineer on this project)  
-> **Status:** v0.9 — pre-launch, shipping to LinkedIn portfolio
+> **Status:** v0.9 — pre-launch, shipping to public portfolio
 
 ---
 
@@ -61,7 +61,7 @@ Applying to jobs is:
 |---|---|
 | **ChatGPT / Claude** | One CV at a time, no pipeline, lose PDF layout, manual copy-paste, no job scraping |
 | **Resume.io / Zety** | Static templates, not LLM-tailored, can't batch, locked to their layouts |
-| **LinkedIn Easy Apply** | Same generic CV to every role, no tailoring |
+| **Easy Apply** | Same generic CV to every role, no tailoring |
 | **Rezi / Teal** | Good at ATS optimization, but template-swap not layout-preserving; limited batching |
 | **Scrapers (Scrapy, SerpAPI)** | Only the top of funnel; nothing downstream |
 
@@ -282,7 +282,7 @@ Ran the codebase through Perplexity for a deep critique. 5 critical fixes came o
 
 ## 7. Metrics & Success Criteria
 
-### 7.1 v1 launch metrics (LinkedIn portfolio)
+### 7.1 v1 launch metrics (public portfolio)
 
 | Metric | Target | How measured |
 |---|---|---|
@@ -323,7 +323,7 @@ Full event schema, privacy guarantees, and reproduction steps live in [`docs/MIX
 - Multi-agent LangGraph pipeline (supervisor + 9 worker/reviewer agents)
 - Groq-only LLM routing with 3-key rotation pool (v1.1 — Gemma removed)
 - RAG over CV with ChromaDB
-- Live job scraping (LinkedIn, Indeed, Glassdoor, Jobs.ie, Builtin) with fallback
+- Live job scraping (Indeed, Glassdoor, Jobs.ie, Builtin) with fallback
 - Diff-based CV tailoring with fabrication sanitizer
 - **Aggressive mode** — bullet rewrite/drop/reorder
 - Reviewer agent with retry
@@ -342,7 +342,7 @@ Full event schema, privacy guarantees, and reproduction steps live in [`docs/MIX
 - Brother-share prep (`.env.example`, README)
 - Handoff documentation (this file + `HANDOFF_SUMMARY.md`)
 
-### v2 (post-LinkedIn-launch, conditional on feedback)
+### v2 (post-public-launch, conditional on feedback)
 
 - **Privacy layer** — PII redaction before LangSmith trace + consent banner
 - **Designer CV multi-column support** — column clustering + per-column reading order

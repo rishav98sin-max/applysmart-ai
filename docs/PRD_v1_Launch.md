@@ -1,16 +1,16 @@
 # PRD: ApplySmart AI v1.0 Launch
 
 > **Product Requirements Document**  
-> **Release:** v1.0 — LinkedIn portfolio launch  
+> **Release:** v1.0 — Public portfolio launch  
 > **Author:** Rishav Singh  
 > **Status:** Draft → Ready for build → **Active** (target launch: within 7 days)  
-> **Last updated:** April 20, 2026
+> **Last updated:** April 22, 2026
 
 ---
 
 ## TL;DR
 
-Ship ApplySmart AI v1.0 as a public LinkedIn portfolio demo. Scope is locked: **single-column ATS CVs**, **six job boards**, **aggressive tailoring**, **YOE-based matching**, **consent-gated tracing**. Everything not in §5 is v1.1+.
+Ship ApplySmart AI v1.0 as a public portfolio demo. Scope is locked: **single-column ATS CVs**, **six job boards**, **aggressive tailoring**, **YOE-based matching**, **consent-gated tracing**. Everything not in §5 is v1.1+.
 
 A run succeeds if a user uploads a PDF CV, picks a role, and within 5 minutes receives tailored CV + cover letter PDFs for 3-10 matched jobs with zero fabricated facts.
 
@@ -25,7 +25,7 @@ Job-seekers applying to 20-50 roles per month spend 25+ hours on tailoring and s
 - Core pipeline (scrape → match → tailor → PDF → email) is shipped and works on my own CV.
 - Recent additions (aggressive tailoring + YOE filter) address the two biggest user complaints ("CVs look identical" and "matched to over-leveled roles").
 - Demand signal: three friends have already asked to use it.
-- Portfolio value: LinkedIn recruiters will see it *if* it's live; a shelved project scores zero.
+- Portfolio value: Recruiters will see it *if* it's live; a shelved project scores zero.
 
 ### 1.3 Strategic frame
 This is a **portfolio launch**, not a commercial launch. Success is measured in recruiter visibility and user feedback — not revenue. That shapes every trade-off: ship with rough edges where recruiters won't notice, lock down where a single bad experience would torpedo signal.
@@ -41,7 +41,7 @@ Early/mid-career professionals applying to white-collar roles (PM, engineering, 
 - Are comfortable with a tech-forward tool
 
 ### 2.2 Secondary
-- Hiring managers / recruiters viewing the LinkedIn post (evaluating me, not using the tool)
+- Hiring managers / recruiters viewing the portfolio post (evaluating me, not using the tool)
 - Friends and colleagues I personally send the link to
 
 ### 2.3 Not the target
@@ -52,7 +52,7 @@ Early/mid-career professionals applying to white-collar roles (PM, engineering, 
 ### 2.4 Jobs-to-be-done
 1. *"When I'm applying to a specific role, I want to tailor my CV in 2 minutes instead of 30, so I can actually apply to the volume I need without burning out."*
 2. *"When I'm unsure if my CV fits a role, I want a score and explanation, so I can decide whether to apply at all."*
-3. *"When I share this with a hiring manager on LinkedIn, I want them to see professional craft, so it acts as a portfolio artifact."*
+3. *"When I share this with a hiring manager, I want them to see professional craft, so it acts as a portfolio artifact."*
 
 ---
 
@@ -65,8 +65,8 @@ Early/mid-career professionals applying to white-collar roles (PM, engineering, 
 - **G4:** Total run time <5 minutes for 10-job batches
 
 ### 3.2 Portfolio goals
-- **P1:** LinkedIn post published within 7 days of PRD approval
-- **P2:** ≥10 hands-on demo runs from LinkedIn viewers within first week
+- **P1:** Portfolio post published within 7 days of PRD approval
+- **P2:** ≥10 hands-on demo runs from viewers within first week
 - **P3:** ≥3 external (non-friend) users complete at least one batch
 - **P4:** ≥2 recruiter DMs referencing the project within 14 days
 
@@ -97,7 +97,7 @@ Numbered for traceability to acceptance criteria in §8.
 
 **US-07:** *As an EU-resident user, I want to control whether my data is traced to third-party services, so I'm not unknowingly subject to cross-border data transfer.*
 
-**US-08:** *As a LinkedIn viewer, I want the demo to be usable within 3 clicks of landing on the app, so I can evaluate the project without reading setup docs.*
+**US-08:** *As a viewer, I want the demo to be usable within 3 clicks of landing on the app, so I can evaluate the project without reading setup docs.*
 
 ---
 
@@ -112,7 +112,7 @@ Tagged with priority: **P0** (must ship) / **P1** (should ship if time permits) 
 | FR-01 | Accept PDF CV upload ≤7MB via Streamlit file uploader | P0 | ✅ Shipped |
 | FR-02 | Parse CV text + extract layout structure (sections, role blocks, bullets, skills) | P0 | ✅ Shipped |
 | FR-03 | Validate CV pre-flight (warn if sections undetected, bullets < threshold) | P0 | ✅ Shipped |
-| FR-04 | Scrape jobs from ≥1 of: LinkedIn, Indeed, Glassdoor, Jobs.ie, Builtin with fallback sequence | P0 | ✅ Shipped |
+| FR-04 | Scrape jobs from ≥1 of: Indeed, Glassdoor, Jobs.ie, Builtin with fallback sequence | P0 | ✅ Shipped |
 | FR-05 | Score each job against CV using Groq LLM + RAG over CV embeddings | P0 | ✅ Shipped |
 | FR-06 | Filter jobs by user-selected experience level with level-gap penalty + YOE early-exit | P0 | ✅ Shipped |
 | FR-07 | Generate per-job diff-tailor (summary rewrite, bullet reorder/rewrite/drop, skills order) | P0 | ✅ Shipped |
@@ -177,7 +177,7 @@ Tagged with priority: **P0** (must ship) / **P1** (should ship if time permits) 
 
 ### 6.4 Security
 - **NFR-S1:** API keys loaded from `.env` — never hard-coded.
-- **NFR-S2:** API keys rotated before LinkedIn launch (current keys already exposed in chat history).
+- **NFR-S2:** API keys rotated before launch (current keys already exposed in chat history).
 - **NFR-S3:** `.env` in `.gitignore`; `.env.example` with placeholders committed.
 
 ### 6.5 Observability
@@ -250,7 +250,7 @@ Maps back to user stories in §4. Each criterion must pass before launch.
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
 | R1 | Live run exposes regression from today's changes | High | High | Do full pipeline test pre-launch (pending task) |
-| R2 | LinkedIn viewer uses a Novoresume/Canva CV → butchered output → reputational damage | Medium | High | README banner warning; v1.0 restricts to single-column ATS |
+| R2 | Viewer uses a Novoresume/Canva CV → butchered output → reputational damage | Medium | High | README banner warning; v1.0 restricts to single-column ATS |
 | R3 | LLM provider quota exhausted on launch day | Medium | High | Both Groq and Gemma keys valid; capped budget per run |
 | R4 | GDPR complaint from EU user without consent | Low (given consent banner) | Medium | Consent banner + tracing-off default |
 | R5 | API keys leaked in chat history abused | Medium (keys already exposed) | High | **Rotate all keys before launch** (NFR-S2) |
@@ -263,9 +263,9 @@ Maps back to user stories in §4. Each criterion must pass before launch.
 ## 11. Open Questions
 
 1. **Should the consent banner persist across sessions, or re-prompt every time?** → Re-prompt every session for v1.0 (simpler, more conservative).
-2. **Do I gate the LinkedIn demo behind a password for week 1 to control who tries it?** → No; defeats the portfolio-signal purpose.
+2. **Do I gate the demo behind a password for week 1 to control who tries it?** → No; defeats the portfolio-signal purpose.
 3. **Should I seed ChromaDB with a sample CV to make the first-run experience less empty?** → No; user uploads their own CV on start.
-4. **How do I handle users who try to upload 10MB CVs?** → Reject at upload with friendly message. File size cap = 5MB.
+4. **How do I handle users who try to upload 10MB CVs?** → Reject at upload with friendly message. File size cap = 7MB.
 
 ---
 
@@ -278,11 +278,11 @@ Maps back to user stories in §4. Each criterion must pass before launch.
 | D-3 | Full live pipeline test; regression triage | Rishav |
 | D-2 | Consent banner (FR-17), `.env.example` (FR-22), key rotation (NFR-S2) | Rishav |
 | D-1 | README v1 (FR-23), demo video recording (FR-26) | Rishav |
-| D0 | LinkedIn post + repo made public | Rishav |
+| D0 | Portfolio post + repo made public | Rishav |
 | D+1..7 | Monitor feedback, triage issues into v1.1 backlog | Rishav |
 | D+7 | Retro — ship v1.1 scope doc | Rishav |
 
-### LinkedIn post structure (draft)
+### Portfolio post structure (draft)
 
 > *"I built an end-to-end agentic AI system that automates job application tailoring while preserving your CV's original layout. Four months. Seven architecture decisions. Two PRDs. One honest case study. Links in comments."*
 >
@@ -296,7 +296,7 @@ If something critical breaks post-launch:
 
 1. **Immediate (< 1hr):** Pin `README.md` badge to "under maintenance"; point app's welcome screen to a static "be right back" page.
 2. **Within 24hr:** Diagnose via crash snapshots; hotfix + redeploy.
-3. **If unrecoverable:** Take repo private, post LinkedIn update acknowledging the issue. Not worse than doing nothing — shows real-world rigor.
+3. **If unrecoverable:** Take repo private, post portfolio update acknowledging the issue. Not worse than doing nothing — shows real-world rigor.
 
 No rollback to a previous version is needed since this is the first release.
 
@@ -308,7 +308,7 @@ No rollback to a previous version is needed since this is the first release.
 - [ ] Eng review (self) — PR #... merged
 - [ ] Live pipeline test — passed
 - [ ] Privacy checklist — consent banner shipped; keys rotated; README privacy note live
-- [ ] LinkedIn post drafted and scheduled
+- [ ] Portfolio post drafted and scheduled
 
 ---
 

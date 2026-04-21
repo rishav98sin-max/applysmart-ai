@@ -14,7 +14,7 @@ two, grouped by how soon they'd need to land.
 ## Where we are today (April 2026)
 
 **Works end-to-end as a single-user tool:**
-- Upload a CV → scrape LinkedIn/Indeed/Glassdoor → score against the JD →
+- Upload a CV → scrape job boards → score against the JD →
   tailor CV + cover letter → generate PDFs → preview → email.
 - Fabrication reviewer, input validation, preview-before-send, and 6 other
   guardrails against typical AI failure modes.
@@ -196,7 +196,7 @@ one the agent uses for a given run.
 
 ### 12. Job-board coverage
 
-**Problem:** Three boards (LinkedIn/Indeed/Glassdoor) miss specialist
+**Problem:** Three boards (Indeed/Glassdoor/others) miss specialist
 markets (Wellfound/AngelList for startups, LeverAdmin for specific
 company careers pages, Workable for SMBs).
 

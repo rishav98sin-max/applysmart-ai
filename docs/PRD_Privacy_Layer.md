@@ -26,7 +26,7 @@ This is the minimum bar for touching EU/UK users without GDPR exposure and for b
 - Session data (CV, generated PDFs) lives in `sessions/{uuid}/` indefinitely
 
 ### 1.2 Problem
-v1.0's consent-banner approach is **portfolio-grade** — legally defensible for a small LinkedIn demo, but insufficient for any of the following scenarios:
+v1.0's consent-banner approach is **portfolio-grade** — legally defensible for a small public demo, but insufficient for any of the following scenarios:
 
 1. A stranger in the EU uses the app → their CV flows to a US-based LLM provider without a data transfer assessment
 2. A user asks "can you delete my data?" → currently no way to honor that request without manual file deletion

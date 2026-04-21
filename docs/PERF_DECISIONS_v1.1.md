@@ -45,4 +45,4 @@ Live demo (20 Apr 2026) of 3-job tailoring run took ~15–30 min. USP of the pro
 
 ## Launch comms
 
-For LinkedIn post: *"3 job applications tailored in under 8 minutes — end-to-end, autonomous. Each CV has 6+ bullets rewritten to match the JD, reviewed by an AI reviewer, and shipped as a pixel-perfect PDF."*
+For portfolio post: *"3 job applications tailored in under 8 minutes — end-to-end, autonomous. Each CV has 6+ bullets rewritten to match the JD, reviewed by an AI reviewer, and shipped as a pixel-perfect PDF."*

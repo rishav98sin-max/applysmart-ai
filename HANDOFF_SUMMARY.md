@@ -9,7 +9,7 @@
 ## 1. Application Overview
 
 ApplySmart AI is an **automated job application system** that:
-- Scrapes job listings from multiple boards (LinkedIn, Indeed, Glassdoor, Jobs.ie, Builtin)
+- Scrapes job listings from multiple boards (Indeed, Glassdoor, Jobs.ie, Builtin)
 - Matches a candidate's CV to each job using LLM scoring + vector retrieval (RAG)
 - Tailors the CV and cover letter for each matched role
 - Generates PDFs via PyMuPDF with in-place edits (preserves original CV layout)
@@ -134,7 +134,7 @@ class AgentState(TypedDict):
 5. **parse_cv_node** → extracts text from PDF using `agents/cv_parser.py`
 6. **extract_cv_style_node** → extracts fonts, margins, colors via `agents/pdf_editor.py`
 7. **planner_node** → builds search bundles (title variants, adjacent roles, locations)
-8. **scrape_jobs_node** → scrapes from LinkedIn → Indeed → Glassdoor → Jobs.ie → Builtin
+8. **scrape_jobs_node** → scrapes from Indeed → Glassdoor → Jobs.ie → Builtin
 9. **match_jobs_node** → for each job:
    - Calls `match_cv_to_job()` from `agents/job_matcher.py`
    - Uses RAG (ChromaDB) if `cv_collection` is set, else full CV
@@ -174,7 +174,7 @@ class AgentState(TypedDict):
 - **Purpose:** Scrape job listings from multiple boards
 - **Input:** Search bundles, preferred source
 - **Output:** List of job dicts (title, company, description, url, location, posted_label)
-- **Boards:** LinkedIn, Indeed, Glassdoor, Jobs.ie, Builtin
+- **Boards:** Indeed, Glassdoor, Jobs.ie, Builtin
 - **Fallback:** If primary board returns < 3 jobs, tries next in sequence
 
 ### 4.4 Job Matcher (`agents/job_matcher.py`)

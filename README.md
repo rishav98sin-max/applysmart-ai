@@ -103,7 +103,7 @@ node.
 | 1 | **Supervisor** | `agents/job_agent.py` | Routes the graph — picks the next worker per turn | Groq | LLM-backed decision; can short-circuit on budget/critical error |
 | 2 | **Pre-flight Validator** | `agents/cv_validator.py` | Blocks incompatible CVs (scanned / password-locked / <500 chars / non-English) | — | Deterministic early-exit saves every downstream LLM call |
 | 3 | **Planner** | `agents/planner.py` | Generates 2-4 keyword bundles from CV + target role | Groq | LLM decides search strategy; not hard-coded |
-| 4 | **Scraper** | `agents/job_scraper.py` | Pulls live JDs from LinkedIn / Indeed / Glassdoor / Builtin / JobsIE | — | Multi-source fan-out with per-board fallback |
+| 4 | **Scraper** | `agents/job_scraper.py` | Pulls live JDs from Indeed / Glassdoor / Builtin / JobsIE | — | Multi-source fan-out with per-board fallback |
 | 5 | **Matcher** | `agents/job_matcher.py` | Scores every JD vs. the CV (0-100) | Groq | Vector retrieval (ChromaDB + MiniLM-L6) fused with LLM judgment |
 | 6 | **CV Tailor** | `agents/cv_tailor.py` | Rewrites CV per JD, preserving original layout | Gemini 2.5 Flash | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
 | 7 | **CV Reviewer** | `agents/reviewer.py` | Grades the tailored CV (0-100) against JD + original CV | Groq | Triggers retry cycles if score < 72 |
@@ -220,7 +220,7 @@ reads from both.
   and cover letters. Falls back to Groq if unavailable or rate-limited.
 - **Rate-limit cap.** Any wait longer than `MAX_RATE_LIMIT_WAIT` aborts the
   run instead of hanging for 10-35 min.
-- **Scrape boards.** LinkedIn scraping is anti-bot-aggressive; Indeed /
+- **Scrape boards.** Job board scraping can be anti-bot-aggressive; Indeed /
   Glassdoor go through `python-jobspy` and can throttle per-IP.
 - **CV formats.** Text-based PDFs only. Scanned PDFs, password-protected
   files, and sub-500-char CVs are rejected by the pre-flight validator
@@ -369,7 +369,7 @@ agents/
   cv_parser.py           # PDF → text
   cv_embeddings.py       # ChromaDB + MiniLM retrieval layer (e3)
   planner.py             # keyword bundles + quality bar
-  job_scraper.py         # LinkedIn / Indeed / Glassdoor / Builtin / JobsIE
+  job_scraper.py         # Indeed / Glassdoor / Builtin / JobsIE
   job_matcher.py         # CV ↔ JD scoring (vector-aware)
   cv_tailor.py           # surgical CV edits (legacy full-text path)
   cv_diff_tailor.py      # diff-based tailor (outline-aware)
