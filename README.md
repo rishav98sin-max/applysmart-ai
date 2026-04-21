@@ -369,7 +369,8 @@ docs/                    # CV compatibility notes
 
 ## License
 
-Private project. All rights reserved unless explicitly stated otherwise.
+Licensed under the **Apache License 2.0** — see [`LICENSE`](./LICENSE).
 
-If you'd like to reuse portions of this codebase, please open an issue or
-reach out via GitHub.
+You are free to use, modify, and distribute this code with attribution.
+The license includes an explicit patent grant and requires modified files
+to carry a notice of change.
