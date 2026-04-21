@@ -323,12 +323,11 @@ def match_cv_to_job(
             chunks = retrieve(cv_collection, job_description, k=24)
             if chunks:
                 candidate = format_chunks_for_prompt(chunks)
-                # If retrieval covers <50% of CV chars, use full CV instead.
-                # This is expected behaviour for short CVs with tiny chunks,
-                # not a bug — downgraded from warning to info.
-                if len(candidate) < len(cv_text) * 0.5:
+                # If retrieval covers <95% of CV chars, use full CV instead.
+                # This ensures skill matching has complete context for accurate results.
+                if len(candidate) < len(cv_text) * 0.95:
                     print(f"   ℹ️  RAG coverage {len(candidate)}/{len(cv_text)} chars "
-                          f"(<50%) — using full CV for stronger context")
+                          f"(<95%) — using full CV for complete skill context")
                     cv_for_prompt = cv_text
                 else:
                     cv_for_prompt = candidate
@@ -384,11 +383,12 @@ COMPANY: {company}
 {cv_block}
 
 IMPORTANT — Skill classification rules:
-- matched_skills: Skills that appear in BOTH the JD and the CV
-- missing_skills: Skills that are EXPLICITLY required by the JD but NOT found in the CV
-- Do NOT mark a skill as "missing" if it's in the CV but not in the JD — that's normal
-- Do NOT mark a skill as "missing" if it's a general term not specifically required by the JD
-- Only mark skills as "missing" when they are clearly required by the JD and completely absent from the CV
+- matched_skills: Skills that appear in BOTH the JD and the CV, OR where the CV has a broader/related term
+- missing_skills: Skills that are EXPLICITLY required by the JD but NOT found in the CV or semantically covered
+- Semantic matching: If CV has "AI", it covers "large language models", "generative AI tools", "machine learning", "prompt design", "agentic AI systems", "multi-agent architecture"
+- Semantic matching: If CV has "product management", it covers "product delivery", "product vision", "roadmap", "stakeholder alignment"
+- Do NOT mark experience requirements (e.g., "5+ years", "team leadership") as "missing skills" — these are not skills
+- Only mark skills as "missing" when they are clearly required by the JD and completely absent from the CV with no semantic equivalent
 
 Respond ONLY with a JSON object (no markdown, no extra text):
 {{
