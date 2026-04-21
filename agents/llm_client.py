@@ -38,7 +38,31 @@ _GROQ_QUOTA: dict = {}
 # display. On Streamlit Cloud the process persists across user sessions, so
 # this is effectively a shared deployment-wide counter until the daily
 # Groq quota rolls over (at which point we detect the reset and zero it).
-_TOKENS_USED_SESSION: int = 0
+# Uses Streamlit session state for persistence across page refreshes.
+def _get_tokens_used_session() -> int:
+    """Get tokens used from session state, defaulting to 0."""
+    try:
+        import streamlit as st
+        return st.session_state.get("_tokens_used_session", 0)
+    except:
+        return 0
+
+def _set_tokens_used_session(value: int) -> None:
+    """Set tokens used in session state."""
+    try:
+        import streamlit as st
+        st.session_state["_tokens_used_session"] = value
+    except:
+        pass
+
+def _increment_tokens_used_session(delta: int) -> None:
+    """Increment tokens used in session state."""
+    try:
+        import streamlit as st
+        current = st.session_state.get("_tokens_used_session", 0)
+        st.session_state["_tokens_used_session"] = current + delta
+    except:
+        pass
 
 # Groq free-tier daily budget per API key. 100K tokens/day matches the
 # free-tier cap on llama-3.3-70b-versatile. Override via env if you're on
@@ -137,7 +161,6 @@ def _capture_quota_from_headers(headers, key_index: int) -> None:
     5K → 95K), the daily window rolled over and we zero the deployment-wide
     counter so the UI reflects the fresh 300K pool.
     """
-    global _TOKENS_USED_SESSION
     try:
         if not headers:
             return
@@ -156,7 +179,7 @@ def _capture_quota_from_headers(headers, key_index: int) -> None:
                 f"   🔄 Groq daily reset detected on key #{key_index + 1} "
                 f"({prev_rem} → {new_rem} tokens) — zeroing usage counter."
             )
-            _TOKENS_USED_SESSION = 0
+            _set_tokens_used_session(0)
 
         # Prefer daily windows (`*-tokens`); Groq returns both per-minute and
         # per-day headers but the day values are what matters for UX.
@@ -200,12 +223,11 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
             # prompt + completion. Never let an accounting error break the
             # real LLM response — hence the broad try/except.
             try:
-                global _TOKENS_USED_SESSION
                 usage = getattr(resp, "usage", None)
                 if usage is not None:
                     total = getattr(usage, "total_tokens", None)
                     if isinstance(total, int) and total > 0:
-                        _TOKENS_USED_SESSION += total
+                        _increment_tokens_used_session(total)
             except Exception:
                 pass
             return (resp.choices[0].message.content or "").strip()
@@ -258,7 +280,7 @@ def get_quota_summary() -> dict:
 
     n_keys         = len(_GROQ_KEYS)
     total_budget   = n_keys * _GROQ_TOKENS_PER_KEY_PER_DAY
-    used           = _TOKENS_USED_SESSION
+    used           = _get_tokens_used_session()
     computed_rem   = max(0, total_budget - used)
 
     # Cross-check with Groq's server-side view — sum of remaining_tokens
@@ -308,8 +330,7 @@ def reset_session_counter() -> None:
     Manually zero the deployment-wide token counter. Useful for test harnesses
     and for an admin 'reset now' button once the Groq daily window rolls over.
     """
-    global _TOKENS_USED_SESSION
-    _TOKENS_USED_SESSION = 0
+    _set_tokens_used_session(0)
 
 
 def chat_quality(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
