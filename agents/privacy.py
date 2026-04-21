@@ -23,6 +23,7 @@ the app register them later; the redactor reads them at trace time.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import re
 from typing import Any, Optional
@@ -39,23 +40,40 @@ _PHONE_RX = re.compile(
 
 
 # ─────────────────────────────────────────────────────────────
-# Session-scoped PII registry.
-# The Streamlit app calls set_session_pii(name, email) whenever the
-# sidebar Full-Name / Email fields change. The anonymizer reads this
-# at trace time so per-user values are redacted too.
-# Module-level state is fine here because each Streamlit session runs
-# in its own process.
+# Session-scoped PII registry — stored in contextvars so every user
+# session on the same process has its own isolated (name, email) pair.
+#
+# Why this changed (v1.1 multi-user safety):
+#   Streamlit Cloud serves ALL users from one Python process. A plain
+#   module-level dict would mean user B overwriting user A's name,
+#   causing A's LangSmith traces to fail to redact A's real name.
+#   That's a privacy-promise breach.
+#
+#   `contextvars.ContextVar` scopes per-thread (Streamlit runs each
+#   session's script in its own thread) AND propagates correctly into
+#   LangChain callback threads via `contextvars.copy_context()` which
+#   LangChain already uses internally. Every session reads its own copy.
 # ─────────────────────────────────────────────────────────────
 
-_SESSION_PII = {"name": "", "email": ""}
+_PII_NAME:  contextvars.ContextVar[str] = contextvars.ContextVar("applysmart_pii_name",  default="")
+_PII_EMAIL: contextvars.ContextVar[str] = contextvars.ContextVar("applysmart_pii_email", default="")
 
 
 def set_session_pii(name: Optional[str] = None, email: Optional[str] = None) -> None:
-    """Register the current user's name/email so the anonymizer masks them."""
+    """
+    Register the current user's name/email so the anonymizer masks them.
+    Writes to per-session contextvars — never leaks across users on the
+    same deployment.
+    """
     if name is not None:
-        _SESSION_PII["name"] = (name or "").strip()
+        _PII_NAME.set((name or "").strip())
     if email is not None:
-        _SESSION_PII["email"] = (email or "").strip()
+        _PII_EMAIL.set((email or "").strip())
+
+
+def get_session_pii() -> dict:
+    """Test / debug hook. Returns the CURRENT session's PII (not any other)."""
+    return {"name": _PII_NAME.get(""), "email": _PII_EMAIL.get("")}
 
 
 def _redact_str(text: str, candidate_name: str = "", user_email: str = "") -> str:
@@ -136,8 +154,10 @@ def redact_for_tracing(data: Any, _depth: int = 0) -> Any:
     if _depth > _MAX_REDACT_DEPTH:
         return "[REDACTED_MAX_DEPTH]"
 
-    name = _SESSION_PII.get("name", "")
-    email = _SESSION_PII.get("email", "")
+    # Read the CURRENT session's PII. On Streamlit Cloud each user-session
+    # thread sees only its own name/email — no cross-user leakage.
+    name  = _PII_NAME.get("")
+    email = _PII_EMAIL.get("")
 
     if isinstance(data, str):
         return _redact_str(data, candidate_name=name, user_email=email)

@@ -783,102 +783,26 @@ with st.sidebar:
                 "'Send now' button on each matched role.",
     )
 
-    # ─── Daily budget panel ─────────────────────────────────────────
-    # Live Groq quota read from the x-ratelimit-* response headers on
-    # every LLM call (see agents.llm_client.get_quota_summary). Shows
-    # tokens remaining + an estimate of how many more full runs fit
-    # into today's daily window. Aggregates across all rotated keys.
-    st.markdown('<div class="sidebar-h">Daily Budget</div>', unsafe_allow_html=True)
-    try:
-        from agents.llm_client import get_quota_summary
-        _q = get_quota_summary()
-    except Exception:
-        _q = {"ready": False}
-
-    if not _q.get("ready"):
-        st.caption(
-            "💡 No Groq API keys configured — daily-budget meter unavailable."
-        )
-    else:
-        _total    = _q.get("total_budget", 0)
-        _used     = _q.get("used", 0)
-        _rem      = _q.get("remaining", 0)
-        _pct_used = _q.get("pct_used", 0)
-        _runs     = _q.get("est_runs_left", 0)
-        _per_key  = _q.get("tokens_per_key", 0)
-        _keys_t   = _q.get("keys_total", 0)
-        _per_run  = _q.get("tokens_per_run", 0)
-        _reset    = _q.get("reset_tokens", "")
-
-        def _fmt_tokens(n: int) -> str:
-            if n >= 1_000_000:
-                return f"{n/1_000_000:.1f}M"
-            if n >= 1_000:
-                return f"{n/1_000:.0f}K"
-            return str(n)
-
-        # Two-metric display: how much of the pool is left + how many more
-        # full runs that buys us. Numbers are deployment-wide, not per-user.
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric(
-                "Tokens left today",
-                _fmt_tokens(_rem),
-                delta=f"of {_fmt_tokens(_total)}",
-                delta_color="off",
-            )
-        with col2:
-            st.metric(
-                "Runs left (est.)",
-                f"~{max(0, _runs)}",
-                delta=f"{_keys_t} keys × {_fmt_tokens(_per_key)}",
-                delta_color="off",
-            )
-
-        # Live progress of today's pool usage, 0-100%.
-        st.progress(
-            min(1.0, _pct_used / 100.0) if _pct_used else 0.0,
-            text=f"Used {_fmt_tokens(_used)} ({_pct_used}%) · ~{_fmt_tokens(_per_run)} per run",
-        )
-
-        pct_remaining = 100 - _pct_used
-        if _total and pct_remaining < 20:
-            st.warning(
-                f"Only ~{pct_remaining}% of today's Groq budget left. "
-                f"Quota resets every 24h" +
-                (f" ({_reset})" if _reset else "") +
-                " — consider waiting before the next large run.",
-                icon="⚠️",
-            )
-        elif _reset:
-            st.caption(f"Resets in {_reset} (Groq daily window)")
-
-    st.markdown('<div class="sidebar-h">Privacy</div>', unsafe_allow_html=True)
-    trace_opt_in = st.toggle(
-        "Allow anonymized tracing",
-        value=bool(st.session_state.get("trace_consent", False)),
-        help="When enabled, LangSmith tracing is turned on for debugging. "
-             "Tracing stays off by default for this session.",
-    )
-    if trace_opt_in != bool(st.session_state.get("trace_consent", False)):
-        st.session_state["trace_consent"] = trace_opt_in
-        apply_tracing_consent(trace_opt_in)
-        track_event("privacy_tracing_consent_updated", _ANON_DISTINCT_ID, {"enabled": bool(trace_opt_in), "source": "sidebar_toggle"})
-        st.toast(
-            "Tracing enabled for this session." if trace_opt_in else "Tracing disabled for this session.",
-            icon="✅" if trace_opt_in else "🛡️",
-        )
-
-    if st.button("Delete my session data", use_container_width=True):
-        track_event("session_data_deleted", _ANON_DISTINCT_ID, {"had_trace_consent": bool(st.session_state.get("trace_consent"))})
-        cleanup_session(_SESSION_ID)
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        st.success("Session data deleted.")
-        st.rerun()
-
+    # ─── Primary CTA: Run button (pinned above the fold) ───────────────
+    # Moved here from below the collapsed sections so it's always visible
+    # without scrolling. Per-session run count hint sets expectations.
     st.markdown(" ")
-    run_button = st.button("Run agent", use_container_width=True, type="primary")
+    _max_runs_hint = int(secret_or_env("APPLYSMART_MAX_RUNS_PER_SESSION", "3") or "3")
+    _runs_used_hint = int(st.session_state.get("_runs_used", 0))
+    _runs_left_hint = max(0, _max_runs_hint - _runs_used_hint)
+    _at_cap = _max_runs_hint > 0 and _runs_used_hint >= _max_runs_hint
+
+    run_button = st.button(
+        "Run agent" if not _at_cap else "Runs exhausted for this session",
+        use_container_width=True,
+        type="primary",
+        disabled=_at_cap,
+    )
+    if _max_runs_hint > 0:
+        st.caption(
+            f"{_runs_used_hint}/{_max_runs_hint} runs used this session"
+            + (" — cap reached, refresh tomorrow" if _at_cap else "")
+        )
 
     st.caption(
         "Your CV is processed locally. Nothing leaves your machine except "
@@ -896,6 +820,102 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
+
+    # ─── Daily budget panel ─────────────────────────────────────────
+    # Live Groq quota read from the x-ratelimit-* response headers on
+    # every LLM call (see agents.llm_client.get_quota_summary). Shows
+    # tokens remaining + an estimate of how many more full runs fit
+    # into today's daily window. Aggregates across all rotated keys.
+    # Collapsed by default to reduce sidebar scroll height.
+    with st.expander("Daily Budget", expanded=False):
+        try:
+            from agents.llm_client import get_quota_summary
+            _q = get_quota_summary()
+        except Exception:
+            _q = {"ready": False}
+
+        if not _q.get("ready"):
+            st.caption(
+                "💡 No Groq API keys configured — daily-budget meter unavailable."
+            )
+        else:
+            _total    = _q.get("total_budget", 0)
+            _used     = _q.get("used", 0)
+            _rem      = _q.get("remaining", 0)
+            _pct_used = _q.get("pct_used", 0)
+            _runs     = _q.get("est_runs_left", 0)
+            _per_key  = _q.get("tokens_per_key", 0)
+            _keys_t   = _q.get("keys_total", 0)
+            _per_run  = _q.get("tokens_per_run", 0)
+            _reset    = _q.get("reset_tokens", "")
+
+            def _fmt_tokens(n: int) -> str:
+                if n >= 1_000_000:
+                    return f"{n/1_000_000:.1f}M"
+                if n >= 1_000:
+                    return f"{n/1_000:.0f}K"
+                return str(n)
+
+            # Two-metric display: how much of the pool is left + how many more
+            # full runs that buys us. Numbers are deployment-wide, not per-user.
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(
+                    "Tokens left today",
+                    _fmt_tokens(_rem),
+                    delta=f"of {_fmt_tokens(_total)}",
+                    delta_color="off",
+                )
+            with col2:
+                st.metric(
+                    "Runs left (est.)",
+                    f"~{max(0, _runs)}",
+                    delta=f"{_keys_t} keys × {_fmt_tokens(_per_key)}",
+                    delta_color="off",
+                )
+
+            # Live progress of today's pool usage, 0-100%.
+            st.progress(
+                min(1.0, _pct_used / 100.0) if _pct_used else 0.0,
+                text=f"{_pct_used}% of daily pool used",
+            )
+
+            pct_remaining = 100 - _pct_used
+            if _total and pct_remaining < 20:
+                st.warning(
+                    f"Only ~{pct_remaining}% of today's Groq budget left. "
+                    f"Quota resets every 24h" +
+                    (f" ({_reset})" if _reset else "") +
+                    " — consider waiting before the next large run.",
+                    icon="⚠️",
+                )
+            elif _reset:
+                st.caption(f"Resets in {_reset} (Groq daily window)")
+
+    st.markdown('<div class="sidebar-h">Privacy</div>', unsafe_allow_html=True)
+    with st.expander("Privacy & data", expanded=False):
+        trace_opt_in = st.toggle(
+            "Allow anonymized tracing",
+            value=bool(st.session_state.get("trace_consent", False)),
+            help="When enabled, LangSmith tracing is turned on for debugging. "
+                 "Tracing stays off by default for this session.",
+        )
+        if trace_opt_in != bool(st.session_state.get("trace_consent", False)):
+            st.session_state["trace_consent"] = trace_opt_in
+            apply_tracing_consent(trace_opt_in)
+            track_event("privacy_tracing_consent_updated", _ANON_DISTINCT_ID, {"enabled": bool(trace_opt_in), "source": "sidebar_toggle"})
+            st.toast(
+                "Tracing enabled for this session." if trace_opt_in else "Tracing disabled for this session.",
+                icon="✅" if trace_opt_in else "🛡️",
+            )
+
+        if st.button("Delete my session data", use_container_width=True):
+            track_event("session_data_deleted", _ANON_DISTINCT_ID, {"had_trace_consent": bool(st.session_state.get("trace_consent"))})
+            cleanup_session(_SESSION_ID)
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.success("Session data deleted.")
+            st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -951,6 +971,34 @@ if run_button:
         for e in errors:
             st.error(e)
         st.stop()
+
+    # ── Per-session rate limit ──────────────────────────────────────────
+    # Prevent a single user / bot from draining the deployment-wide Groq
+    # pool in one sitting. Counted in st.session_state (per browser tab,
+    # not per user), which is the simplest unit of abuse we can see without
+    # auth. Users hitting this are NOT angry — they've had 3 free tries;
+    # the soft-stop preserves the service for everyone else.
+    # Bypass with APPLYSMART_MAX_RUNS_PER_SESSION=0 (unlimited) for admins.
+    _MAX_RUNS_PER_SESSION = int(
+        secret_or_env("APPLYSMART_MAX_RUNS_PER_SESSION", "3") or "3"
+    )
+    _runs_used_this_session = int(st.session_state.get("_runs_used", 0))
+    if _MAX_RUNS_PER_SESSION > 0 and _runs_used_this_session >= _MAX_RUNS_PER_SESSION:
+        st.error(
+            f"**You've used all {_MAX_RUNS_PER_SESSION} free runs for this "
+            f"browser session.**\n\n"
+            f"This keeps the shared Groq quota available to other users. "
+            f"Refresh the page tomorrow (or get in touch for higher-volume "
+            f"access) to continue tailoring."
+        )
+        # Keep the post-run render visible if the user has a completed run.
+        if "_last_final_state" not in st.session_state:
+            st.stop()
+        else:
+            # Halt the fresh-run block but let the previous results keep rendering.
+            st.stop()
+    # Increment now — even failed runs count, so flood/retry loops can't bypass.
+    st.session_state["_runs_used"] = _runs_used_this_session + 1
 
     _user_distinct_id = distinct_id(_SESSION_ID, user_email)
     _run_started_at = datetime.utcnow()
