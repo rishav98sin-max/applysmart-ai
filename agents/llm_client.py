@@ -323,26 +323,32 @@ def chat_fast(prompt: str, max_tokens: int = 500, temperature: float = 0.1) -> s
 
 
 def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
-    """Call Gemini 2.5 Flash API for writing tasks."""
+    """Call Gemini 2.5 Flash API for writing tasks. Falls back to Groq if unavailable."""
     if genai is None:
-        raise RuntimeError("google.generativeai not installed")
+        print("   ⚠️  Gemini not available, falling back to Groq")
+        return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
     
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not found in environment")
+        print("   ⚠️  GEMINI_API_KEY not found, falling back to Groq")
+        return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
     
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
-    
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.types.GenerationConfig(
-            max_output_tokens=max_tokens,
-            temperature=temperature,
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+        
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=max_tokens,
+                temperature=temperature,
+            )
         )
-    )
-    
-    return response.text.strip() if response.text else ""
+        
+        return response.text.strip() if response.text else ""
+    except Exception as e:
+        print(f"   ⚠️  Gemini call failed ({type(e).__name__}: {e}), falling back to Groq")
+        return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
 
 
 def chat_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
