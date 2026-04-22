@@ -29,6 +29,15 @@ _GROQ_KEYS: list = []
 _GROQ_KEY_INDEX: int = 0
 _GROQ_CLIENTS: dict = {}  # key → Groq client instance
 
+# ── Gemini key rotation pool ────────────────────────────────────────────────
+# Same idea as Groq. Free tier on gemini-2.5-flash is tight (req/day limit),
+# so multiplying 3 keys triples the daily envelope for CV tailoring + cover
+# letter work. On quota / 429 errors we rotate, and fall back to Groq only
+# when every key is exhausted.
+_GEMINI_KEYS: list = []
+_GEMINI_KEY_INDEX: int = 0
+_GEMINI_CONFIGURED_KEY: Optional[str] = None  # last key passed to genai.configure
+
 # Per-key quota snapshot captured from Groq's x-ratelimit-* response headers
 # after every successful call. Kept mostly for the reset_tokens timestamp —
 # the primary "remaining" display is driven by file-based quota cache below.
@@ -122,6 +131,65 @@ def _load_groq_keys() -> list:
         if k and k.startswith("gsk_") and k not in keys:
             keys.append(k)
     return keys
+
+
+def _load_gemini_keys() -> list:
+    """Load all available Gemini keys from env/secrets at startup."""
+    from agents.runtime import secret_or_env
+    keys = []
+    for var in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"):
+        k = secret_or_env(var)
+        if k and k.startswith("AIza") and k not in keys:
+            keys.append(k)
+    return keys
+
+
+def _gemini_configure_current() -> Optional[str]:
+    """
+    Ensure `genai` is configured with the currently-selected key. Returns
+    the active key (or None if no keys are configured). Reconfigures lazily
+    only when the active key changes to avoid redundant SDK calls.
+    """
+    global _GEMINI_KEYS, _GEMINI_KEY_INDEX, _GEMINI_CONFIGURED_KEY
+    if not _GEMINI_KEYS:
+        _GEMINI_KEYS = _load_gemini_keys()
+    if not _GEMINI_KEYS:
+        return None
+    key = _GEMINI_KEYS[_GEMINI_KEY_INDEX % len(_GEMINI_KEYS)]
+    if key != _GEMINI_CONFIGURED_KEY:
+        genai.configure(api_key=key)
+        _GEMINI_CONFIGURED_KEY = key
+    return key
+
+
+def _rotate_gemini_key() -> bool:
+    """Rotate to the next Gemini key. Returns False when pool is exhausted."""
+    global _GEMINI_KEY_INDEX, _GEMINI_KEYS
+    try:
+        from agents.analytics import track_event
+        track_event(
+            "llm_rate_limit_hit",
+            "system_infra",
+            {
+                "provider": "gemini",
+                "exhausted_key_index": _GEMINI_KEY_INDEX + 1,
+                "total_keys_configured": len(_GEMINI_KEYS),
+            },
+        )
+    except Exception:
+        pass
+    if not _GEMINI_KEYS:
+        _GEMINI_KEYS = _load_gemini_keys()
+    _GEMINI_KEY_INDEX += 1
+    if _GEMINI_KEY_INDEX < len(_GEMINI_KEYS):
+        print(
+            f"   🔄 Gemini key rotated → key #{_GEMINI_KEY_INDEX + 1} "
+            f"of {len(_GEMINI_KEYS)}"
+        )
+        return True
+    print(f"   ⚠️  All {len(_GEMINI_KEYS)} Gemini key(s) exhausted — "
+          "falling back to Groq")
+    return False
 
 
 def _groq_client(key: str = None):
@@ -387,45 +455,69 @@ def chat_fast(prompt: str, max_tokens: int = 500, temperature: float = 0.1) -> s
 
 
 def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
-    """Call Gemini 2.5 Flash API for writing tasks. Falls back to Groq if unavailable."""
+    """
+    Call Gemini via the active key in the rotation pool. On rate-limit /
+    auth errors, rotate to the next key and retry. Falls back to Groq only
+    after every configured Gemini key has been exhausted.
+    """
+    global _GEMINI_KEYS
     if genai is None:
-        print("   ⚠️  Gemini not available, falling back to Groq")
+        print("   ⚠️  Gemini SDK not installed, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
-    
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        print("   ⚠️  GEMINI_API_KEY not found, falling back to Groq")
+
+    if not _GEMINI_KEYS:
+        _GEMINI_KEYS = _load_gemini_keys()
+    if not _GEMINI_KEYS:
+        print("   ⚠️  No GEMINI_API_KEY* found, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
-    
-    # Safety check: warn if key doesn't look like a valid Google AI Studio key
-    if not api_key.startswith("AIza"):
-        print(f"   ⚠️  Gemini key format looks invalid (should start with 'AIza')")
-    
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
-        
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=max_tokens,
-                temperature=temperature,
-            )
-        )
-        
-        # Track tokens used for quota calculations
+
+    # Up to (num_keys) rotation attempts — one real call per key.
+    attempts = len(_GEMINI_KEYS)
+    last_err: Optional[Exception] = None
+    for _ in range(attempts):
+        active = _gemini_configure_current()
+        if not active:
+            break
         try:
-            if hasattr(response, 'usage_metadata'):
-                total_tokens = getattr(response.usage_metadata, 'total_token_count', 0)
-                if isinstance(total_tokens, int) and total_tokens > 0:
-                    _increment_gemini_tokens(total_tokens)
-        except Exception:
-            pass
-        
-        return response.text.strip() if response.text else ""
-    except Exception as e:
-        print(f"   ⚠️  Gemini call failed ({type(e).__name__}: {e}), falling back to Groq")
-        return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=temperature,
+                ),
+            )
+            try:
+                if hasattr(response, "usage_metadata"):
+                    total_tokens = getattr(
+                        response.usage_metadata, "total_token_count", 0
+                    )
+                    if isinstance(total_tokens, int) and total_tokens > 0:
+                        _increment_gemini_tokens(total_tokens)
+            except Exception:
+                pass
+            return response.text.strip() if response.text else ""
+        except Exception as e:
+            last_err = e
+            if _is_rate_limit_error(e) or _is_auth_error(e):
+                if _rotate_gemini_key():
+                    continue
+                break  # pool exhausted → break out to Groq fallback
+            # Non-rate-limit failure — don't burn all keys on the same bug.
+            print(
+                f"   ⚠️  Gemini call failed ({type(e).__name__}: {e}), "
+                f"falling back to Groq"
+            )
+            return _call_groq(
+                prompt, max_tokens=max_tokens, temperature=temperature
+            )
+
+    if last_err is not None:
+        print(
+            f"   ⚠️  All Gemini keys exhausted ({type(last_err).__name__}: "
+            f"{last_err}) — falling back to Groq"
+        )
+    return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
 
 
 def chat_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
