@@ -990,7 +990,11 @@ if run_button:
     # Increment now — even failed runs count, so flood/retry loops can't bypass.
     st.session_state["_runs_used"] = _runs_used_this_session + 1
 
-    _user_distinct_id = distinct_id(_SESSION_ID, user_email)
+    # Use the same distinct_id that `cv_uploaded` / `session_opened` used so
+    # Mixpanel funnels (cv_uploaded → run_started → run_completed → send_completed
+    # → job_marked_applied) all attribute to ONE user. Switching mid-run to an
+    # email-hash creates a second phantom user and breaks the funnel.
+    _user_distinct_id = _ANON_DISTINCT_ID
     _run_started_at = datetime.utcnow()
     track_event(
         "run_started",
@@ -1401,7 +1405,7 @@ def _render_match_card(job: Dict[str, Any]) -> None:
                 if cv_clicked:
                     track_event(
                         "cv_downloaded",
-                        distinct_id(_SESSION_ID, user_email),
+                        _ANON_DISTINCT_ID,
                         {
                             "company": company,
                             "source": source,
@@ -1419,7 +1423,7 @@ def _render_match_card(job: Dict[str, Any]) -> None:
                 if cl_clicked:
                     track_event(
                         "cover_letter_downloaded",
-                        distinct_id(_SESSION_ID, user_email),
+                        _ANON_DISTINCT_ID,
                         {
                             "company": company,
                             "source": source,
@@ -1479,7 +1483,7 @@ def _render_match_card(job: Dict[str, Any]) -> None:
                 st.toast(f"Marked applied: {title} at {company}", icon="✅")
                 track_event(
                     "job_marked_applied",
-                    distinct_id(_SESSION_ID, user_email),
+                    _ANON_DISTINCT_ID,
                     {"company": company, "source": source, "match_score": score},
                 )
             else:
@@ -1487,7 +1491,7 @@ def _render_match_card(job: Dict[str, Any]) -> None:
                 st.toast(f"Un-marked: {title} at {company}", icon="🔄")
                 track_event(
                     "job_unmarked_applied",
-                    distinct_id(_SESSION_ID, user_email),
+                    _ANON_DISTINCT_ID,
                     {"company": company, "source": source, "match_score": score},
                 )
 
@@ -1550,7 +1554,7 @@ with tab_match:
                 if st.button(label, key="send_all_btn", type="primary", use_container_width=True):
                     track_event(
                         "send_attempted",
-                        distinct_id(_SESSION_ID, user_email),
+                        _ANON_DISTINCT_ID,
                         {"mode": "bulk", "jobs_count": len(sendable)},
                     )
                     from agents.email_agent import send_email
@@ -1616,7 +1620,7 @@ with tab_match:
                         st.toast("No emails sent — see errors above", icon="❌")
                     track_event(
                         "send_completed",
-                        distinct_id(_SESSION_ID, user_email),
+                        _ANON_DISTINCT_ID,
                         {
                             "mode": "bulk",
                             "attempted_count": len(sendable),
