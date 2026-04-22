@@ -128,6 +128,52 @@ def _strip_accidental_salutation_signoff(body: str, candidate_name: str) -> str:
     return t.strip()
 
 
+# ─────────────────────────────────────────────────────────────
+# Post-generation fabrication guard
+# ─────────────────────────────────────────────────────────────
+
+_CAPTERM_RX = re.compile(
+    r"\b(?:[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+"   # CamelCase  (LoadRunner, JMeter)
+    r"|[A-Z]{2,}(?:\+\+|#)?"                     # Acronyms   (AWS, C++, C#)
+    r"|[A-Z][A-Za-z]*(?:\.[A-Za-z]+)+)"          # Dotted     (Node.js, Vue.js)
+)
+
+# Generic capitalized words that appear in every CV/cover letter and must not
+# be flagged as fabrications (company-agnostic; tool-agnostic).
+_CL_STOPWORDS = {
+    "I", "The", "A", "An", "And", "Or", "But", "My", "We", "Our", "You", "Your",
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    "January", "February", "March", "April", "May", "June", "July", "August",
+    "September", "October", "November", "December",
+    "Dear", "Hiring", "Manager", "Regards", "Sincerely",
+    "MSc", "BSc", "MBA", "PhD", "BA", "MA",
+}
+
+
+def _foreign_terms_in_letter(body: str, cv_text: str, company: str, job_title: str) -> list:
+    """
+    Find capitalized/acronym tokens in `body` that are NOT present in the CV
+    text, the company name, or the job title. These usually indicate tools
+    or frameworks the LLM invented from the JD. Returns a deduped list.
+    """
+    if not body:
+        return []
+    haystack = " ".join([cv_text or "", company or "", job_title or ""]).lower()
+    foreign: list = []
+    seen: set = set()
+    for m in _CAPTERM_RX.finditer(body):
+        term = m.group(0).strip()
+        if term in _CL_STOPWORDS:
+            continue
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if key not in haystack:
+            foreign.append(term)
+    return foreign
+
+
 _TRUNCATION_TRAILERS = (
     " and", " or", " but", " with", " for", " to", " of", " in", " by",
     " that", " which", " while", " when", " where", " as", " a", " an", " the",
@@ -224,6 +270,30 @@ def generate_cover_letter(
                 )
                 time.sleep(2)
                 continue
+
+            # ── Fabrication guard ─────────────────────────────
+            # Flag capitalized/acronym tokens not present in the CV. The
+            # threshold (>=2) tolerates a single legitimate proper noun
+            # (e.g. the company's product line) while still catching
+            # JD-keyword invention like "Python, JMeter, Selenium".
+            foreign = _foreign_terms_in_letter(raw, cv_text, company, job_title)
+            if len(foreign) >= 2:
+                print(
+                    f"   ⚠️  Cover letter introduced CV-foreign terms {foreign!r} "
+                    f"on attempt {attempt + 1} — retrying with stricter prompt"
+                )
+                if attempt < retries - 1:
+                    # Tighten prompt on next pass.
+                    prompt = (
+                        prompt
+                        + f"\n\nRETRY NOTE: Your previous draft mentioned "
+                          f"{', '.join(foreign)} which do NOT appear in the CV. "
+                          f"Rewrite using ONLY terms literally present in the CV."
+                    )
+                    time.sleep(2)
+                    continue
+                # Last attempt still fabricated — fall through to placeholder.
+                break
 
             return finalize_cover_letter(raw, candidate_name)
 

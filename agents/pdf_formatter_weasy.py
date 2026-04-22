@@ -207,6 +207,10 @@ def _parse_cv(cv_text: str) -> Dict[str, Any]:
     # Drop a synthetic Summary "section" wrapper — template handles summary separately.
     sections = [s for s in sections if s["kind"] != "summary"]
 
+    # ── Enforce canonical ATS order: Experience → Education → Skills → others.
+    _ORDER = {"experience": 0, "projects": 1, "education": 2, "skills": 3, "certifications": 4}
+    sections.sort(key=lambda s: _ORDER.get(s.get("kind", ""), 99))
+
     return {
         "candidate_name": candidate_name,
         "contact_bits":   contact_bits,

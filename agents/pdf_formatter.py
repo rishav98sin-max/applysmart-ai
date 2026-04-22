@@ -604,6 +604,15 @@ def generate_cv_pdf_styled(
     styles, primary, _ = _build_styles(style_profile)
     story: List = []
     sections = _parse_cv_sections(cv_text)
+
+    # Enforce canonical ATS order: header → summary → experience → projects
+    # → education → skills → certifications → others. "header" always first.
+    _ORDER = {
+        "header": 0, "summary": 1, "experience": 2, "projects": 3,
+        "education": 4, "skills": 5, "certifications": 6,
+    }
+    sections = sorted(sections, key=lambda s: _ORDER.get(s[0], 99))
+
     fb = style_profile.get("font_body", "Helvetica")
     fs = float(style_profile.get("font_size_body", 10))
     fh = style_profile.get("font_header", style_profile.get("font_body_bold", "Helvetica-Bold"))
