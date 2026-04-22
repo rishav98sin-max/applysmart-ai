@@ -102,6 +102,42 @@ def _strip_accidental_salutation_signoff(body: str, candidate_name: str) -> str:
     return t.strip()
 
 
+_TRUNCATION_TRAILERS = (
+    " and", " or", " but", " with", " for", " to", " of", " in", " by",
+    " that", " which", " while", " when", " where", " as", " a", " an", " the",
+    " from", " on", " into",
+)
+
+
+def _cover_letter_is_complete(body: str) -> bool:
+    """
+    Return False when the body looks truncated — too short, ends mid-word,
+    or trails off on a connective word. These letters would otherwise ship
+    as a 2-line stub like the AIB case in the April 22 run.
+    """
+    if not body:
+        return False
+    stripped = body.strip()
+    if len(stripped) < 500:
+        return False  # <~80 words — always too short for a 340-400 word letter
+
+    word_count = len(stripped.split())
+    if word_count < 140:
+        return False
+
+    # Last non-whitespace char should be sentence-ending punctuation.
+    if stripped[-1] not in ".!?\"'":
+        return False
+
+    # Reject endings that trail off on connectives (e.g. "... customers and").
+    lower = stripped.lower()
+    for trailer in _TRUNCATION_TRAILERS:
+        if lower.endswith(trailer) or lower.endswith(trailer + "."):
+            return False
+
+    return True
+
+
 def _parse_retry_seconds(error_message: str) -> float:
     match = re.search(r"Please try again in (\d+)m([\d.]+)s", str(error_message))
     if match:
@@ -141,15 +177,26 @@ def generate_cover_letter(
         safety_preamble = preamble,
     )
 
+    token_budgets = [900, 1200, 1500]
+
     for attempt in range(retries):
         try:
             track_llm_call(agent="cover_letter")
 
-            raw = chat_gemini(prompt, max_tokens=600, temperature=0.4)
+            budget = token_budgets[min(attempt, len(token_budgets) - 1)]
+            raw = chat_gemini(prompt, max_tokens=budget, temperature=0.4)
 
             if not raw:
                 print(f"   ⚠️  Cover letter empty on attempt {attempt + 1} — retrying...")
                 time.sleep(4)
+                continue
+
+            if not _cover_letter_is_complete(raw):
+                print(
+                    f"   ⚠️  Cover letter looks truncated on attempt {attempt + 1} "
+                    f"(len={len(raw)}, ends={raw[-40:]!r}) — retrying with larger budget"
+                )
+                time.sleep(2)
                 continue
 
             return finalize_cover_letter(raw, candidate_name)

@@ -107,9 +107,23 @@ RULES (strict):
    The CURRENT SUMMARY is shown above with an exact word count. Your rewrite
    MUST be between 90% and 115% of that count — measure as you write. A short
    summary leaves an ugly white gap in the PDF because the layout rect is
-   sized for the original. Reference ONLY facts present in the CV. Naturally
-   mirror keywords from the job description. Tone: confident, specific, no
-   buzzwords ("dynamic", "passionate", "results-driven", etc.).
+   sized for the original.
+
+   HARD FABRICATION BAN (applies to the SUMMARY specifically):
+   - Reference ONLY facts, skills, tools, frameworks, certifications,
+     regulations, domains, and methodologies that are LITERALLY present
+     elsewhere in the CV outline shown above.
+   - You MUST NOT add JD-only skills to the summary. Example: if the JD
+     mentions "US GAAP", "IFRS", "SOX", "Python", etc. but these words do
+     NOT appear anywhere in the candidate's CV, you are FORBIDDEN from
+     mentioning them — even as "experience in" or "familiar with".
+   - If you cannot write a strong summary without the JD's buzzwords, keep
+     the ORIGINAL summary verbatim (set summary to the exact original).
+   - Re-ordering existing CV skills/phrases is encouraged. Inventing new
+     ones is a critical failure.
+
+   Tone: confident, specific, no buzzwords ("dynamic", "passionate",
+   "results-driven", etc.).
 
 2. bullets:
    For each role, return a list of bullet objects.
@@ -226,6 +240,74 @@ def _call_llm(prompt: str, max_tokens: int = 1100, retries: int = 3) -> str:
 # ─────────────────────────────────────────────────────────────
 
 _NUMBER_RX = re.compile(r"\d[\d.,]*\s*%?|\d+K\+?|\d+M\+?|\d+\+", re.I)
+
+# Capitalized / acronym term pattern used by the summary-fabrication guard.
+# Matches multi-word proper nouns ("US GAAP", "International Financial"),
+# standalone acronyms (IFRS, SOX, GAAP), and CamelCase tokens (LangGraph).
+_CAPTERM_RX = re.compile(
+    r"\b(?:[A-Z]{2,}(?:[\/\-&][A-Z0-9]+)*|"                   # ACRONYM, SOX, AI/ML
+    r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}|"                      # Title Case 1-4 words
+    r"[A-Z][a-z]+[A-Z][A-Za-z]+)\b"                            # CamelCase
+)
+
+# Ignore very common Title-Case words that appear in many CVs so they don't
+# falsely trigger the fabrication guard (months, generic terms, etc.).
+_CAPTERM_STOPWORDS = {
+    "The", "A", "An", "And", "Or", "But", "Of", "In", "On", "At", "To", "For", "With",
+    "January", "February", "March", "April", "May", "June", "July", "August",
+    "September", "October", "November", "December",
+    "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
+    "I", "My", "Me", "We", "Our", "Us", "They", "You",
+    "Responsible", "Experienced", "Skilled", "Proven", "Strong",
+    "Professional", "Summary", "Experience", "Education", "Skills",
+}
+
+
+def _cv_vocabulary(outline: Dict[str, Any]) -> set:
+    """
+    Build a lowercased token-and-bigram vocabulary from everything in the
+    outline (summary, bullets, skills, role headers). Used to decide whether
+    a new summary introduced terms not present in the CV.
+    """
+    parts: List[str] = []
+    parts.append(outline.get("summary") or "")
+    for r in outline.get("roles", []) or []:
+        parts.append(r.get("header") or "")
+        for b in r.get("bullets") or []:
+            parts.append(b or "")
+    skills = outline.get("skills")
+    if isinstance(skills, list):
+        parts.extend(s for s in skills if isinstance(s, str))
+    elif isinstance(skills, str):
+        parts.append(skills)
+    text = " ".join(parts).lower()
+    # Also strip common separators for robust membership checks.
+    return {text}  # return as single-element set; callers use 'in' on the text
+
+
+def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
+    """
+    Return a list of capitalized/acronym phrases that appear in `summary`
+    but NOT in any of the strings in `cv_text_set`. Stopwords are ignored.
+    """
+    if not summary:
+        return []
+    cv_text = next(iter(cv_text_set), "") if cv_text_set else ""
+    if not cv_text:
+        return []
+    foreign: List[str] = []
+    seen: set = set()
+    for m in _CAPTERM_RX.finditer(summary):
+        term = m.group(0).strip()
+        if term in _CAPTERM_STOPWORDS:
+            continue
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if key not in cv_text:
+            foreign.append(term)
+    return foreign
 
 _MIN_BULLETS_PER_ROLE = 2
 _REWRITE_LEN_MIN_RATIO = 0.5   # rewrite must be at least 50% of original length
@@ -495,6 +577,21 @@ def tailor_cv_diff(
     raw_text = _call_llm(_render_prompt())
     raw_json = _extract_json(raw_text)
     diff     = _sanitise_diff(raw_json, outline)
+
+    # ── Summary fabrication guard ────────────────────────────────────
+    # Reject summaries that introduce proper nouns / skill terms absent
+    # from the original CV text. Common failure: LLM adds JD-only skills
+    # like "US GAAP", "IFRS", "SOX" etc. to the summary.
+    new_sum = (diff.get("summary") or "").strip()
+    if new_sum and orig_summary:
+        cv_vocab = _cv_vocabulary(outline)
+        foreign  = _foreign_capitalized_terms(new_sum, cv_vocab)
+        if foreign:
+            print(
+                f"   ⚠️  summary introduced CV-foreign terms {foreign!r} — "
+                f"reverting to original summary to avoid fabrication."
+            )
+            diff["summary"] = orig_summary
 
     # ── Length-enforcement retry ─────────────────────────────────────
     new_words = len((diff.get("summary") or "").split())

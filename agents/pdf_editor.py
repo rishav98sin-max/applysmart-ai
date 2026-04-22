@@ -254,15 +254,26 @@ _BULLET_CHARS = (
 _BULLET_START_RX = re.compile(rf"^\s*[{re.escape(_BULLET_CHARS)}]")
 _BULLET_STRIP_RX = re.compile(rf"^[{re.escape(_BULLET_CHARS)}]+\s*")
 
+# Extraction-failure marker: when PyMuPDF can't decode a bullet glyph from
+# a custom symbol font it often returns '?' or U+FFFD followed by 2+ spaces.
+# Strip that pattern so it doesn't end up as literal "?   " in the output.
+_BAD_BULLET_PREFIX_RX = re.compile(r"^\s*[?\uFFFD]+(?=\s{2,})\s+")
+
 
 def _is_bullet(text: str) -> bool:
     t = text or ""
-    return bool(_BULLET_START_RX.match(t))
+    if _BULLET_START_RX.match(t):
+        return True
+    # Fallback: extraction-failed bullet glyph rendered as "?   " or "\uFFFD   "
+    return bool(_BAD_BULLET_PREFIX_RX.match(t))
 
 
 def _strip_bullet(text: str) -> str:
     """Remove leading bullet character(s) and following whitespace."""
-    return _BULLET_STRIP_RX.sub("", (text or "").lstrip()).strip()
+    t = (text or "").lstrip()
+    # First strip any mis-extracted bullet marker ("?   " / "\uFFFD   ").
+    t = _BAD_BULLET_PREFIX_RX.sub("", t)
+    return _BULLET_STRIP_RX.sub("", t).strip()
 
 
 # ─────────────────────────────────────────────────────────────

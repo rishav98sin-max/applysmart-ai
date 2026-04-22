@@ -11,6 +11,12 @@ def parse_cv(cv_path):
             return ""
         
         doc = fitz.open(cv_path)
+        # Fonts whose names mark symbol/bullet glyphs — skip their spans so
+        # the mis-decoded "?" bullets don't leak into the body text.
+        _SYMBOLIC_FONT_RX = _re.compile(
+            r"(symbol|wingding|webding|dingbat|marlett|bullet)",
+            _re.IGNORECASE,
+        )
         for page in doc:
             # Use dict mode for better character encoding preservation
             # This prevents special bullet characters (→, ▸, •) from becoming ?
@@ -22,13 +28,21 @@ def parse_cv(cv_path):
                 for line in block["lines"]:
                     line_text = ""
                     for span in line.get("spans", []):
+                        font = span.get("font", "") or ""
+                        if _SYMBOLIC_FONT_RX.search(font):
+                            # Replace symbolic-font bullet glyph with a real bullet
+                            # so downstream LLM prompts see a recognisable marker.
+                            line_text += "• "
+                            continue
                         line_text += span.get("text", "")
                     if line_text.strip():
                         text += line_text + "\n"
                 text += "\n"  # Blank line between blocks (paragraphs/sections)
         doc.close()
         
-        # Normalize excessive blank lines (keep structure, trim triple+ newlines)
+        # Repair mis-decoded bullet prefixes ("?   thing" → "• thing") and
+        # collapse excessive blank lines.
+        text = _re.sub(r"(^|\n)\s*[?\uFFFD]+(?=\s{2,})\s+", r"\1• ", text)
         text = _re.sub(r"\n{3,}", "\n\n", text).strip()
         
         print(f"CV parsed successfully: {len(text)} characters extracted")
