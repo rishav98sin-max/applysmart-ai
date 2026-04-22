@@ -104,6 +104,26 @@ CV CONTENT (structured):
 RULES (strict):
 
 1. summary:
+   WHAT THIS SECTION IS FOR:
+   A recruiter spends ~6 seconds on a CV on the first pass. The summary
+   is the user's story — who they are, what they have done, and why they
+   fit THIS role. Write it as a crisp 2-4 line human pitch, not as
+   marketing copy.
+
+   WHAT YOU MUST DO:
+   - Look at the JD. Identify the 2-3 skills or experiences already in
+     the candidate's CV (summary, bullets, or skills section) that
+     most directly match the JD's top requirements.
+   - Foreground those CV items naturally in the rewrite so a recruiter
+     scanning for 6 seconds immediately sees why this candidate fits
+     THIS role. Example: if the CV lists skills A, B, C, D and the JD
+     focuses on A, lead with A. If the next job focuses on D, lead the
+     rewrite for that job with D instead.
+   - Keep the rest of the candidate's story (employer names, years of
+     experience, specialism, degree) intact around those highlights.
+   - Never sound robotic. Write like a person describing themselves to
+     another person in plain English.
+
    The CURRENT SUMMARY is shown above with an exact word count. Your rewrite
    MUST be between 95% and 115% of that count — measure as you write. A
    shorter summary leaves an ugly white gap in the PDF because the layout
@@ -175,9 +195,10 @@ RULES (strict):
    - Length: target 90-120% of the original bullet's length to avoid PDF overflow.
 
 3. skills_order:
-   If SKILLS above is a plain comma-separated list, return it reordered so
-   job-relevant skills appear first (same items, no additions, no rewording).
-   If SKILLS is marked "(categorised layout)", return an empty list [].
+   Do NOT reorder, add to, or reword the skills list. Always return an
+   empty list []. The candidate's skills section must stay exactly as
+   in the original CV — highlighting of relevant skills is done inside
+   the summary and bullets, not by reshuffling the skills block.
 
 4. Output ONLY a JSON object with keys: summary, bullets, skills_order.
 
@@ -472,23 +493,9 @@ def _sanitise_diff(raw: Dict[str, Any], outline: Dict[str, Any]) -> Dict[str, An
             if not is_noop:
                 out["bullets"][match_key] = normalised
 
-    # Skills
-    skills_order = raw.get("skills_order") or []
-    real_skills  = outline.get("skills") or []
-    if isinstance(skills_order, list) and real_skills:
-        real_lookup = {s.strip().lower(): s for s in real_skills}
-        clean_sk: List[str] = []
-        seen_sk:  set = set()
-        for item in skills_order:
-            key = str(item).strip().lower()
-            if key in real_lookup and key not in seen_sk:
-                clean_sk.append(real_lookup[key])
-                seen_sk.add(key)
-        for s in real_skills:
-            if s.strip().lower() not in seen_sk:
-                clean_sk.append(s)
-        if clean_sk and clean_sk != real_skills:
-            out["skills_order"] = clean_sk
+    # Skills — policy: DO NOT reorder skills. The candidate's skills block
+    # stays byte-identical to the original CV. Drop any LLM-returned order.
+    out["skills_order"] = []
 
     return out
 

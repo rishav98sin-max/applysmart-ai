@@ -862,7 +862,7 @@ with st.sidebar:
         _reset    = _q.get("reset_tokens", "")
 
         st.markdown(
-            f"<div class='sidebar-h' style='margin-top:8px;'>"
+            f"<div class='sidebar-h' style='margin-top:8px; font-size:1.35em;'>"
             f"Daily usage: <b>{_runs} runs left today</b>"
             f"</div>",
             unsafe_allow_html=True,
