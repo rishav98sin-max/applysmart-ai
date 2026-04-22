@@ -105,9 +105,10 @@ RULES (strict):
 
 1. summary:
    The CURRENT SUMMARY is shown above with an exact word count. Your rewrite
-   MUST be between 90% and 115% of that count — measure as you write. A short
-   summary leaves an ugly white gap in the PDF because the layout rect is
-   sized for the original.
+   MUST be between 95% and 115% of that count — measure as you write. A
+   shorter summary leaves an ugly white gap in the PDF because the layout
+   rect is sized for the original, and a shortened summary also loses
+   impact. NEVER drop below 95% of the original length.
 
    HARD FABRICATION BAN (applies to the SUMMARY specifically):
    - Reference ONLY facts, skills, tools, frameworks, certifications,
@@ -602,28 +603,43 @@ def tailor_cv_diff(
             diff["summary"] = orig_summary
 
     # ── Length-enforcement retry ─────────────────────────────────────
+    # Triggers whenever the new summary is below 95% of the original word
+    # count, matching the prompt's 95%-115% rule. If the retry is still
+    # too short, fall back to the ORIGINAL summary (no shortening allowed).
     new_words = len((diff.get("summary") or "").split())
-    if orig_words >= 20 and new_words and new_words < int(orig_words * 0.72):
-        low  = int(orig_words * 0.9)
-        high = int(orig_words * 1.15)
+    _SUMMARY_MIN_RATIO = 0.95
+    _SUMMARY_MAX_RATIO = 1.15
+    if orig_words >= 20 and new_words and new_words < int(orig_words * _SUMMARY_MIN_RATIO):
+        low  = int(orig_words * _SUMMARY_MIN_RATIO)
+        high = int(orig_words * _SUMMARY_MAX_RATIO)
         print(
-            f"   ↻  summary too short ({new_words}/{orig_words} words) — "
-            f"retrying with hard target {low}-{high}."
+            f"   ↻  summary too short ({new_words}/{orig_words} words, "
+            f"need ≥{low}) — retrying with hard target {low}-{high}."
         )
         enforce = (
-            f"YOUR PREVIOUS SUMMARY WAS TOO SHORT ({new_words} words). "
-            f"The target is {low}-{high} words. Rewrite the summary to fall "
-            f"strictly within that range. You may add more CV-grounded detail "
-            f"(specific outcomes, years, platforms, methodologies) but DO NOT "
-            f"invent anything that is not in the CV."
+            f"YOUR PREVIOUS SUMMARY WAS TOO SHORT ({new_words} words; "
+            f"original was {orig_words}). The target is {low}-{high} words "
+            f"(95%-115% of original). Rewrite the summary to fall strictly "
+            f"within that range. You MAY add more CV-grounded detail "
+            f"(specific outcomes, years, platforms, methodologies) but you "
+            f"MUST NOT invent anything that is not in the CV."
         )
         raw_text2 = _call_llm(_render_prompt(extra=enforce))
         raw_json2 = _extract_json(raw_text2)
         diff2     = _sanitise_diff(raw_json2, outline)
         new_sum2  = (diff2.get("summary") or "").strip()
-        if new_sum2 and len(new_sum2.split()) > new_words:
+        if new_sum2 and len(new_sum2.split()) >= int(orig_words * _SUMMARY_MIN_RATIO):
             diff["summary"] = new_sum2
             new_words = len(new_sum2.split())
+        elif orig_summary:
+            # Retry still short — revert to original rather than ship a
+            # noticeably shortened summary.
+            print(
+                f"   ↺  retry still short ({len(new_sum2.split()) if new_sum2 else 0} words) "
+                f"— reverting to original summary verbatim."
+            )
+            diff["summary"] = orig_summary
+            new_words = orig_words
 
     # Count rewrites across all roles (bullets with non-null "text" field).
     def _count_diff_edits(d: Dict[str, Any]) -> tuple:
