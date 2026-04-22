@@ -1,6 +1,7 @@
 import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add project root (parent of scripts/) to path so `agents` package imports work
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
 load_dotenv()

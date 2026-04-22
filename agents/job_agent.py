@@ -1273,7 +1273,12 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
         f"(of {len(jobs_to_tailor)} job(s))"
     )
     if job_concurrency <= 1 or len(jobs_to_tailor) <= 1:
-        updated_jobs = [_process_single_job(j) for j in jobs_to_tailor]
+        updated_jobs = []
+        for j in jobs_to_tailor:
+            if _check_stop_requested(state):
+                print("   ⏹️  Stop requested — aborting remaining jobs in tailor phase")
+                break
+            updated_jobs.append(_process_single_job(j))
     else:
         with ThreadPoolExecutor(max_workers=job_concurrency,
                                 thread_name_prefix="tailor-job") as outer_ex:

@@ -28,6 +28,7 @@ sessions/
 .langgraph_api/
 graphify-out/
 .graphify_*
+.quota_cache.json
 
 # Test scratch
 _probe*.py
@@ -43,3 +44,7 @@ _probe*.py
 _*.txt
 Rishav_Singh_*
 test_pdf_fix_*.pdf
+
+# Debug/error screenshots (not part of source)
+Error SS/
+*.debug.png

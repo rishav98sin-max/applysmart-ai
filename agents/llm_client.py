@@ -34,34 +34,49 @@ _GROQ_CLIENTS: dict = {}  # key → Groq client instance
 # the primary "remaining" display is driven by file-based quota cache below.
 _GROQ_QUOTA: dict = {}
 
-# File-based quota cache for deployment-wide token tracking
-_QUOTA_FILE = Path(__file__).parent.parent / ".quota_cache.json"
+# File-based quota cache for deployment-wide token tracking.
+# Stored in the OUTPUT_DIR (writable on Streamlit Cloud) so it survives
+# process restarts within the same deployment. A new redeploy wipes it,
+# which is fine — we then rely on Groq response headers to resync.
+def _quota_file_path() -> Path:
+    try:
+        from agents.runtime import OUTPUT_DIR as _RUNTIME_OUT
+        base = Path(_RUNTIME_OUT)
+    except Exception:
+        base = Path(__file__).parent.parent / "outputs"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / ".quota_cache.json"
+
+_QUOTA_LOG_ERRORS = os.getenv("APPLYSMART_DEBUG_QUOTA", "0") == "1"
 
 def _get_tokens_used_session() -> dict:
     """Get tokens used from file cache, defaulting to 0 for both providers."""
     try:
-        if _QUOTA_FILE.exists():
-            data = json.loads(_QUOTA_FILE.read_text())
-            # Check if it's a new day
+        qf = _quota_file_path()
+        if qf.exists():
+            data = json.loads(qf.read_text())
+            # Reset when the day rolls over.
             today = __import__('datetime').datetime.now().date().isoformat()
             if data.get("date") != today:
                 return {"groq": 0, "gemini": 0}
             return {
-                "groq": data.get("groq_tokens", 0),
-                "gemini": data.get("gemini_tokens", 0),
+                "groq": int(data.get("groq_tokens", 0)),
+                "gemini": int(data.get("gemini_tokens", 0)),
             }
-    except Exception:
-        pass
+    except Exception as e:
+        if _QUOTA_LOG_ERRORS:
+            print(f"   Quota read failed: {e}")
     return {"groq": 0, "gemini": 0}
 
 def _set_tokens_used_session(groq: int, gemini: int) -> None:
     """Set tokens used in file cache for both providers."""
     try:
         today = __import__('datetime').datetime.now().date().isoformat()
-        data = {"date": today, "groq_tokens": groq, "gemini_tokens": gemini}
-        _QUOTA_FILE.write_text(json.dumps(data))
-    except Exception:
-        pass
+        data = {"date": today, "groq_tokens": int(groq), "gemini_tokens": int(gemini)}
+        _quota_file_path().write_text(json.dumps(data))
+    except Exception as e:
+        if _QUOTA_LOG_ERRORS:
+            print(f"   Quota write failed: {e}")
 
 def _increment_groq_tokens(delta: int) -> None:
     """Increment Groq tokens used in file cache."""
@@ -382,10 +397,9 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
         print("   ⚠️  GEMINI_API_KEY not found, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
     
-    # Debug: log key length and first few chars (for troubleshooting)
-    print(f"   🔑 Gemini API key loaded: length={len(api_key)}, starts with={api_key[:10] if len(api_key) >= 10 else api_key}")
+    # Safety check: warn if key doesn't look like a valid Google AI Studio key
     if not api_key.startswith("AIza"):
-        print(f"   ⚠️  WARNING: Key doesn't start with 'AIza' - may not be a valid Google AI Studio key")
+        print(f"   ⚠️  Gemini key format looks invalid (should start with 'AIza')")
     
     try:
         genai.configure(api_key=api_key)
