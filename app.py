@@ -1090,6 +1090,20 @@ if run_button:
 
     # ── Run agent with live progress ────────────────────────────────────
     _run_budget = LLMBudget(limit=_MAX_LLM_CALLS_PER_RUN)
+    
+    # Stage indicator outside status block for better visibility
+    stage_placeholder = st.empty()
+    
+    # Stop button
+    stop_col, _ = st.columns([1, 4])
+    with stop_col:
+        if st.button("⏹ Stop", key="stop_agent", type="secondary"):
+            st.session_state["_stop_requested"] = True
+            st.warning("Stop requested - agent will cancel at next stage...")
+    
+    # Reset stop flag at start of run
+    st.session_state["_stop_requested"] = False
+    
     with st.status("Running agent…", expanded=True) as status_box:
         st.write(f"CV saved to session `{_SESSION_ID[:8]}…`")
         st.write(
@@ -1097,6 +1111,14 @@ if run_button:
             f"**{job_title}** in **{location or 'any location'}**"
         )
         st.write(f"LLM-call budget for this run: **{_run_budget.limit}**")
+        
+        def progress_callback(stage: str, detail: str = ""):
+            """Update the UI with current agent stage."""
+            if detail:
+                stage_placeholder.markdown(f"**Current Stage:** {stage} — {detail}")
+            else:
+                stage_placeholder.markdown(f"**Current Stage:** {stage}")
+        
         try:
             final_state = run_agent(
                 cv_path         = cv_path,
@@ -1112,6 +1134,7 @@ if run_button:
                 session_id      = _SESSION_ID,
                 llm_budget      = _run_budget,
                 preview_mode    = preview_mode,
+                progress_callback = progress_callback,
             )
         except Exception as e:
             # run_agent now returns a partial result on crash instead of

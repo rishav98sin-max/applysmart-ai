@@ -76,20 +76,40 @@ def scrape_linkedin(job_title: str, location: str, num_jobs: int) -> list:
 def _fetch_linkedin_description(url: str) -> str:
     if not url:
         return ""
-    try:
-        time.sleep(1)
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(resp.text, "html.parser")
+    
+    # Try twice with a delay between attempts
+    for attempt in range(2):
+        try:
+            if attempt > 0:
+                print(f"   🔄 Retrying LinkedIn description fetch (attempt {attempt + 1})...")
+                time.sleep(2)
+            else:
+                time.sleep(1)
+            
+            resp = requests.get(url, headers=HEADERS, timeout=15)
+            soup = BeautifulSoup(resp.text, "html.parser")
 
-        desc = (
-            soup.find("div", class_="description__text") or
-            soup.find("div", class_="show-more-less-html__markup") or
-            soup.find("section", class_="show-more-less-html")
-        )
-        return desc.get_text(separator=" ", strip=True) if desc else ""
-    except Exception as e:
-        print(f"   ⚠️  LinkedIn description fetch failed: {e}")
-        return ""
+            desc = (
+                soup.find("div", class_="description__text") or
+                soup.find("div", class_="show-more-less-html__markup") or
+                soup.find("section", class_="show-more-less-html")
+            )
+            result = desc.get_text(separator=" ", strip=True) if desc else ""
+            
+            # If we got a description, return it
+            if result and len(result.strip()) >= 30:
+                return result
+            # If empty on first attempt, try again
+            if attempt == 0:
+                continue
+            return result
+        except Exception as e:
+            print(f"   ⚠️  LinkedIn description fetch failed (attempt {attempt + 1}): {e}")
+            if attempt == 0:
+                continue
+            return ""
+    
+    return ""
 
 
 # ─────────────────────────────────────────────────────────────

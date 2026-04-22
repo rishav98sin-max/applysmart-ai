@@ -37,34 +37,45 @@ _GROQ_QUOTA: dict = {}
 # File-based quota cache for deployment-wide token tracking
 _QUOTA_FILE = Path(__file__).parent.parent / ".quota_cache.json"
 
-def _get_tokens_used_session() -> int:
-    """Get tokens used from file cache, defaulting to 0."""
+def _get_tokens_used_session() -> dict:
+    """Get tokens used from file cache, defaulting to 0 for both providers."""
     try:
         if _QUOTA_FILE.exists():
             data = json.loads(_QUOTA_FILE.read_text())
             # Check if it's a new day
             today = __import__('datetime').datetime.now().date().isoformat()
             if data.get("date") != today:
-                return 0
-            return data.get("tokens_used", 0)
+                return {"groq": 0, "gemini": 0}
+            return {
+                "groq": data.get("groq_tokens", 0),
+                "gemini": data.get("gemini_tokens", 0),
+            }
     except Exception:
         pass
-    return 0
+    return {"groq": 0, "gemini": 0}
 
-def _set_tokens_used_session(value: int) -> None:
-    """Set tokens used in file cache."""
+def _set_tokens_used_session(groq: int, gemini: int) -> None:
+    """Set tokens used in file cache for both providers."""
     try:
         today = __import__('datetime').datetime.now().date().isoformat()
-        data = {"date": today, "tokens_used": value}
+        data = {"date": today, "groq_tokens": groq, "gemini_tokens": gemini}
         _QUOTA_FILE.write_text(json.dumps(data))
     except Exception:
         pass
 
-def _increment_tokens_used_session(delta: int) -> None:
-    """Increment tokens used in file cache."""
+def _increment_groq_tokens(delta: int) -> None:
+    """Increment Groq tokens used in file cache."""
     try:
         current = _get_tokens_used_session()
-        _set_tokens_used_session(current + delta)
+        _set_tokens_used_session(current["groq"] + delta, current["gemini"])
+    except Exception:
+        pass
+
+def _increment_gemini_tokens(delta: int) -> None:
+    """Increment Gemini tokens used in file cache."""
+    try:
+        current = _get_tokens_used_session()
+        _set_tokens_used_session(current["groq"], current["gemini"] + delta)
     except Exception:
         pass
 
@@ -191,7 +202,7 @@ def _capture_quota_from_headers(headers, key_index: int) -> None:
                 f"   🔄 Groq daily reset detected on key #{key_index + 1} "
                 f"({prev_rem} → {new_rem} tokens) — zeroing usage counter."
             )
-            _set_tokens_used_session(0)
+            _set_tokens_used_session(0, 0)
 
         # Prefer daily windows (`*-tokens`); Groq returns both per-minute and
         # per-day headers but the day values are what matters for UX.
@@ -230,7 +241,7 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
             except Exception:
                 pass
             resp = raw.parse()
-            # Deduct actual tokens consumed from the deployment-wide budget.
+            # Deduct actual tokens consumed from the Groq budget.
             # Groq's response mirrors OpenAI's shape: usage.total_tokens covers
             # prompt + completion. Never let an accounting error break the
             # real LLM response — hence the broad try/except.
@@ -239,7 +250,7 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
                 if usage is not None:
                     total = getattr(usage, "total_tokens", None)
                     if isinstance(total, int) and total > 0:
-                        _increment_tokens_used_session(total)
+                        _increment_groq_tokens(total)
             except Exception:
                 pass
             return (resp.choices[0].message.content or "").strip()
@@ -292,8 +303,11 @@ def get_quota_summary() -> dict:
 
     n_keys         = len(_GROQ_KEYS)
     total_budget   = n_keys * _GROQ_TOKENS_PER_KEY_PER_DAY
-    used           = _get_tokens_used_session()
-    computed_rem   = max(0, total_budget - used)
+    used_dict      = _get_tokens_used_session()
+    groq_used      = used_dict.get("groq", 0)
+    gemini_used    = used_dict.get("gemini", 0)
+    total_used     = groq_used + gemini_used
+    computed_rem   = max(0, total_budget - groq_used)
 
     # Cross-check with Groq's server-side view — sum of remaining_tokens
     # across keys we've already touched. If the server says we have LESS
@@ -319,12 +333,14 @@ def get_quota_summary() -> dict:
         remaining = min(computed_rem, headers_rem_sum)
 
     est_runs_left = remaining // _TOKENS_PER_RUN_AVG if _TOKENS_PER_RUN_AVG > 0 else 0
-    pct_used      = int(100 * used / total_budget) if total_budget > 0 else 0
+    pct_used      = int(100 * groq_used / total_budget) if total_budget > 0 else 0
 
     return {
         # Deployment-wide numbers (what the UI displays)
         "total_budget":     total_budget,
-        "used":             used,
+        "used":             total_used,
+        "groq_used":        groq_used,
+        "gemini_used":      gemini_used,
         "remaining":        remaining,
         "pct_used":         pct_used,
         "est_runs_left":    est_runs_left,
@@ -342,7 +358,7 @@ def reset_session_counter() -> None:
     Manually zero the deployment-wide token counter. Useful for test harnesses
     and for an admin 'reset now' button once the Groq daily window rolls over.
     """
-    _set_tokens_used_session(0)
+    _set_tokens_used_session(0, 0)
 
 
 def chat_quality(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
@@ -366,6 +382,11 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
         print("   ⚠️  GEMINI_API_KEY not found, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
     
+    # Debug: log key length and first few chars (for troubleshooting)
+    print(f"   🔑 Gemini API key loaded: length={len(api_key)}, starts with={api_key[:10] if len(api_key) >= 10 else api_key}")
+    if not api_key.startswith("AIza"):
+        print(f"   ⚠️  WARNING: Key doesn't start with 'AIza' - may not be a valid Google AI Studio key")
+    
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
@@ -377,6 +398,15 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
                 temperature=temperature,
             )
         )
+        
+        # Track tokens used for quota calculations
+        try:
+            if hasattr(response, 'usage_metadata'):
+                total_tokens = getattr(response.usage_metadata, 'total_token_count', 0)
+                if isinstance(total_tokens, int) and total_tokens > 0:
+                    _increment_gemini_tokens(total_tokens)
+        except Exception:
+            pass
         
         return response.text.strip() if response.text else ""
     except Exception as e:

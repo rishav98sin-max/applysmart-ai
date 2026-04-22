@@ -58,6 +58,7 @@ HARD_TERMINAL_STATUSES = frozenset({
     "completed",
     "awaiting_send",
     "halted_max_steps",
+    "halted_user_stop",
 })
 
 TERMINAL_STATUSES = HARD_TERMINAL_STATUSES | frozenset({
@@ -153,12 +154,32 @@ class AgentState(TypedDict):
     preview_mode:        bool
     cv_collection:       str
     experience_level:    str              # ✅ NEW
+    progress_callback:   Any              # ✅ NEW
 
 
 def _append_handoff(state: AgentState, entry: Dict[str, Any]) -> List[Dict[str, Any]]:
     out = list(state.get("messages", []))
     out.append(entry)
     return out
+
+
+def _report_progress(state: AgentState, stage: str, detail: str = "") -> None:
+    """Safely call progress callback if available."""
+    callback = state.get("progress_callback")
+    if callback and callable(callback):
+        try:
+            callback(stage, detail)
+        except Exception as e:
+            print(f"   ⚠️  Progress callback error: {e}")
+
+
+def _check_stop_requested(state: AgentState) -> bool:
+    """Check if stop was requested via session state."""
+    try:
+        import streamlit as st
+        return st.session_state.get("_stop_requested", False)
+    except Exception:
+        return False
 
 
 def _resolve_output_dir(state: AgentState) -> str:
@@ -376,6 +397,25 @@ def supervisor_node(state: AgentState) -> AgentState:
     status = state.get("status", "starting")
     base = {**state, "supervisor_cycles": cycle}
 
+    # Check for stop request
+    if _check_stop_requested(state):
+        print(f"   ⏹️  Stop requested - cancelling agent execution")
+        return {
+            **base,
+            "status": "halted_user_stop",
+            "routing_decision": ROUTE_END,
+            "errors": state["errors"] + ["Execution stopped by user"],
+            "messages": _append_handoff(
+                state,
+                {
+                    "from":   "supervisor",
+                    "action": "halt",
+                    "reason": "user_stop",
+                    "cycle":  cycle,
+                },
+            ),
+        }
+
     if cycle > MAX_SUPERVISOR_CYCLES:
         return {
             **base,
@@ -483,6 +523,7 @@ def route_from_supervisor(state: AgentState) -> str:
 
 def validate_inputs_node(state: AgentState) -> AgentState:
     print("\n✅ WORKER validate_inputs: Validating inputs...")
+    _report_progress(state, "Validating inputs")
     errors = []
 
     if not state.get("cv_path") or not os.path.exists(state["cv_path"]):
@@ -523,6 +564,7 @@ def validate_inputs_node(state: AgentState) -> AgentState:
 
 def parse_cv_node(state: AgentState) -> AgentState:
     print("\n📄 WORKER parse_cv: Parsing CV...")
+    _report_progress(state, "Parsing CV")
     try:
         cv_text = parse_cv(state["cv_path"])
         if not cv_text or len(cv_text.strip()) < 50:
@@ -572,6 +614,7 @@ def extract_cv_style_node(state: AgentState) -> AgentState:
         "\n📐 WORKER extract_cv_style: "
         "Analysing uploaded CV for fonts, margins, and colour template..."
     )
+    _report_progress(state, "Extracting CV style")
     try:
         profile = build_style_profile(state["cv_path"])
         return {
@@ -618,6 +661,7 @@ def extract_cv_style_node(state: AgentState) -> AgentState:
 
 def planner_node(state: AgentState) -> AgentState:
     print("\n🗺  WORKER planner: Drafting search + tailoring plan...")
+    _report_progress(state, "Planning search strategy")
     plan = build_plan(
         cv_text=state.get("cv_text", ""),
         user_inputs={
@@ -693,6 +737,7 @@ def scrape_jobs_node(state: AgentState) -> AgentState:
         f"bundle={bundle.get('title')!r} @ {q_loc!r} — reason: {bundle.get('reason','')}"
     )
     print(f"   Board order: {sequence}")
+    _report_progress(state, f"Scraping job boards (round {round_idx + 1})")
 
     boards_tried: List[str] = []
     jobs: List[Any] = []
@@ -851,6 +896,7 @@ def match_jobs_node(state: AgentState) -> AgentState:
         f"(already scored={len(scored_urls)}, new={len(new_jobs)}) "
         f"threshold={threshold}"
     )
+    _report_progress(state, "Matching jobs to CV")
 
     matched = list(prev_matched)
     skipped = list(prev_skipped)
@@ -951,6 +997,7 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
         f"\n✍️  WORKER tailor_and_generate: "
         f"Tailoring for {len(state['matched_jobs'])} jobs..."
     )
+    _report_progress(state, f"Tailoring CVs and generating cover letters ({len(state['matched_jobs'])} jobs)")
 
     style_profile = state.get("style_profile") or extract_cv_style(state["cv_path"])
     updated_jobs  = []
@@ -1304,6 +1351,8 @@ def send_email_node(state: AgentState) -> AgentState:
         }
 
     print(f"\n📧 WORKER send_email: Sending email to {state['user_email']}...")
+    _report_progress(state, "Sending email with documents")
+
     try:
         pdf_paths = []
         for job in state["matched_jobs"]:
@@ -1458,6 +1507,7 @@ def run_agent(
     llm_budget:       Any  = None,
     preview_mode:     bool = False,
     experience_level: str  = "",   # ✅ NEW
+    progress_callback: Any = None,  # ✅ NEW
 ) -> dict:
     from agents.runtime import (
         LLMBudget, llm_budget_scope, BudgetExceeded, save_run_snapshot,
@@ -1516,6 +1566,7 @@ def run_agent(
         "preview_mode":        bool(preview_mode),
         "cv_collection":       "",
         "experience_level":    experience_level,   # ✅ NEW
+        "progress_callback":   progress_callback,  # ✅ NEW
     }
 
     _snapshot_inputs = {

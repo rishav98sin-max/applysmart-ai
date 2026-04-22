@@ -385,7 +385,7 @@ COMPANY: {company}
 IMPORTANT — Skill classification rules:
 - matched_skills: Skills that appear in BOTH the JD and the CV, OR where the CV has a broader/related term
 - missing_skills: Skills that are EXPLICITLY required by the JD but NOT found in the CV or semantically covered
-- Semantic matching: If CV has "AI", it covers "large language models", "generative AI tools", "machine learning", "prompt design", "agentic AI systems", "multi-agent architecture"
+- Semantic matching: If CV has "AI", it covers "large language models", "generative AI tools", "machine learning", "prompt design", "agentic AI systems", "multi-agent architecture", "agent-based AI systems orchestration", "automation workflows", "APIs", "SaaS tools", "third-party machine learning products"
 - Semantic matching: If CV has "product management", it covers "product delivery", "product vision", "roadmap", "stakeholder alignment"
 - Do NOT mark experience requirements (e.g., "5+ years", "team leadership") as "missing skills" — these are not skills
 - Only mark skills as "missing" when they are clearly required by the JD and completely absent from the CV with no semantic equivalent
