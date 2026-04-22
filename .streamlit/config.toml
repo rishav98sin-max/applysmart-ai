@@ -8,16 +8,24 @@ font              = "sans serif"
 
 [server]
 headless          = true
-# Use polling instead of the default module-discovery watcher. Default
-# recursively scans every loaded Python module path to decide what to watch;
-# with torch / transformers / chromadb installed this surfaces noisy
-# "examining torchvision.ops" warnings on every rerun. Polling skips that
-# discovery entirely.
-fileWatcherType   = "poll"
+# Disable the source-code file watcher entirely in production. On
+# Streamlit Cloud hot-reload isn't needed, and the default watcher
+# recursively enumerates every loaded Python module — which, with
+# transformers / torch / chromadb installed, prints thousands of
+# "Examining the path of transformers.models.aria..." tracebacks per
+# run because those modules transitively require torchvision (not
+# installed here). "none" skips the enumeration entirely.
+fileWatcherType   = "none"
 folderWatchBlacklist = [
     "venv", ".venv", "__pycache__", ".git", "sessions", "outputs",
     "chroma_db", ".chroma", "node_modules",
 ]
+
+[logger]
+# Silences Streamlit-internal INFO/WARNING noise (e.g. the file-watcher
+# module-discovery warnings triggered by transformers sub-modules).
+# Application print() statements from our agents are unaffected.
+level             = "error"
 
 [browser]
 gatherUsageStats  = false
