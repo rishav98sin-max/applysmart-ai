@@ -1043,7 +1043,15 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     f"verdict={cl_review_local['verdict']}, "
                     f"fabrications={len(cl_review_local['fabrications'])}"
                 )
-                if cl_review_local["verdict"] == "retry":
+                # Only retry if the first attempt looks clearly weak.
+                # Skip the retry when the score is already decent to avoid
+                # the 40→40 feedback loop seen in the Cormac run (reviewer
+                # gave the same feedback both times, wasting Groq quota).
+                _CL_RETRY_THRESHOLD = 55
+                if (
+                    cl_review_local["verdict"] == "retry"
+                    and int(cl_review_local.get("score", 0) or 0) < _CL_RETRY_THRESHOLD
+                ):
                     try:
                         from agents.analytics import track_event
                         track_event(
@@ -1059,7 +1067,10 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         pass
                     print(f"   ↻  {tag} retry CL — "
                           f"{cl_review_local['feedback'][:100]}")
-                    cl_text = generate_cover_letter(
+                    # Preserve the original so we can revert if the retry is worse.
+                    cl_text_orig   = cl_text
+                    cl_review_orig = cl_review_local
+                    cl_text_retry = generate_cover_letter(
                         cv_text         = state["cv_text"],
                         job_description = jd + "\n\nREVIEWER FEEDBACK "
                                                "(address on this attempt): "
@@ -1070,7 +1081,7 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     )
                     cl_review_2 = review_cover_letter(
                         cv_text         = state["cv_text"],
-                        cover_letter    = cl_text,
+                        cover_letter    = cl_text_retry,
                         job_description = jd,
                         job_title       = title,
                         company         = company,
@@ -1078,8 +1089,15 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     print(f"   🧐 {tag} CL re-review: "
                           f"score={cl_review_2['score']}/100, "
                           f"verdict={cl_review_2['verdict']}")
-                    if cl_review_2["score"] >= cl_review_local["score"]:
+                    if cl_review_2["score"] > cl_review_orig["score"]:
+                        # Retry is strictly better — adopt it.
+                        cl_text         = cl_text_retry
                         cl_review_local = cl_review_2
+                    else:
+                        # Retry is not better — keep the original letter and its review.
+                        print(f"   ↺  {tag} retry not better — keeping original letter")
+                        cl_text         = cl_text_orig
+                        cl_review_local = cl_review_orig
             except Exception as rev_err:
                 print(f"   ⚠️  {tag} CL reviewer error (non-fatal): "
                       f"{type(rev_err).__name__}: {rev_err}")

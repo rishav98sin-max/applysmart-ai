@@ -161,24 +161,42 @@ def tailor_cv(
         safety_preamble = preamble,
     )
 
+    # Token budget scales with CV length: ~4 chars per token on average.
+    # A 5.7K-char CV needs >1400 tokens just to echo back, let alone rewrite.
+    # Grow the budget on each attempt if Gemini keeps truncating.
+    original_len = len(cv_text.strip())
+    base_budget  = max(1400, int(original_len / 3) + 400)
+    budgets      = [base_budget, base_budget + 800, base_budget + 1600]
+
     for attempt in range(retries):
         try:
             track_llm_call(agent="cv_tailor")
+            budget = budgets[min(attempt, len(budgets) - 1)]
 
-            tailored = chat_gemini(prompt, max_tokens=1400, temperature=0.2)
+            tailored = chat_gemini(prompt, max_tokens=budget, temperature=0.2)
 
             if not tailored:
                 print(f"   ⚠️  Tailor returned empty on attempt {attempt + 1} — retrying...")
                 time.sleep(4)
                 continue
 
-            original_len = len(cv_text.strip())
             tailored_len = len(tailored)
 
             if tailored_len < original_len * 0.75:
+                # Truncation by the LLM, not a quality issue — retry with a
+                # bigger budget instead of immediately giving up on the whole
+                # tailoring. Only return the original on the final attempt.
+                if attempt < retries - 1:
+                    print(
+                        f"   ⚠️  Tailored CV too short on attempt {attempt + 1} "
+                        f"({tailored_len} vs {original_len} chars) — retrying "
+                        f"with larger budget ({budgets[min(attempt + 1, len(budgets) - 1)]} tokens)"
+                    )
+                    time.sleep(2)
+                    continue
                 print(
-                    f"   ⚠️  Tailored CV too short ({tailored_len} vs {original_len} chars) "
-                    f"— returning original to preserve quality"
+                    f"   ⚠️  Tailored CV still too short after {retries} attempts "
+                    f"({tailored_len} vs {original_len} chars) — keeping original"
                 )
                 return cv_text
 
@@ -194,9 +212,9 @@ def tailor_cv(
                         "This is the most important part of the task.\n\n"
                         "OUTPUT: The complete tailored CV as plain text."
                     )
-                    tailored = chat_gemini(stronger, max_tokens=1400, temperature=0.3)
+                    tailored = chat_gemini(stronger, max_tokens=budget, temperature=0.3)
                     if not tailored or len(tailored) < original_len * 0.75:
-                        return cv_text
+                        continue
 
             print(f"   ✅ CV tailored ({len(tailored)} chars) for {job_title} at {company}")
             return tailored

@@ -202,21 +202,29 @@ Return the JSON now:"""
 
 
 # ─────────────────────────────────────────────────────────────
-# LLM call — chat_quality (Gemma-primary, Groq-fallback).
-# Aggressive bullet rewriting is creative writing, not pure logic —
-# Gemma produces sharper, more role-specific rewrites. chat_quality()
-# tries Gemma first and automatically falls back to Groq on any
-# failure (rate limit, error, empty response). Matches the routing
-# used by cover_letter_generator and legacy cv_tailor.
+# LLM call — Gemini-primary, Groq-fallback.
+# Aggressive bullet rewriting + long structured-JSON output benefit from
+# Gemini 2.5 Flash's larger context and better instruction adherence on
+# complex outlines (observed 0-rewrite failures on 9-role/28-bullet CVs
+# when using Groq only). chat_gemini() auto-falls-back to Groq internally
+# on any error or missing key, so this is strictly an upgrade.
 # ─────────────────────────────────────────────────────────────
 
-def _call_llm(prompt: str, max_tokens: int = 1100, retries: int = 3) -> str:
+def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 3) -> str:
     from agents.runtime    import track_llm_call, handle_rate_limit
-    from agents.llm_client import chat_quality
+    from agents.llm_client import chat_gemini, chat_quality
 
     for attempt in range(retries):
         try:
             track_llm_call(agent="cv_diff_tailor")
+            # Prefer Gemini; it handles long JSON + many roles/bullets better.
+            result = chat_gemini(prompt, max_tokens=max_tokens, temperature=0.2)
+            if result:
+                return result
+            # Explicit Groq fallback if Gemini returned empty (rare — chat_gemini
+            # already falls back internally, but belt-and-braces for 0-rewrite
+            # regression seen in the Cormac run).
+            print(f"   ⚠️  cv_diff_tailor: Gemini empty, trying Groq (attempt {attempt + 1})")
             result = chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
             if result:
                 return result
