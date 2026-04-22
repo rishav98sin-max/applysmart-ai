@@ -537,13 +537,49 @@ if _APP_PASSWORD:
                 st.error("Incorrect password.")
         st.stop()
 
+# ── Stable anonymous ID across page refreshes ─────────────────────────
+# Streamlit's session_state is per-tab and resets on refresh. To keep the
+# Mixpanel funnel intact across refreshes (so cv_uploaded → run_started →
+# run_completed all attribute to ONE user) we persist an anonymous id in
+# the URL query param `?aid=<uuid>`. First visit generates one and writes
+# it back; subsequent visits in the same browser history carry it along.
+#
+# The file-system session (upload dir, output dir) still uses a per-tab
+# UUID — they're cheap to make and isolation is per-tab, not per-browser.
+def _resolve_anon_id() -> str:
+    try:
+        qp = st.query_params
+        existing = qp.get("aid")
+        if isinstance(existing, list):
+            existing = existing[0] if existing else None
+        if existing and isinstance(existing, str) and len(existing) >= 16:
+            return existing
+        fresh = new_session_id()
+        try:
+            qp["aid"] = fresh
+        except Exception:
+            pass
+        return fresh
+    except Exception:
+        # Fallback if st.query_params is unavailable in this Streamlit version.
+        if "_anon_aid_fallback" not in st.session_state:
+            st.session_state["_anon_aid_fallback"] = new_session_id()
+        return st.session_state["_anon_aid_fallback"]
+
+
+if "_anon_aid" not in st.session_state:
+    st.session_state["_anon_aid"] = _resolve_anon_id()
+_ANON_AID = st.session_state["_anon_aid"]
+
 # Per-session state: UUID + isolated upload/output directories. Created
 # exactly once per browser session (persists across reruns inside the tab).
 if "session_id" not in st.session_state:
     st.session_state["session_id"] = new_session_id()
 _SESSION_ID = st.session_state["session_id"]
 _UPLOADS_DIR, _OUTPUTS_DIR = session_dirs(_SESSION_ID)
-_ANON_DISTINCT_ID = distinct_id(_SESSION_ID)
+# Distinct id is derived from the *persistent* anon id, not the per-tab
+# session id, so refreshes keep the same Mixpanel identity.
+_ANON_DISTINCT_ID = distinct_id(_ANON_AID)
 
 if analytics_enabled() and not st.session_state.get("_tracked_session_open"):
     track_event(
