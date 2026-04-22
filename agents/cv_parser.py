@@ -11,8 +11,25 @@ def parse_cv(cv_path):
         
         doc = fitz.open(cv_path)
         for page in doc:
-            text += page.get_text()
+            # Use dict mode for better character encoding preservation
+            # This prevents special bullet characters (→, ▸, •) from becoming ?
+            page_dict = page.get_text("dict")
+            for block in page_dict["blocks"]:
+                if "lines" in block:
+                    for line in block["lines"]:
+                        for span in line["spans"]:
+                            text += span["text"]
+                            # Add appropriate spacing
+                            if span.get("flags", 0) & 2 ** 0:  # Superscript
+                                pass
+                            else:
+                                text += " "
+                elif "text" in block:
+                    text += block["text"] + " "
         doc.close()
+        
+        # Clean up extra whitespace while preserving structure
+        text = " ".join(text.split())
         
         print(f"CV parsed successfully: {len(text)} characters extracted")
     except Exception as e:

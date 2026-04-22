@@ -162,7 +162,8 @@ def index_cv(cv_path: str, outline: Dict[str, Any]) -> Optional[str]:
     assert client is not None and embedder is not None
 
     try:
-        existing = {c.name for c in client.list_collections()}
+        # Chroma v0.6.0: list_collections() returns list of names (strings), not collection objects
+        existing = set(client.list_collections())
         if name in existing:
             coll = client.get_collection(name)
             # ✅ Always re-index if chunk count changed (e.g. after this fix)
