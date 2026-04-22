@@ -4,7 +4,8 @@
 > 
 > **Author:** Rishav Singh  
 > **Role:** Product Manager (sole operator / PM-engineer on this project)  
-> **Status:** v0.9 — pre-launch, shipping to public portfolio
+> **Status:** v1.2 — deployed on Streamlit Community Cloud, continuing iteration
+> **Last updated:** 22 April 2026
 
 ---
 
@@ -120,23 +121,25 @@ Seven key decisions, each with the alternatives I considered and why I picked wh
 - ➖ Font subsetting bugs (NBSP rendering — had to add space-glyph-advance checks)
 - ➖ Multi-column designer CVs (Novoresume, Canva) break the (y,x) global sort → scoped to v2
 
-### ADR-002: Dual LLM routing — Gemma 4 for creative, Groq Llama-3.3 for logic
+### ADR-002: Dual LLM routing — Gemini 2.5 Flash for writing, Groq Llama-3.3 for logic
 
-**Decision:** Route by task type. `chat_quality()` → Gemma (cover letters, CV summaries). `chat_fast()` → Groq (scoring, diff-tailoring, routing).
+**Decision:** Route by task type. `chat_gemini()` → Gemini 2.5 Flash (CV summary rewrite, bullet tailoring, cover letters). `chat_quality()` / `chat_fast()` → Groq Llama-3.3-70B (matching, planning, reviewers, supervisor). Either provider falls back to the other when every key in its rotation pool is exhausted.
+
+**Evolution:** An earlier v1.0 iteration used Gemma 4 for creative tasks; it was removed in v1.1 after quality/throttling trade-offs swung negative. Gemini 2.5 Flash replaced it in v1.1 and has stayed since — the 1M-token context window and stronger instruction-following on fabrication bans made the difference.
 
 **Alternatives considered:**
-- All Groq (faster, cheaper, but less creative)
-- All Claude (best quality but most expensive and rate-limited)
-- All Gemini (free tier generous but throttled)
+- All Groq (faster and cheaper, but materially weaker at natural prose and at following multi-rule prompts like "no fabrication")
+- All Claude Sonnet (best quality but 5-10x more expensive and tighter rate limits on the shared trial pool)
+- All Gemini (generous quota per key, but tailoring quality on long, structured prompts is better when paired with Groq for the structured side)
 
-**Why dual routing:** Groq is 10x faster for structured JSON output (matcher, diff tailor, supervisor). Gemma 4 writes better prose (cover letters). Split gives both.
+**Why dual routing:** Groq is ~10x faster for structured JSON output (matcher, diff tailor, supervisor). Gemini writes noticeably more human cover letters and respects the long fabrication-ban preamble more reliably. Each task uses the right tool; neither is load-bearing.
 
 **Trade-offs:**
 - ➕ Each task uses the right tool
-- ➕ Cost-efficient (Groq is cheap for bulk logic)
-- ➖ Two API keys to manage
-- ➖ Two separate rate-limit contracts
-- ➖ Gemma had a 60s min-gap throttle (reduced to 3s after audit)
+- ➕ Two independent rotation pools give a high daily envelope on the free tier
+- ➕ Cross-provider fallback — if every Gemini key is exhausted, tailoring still completes via Groq
+- ➖ Two API keys (or up to six, with rotation) to manage
+- ➖ Two separate rate-limit contracts to observe
 
 ### ADR-003: Diff-based tailoring with structured JSON output
 
@@ -224,6 +227,42 @@ Seven key decisions, each with the alternatives I considered and why I picked wh
 - ➕ Post-run analytics
 - ➖ Disk usage (mitigated: 1 snapshot per session, ~50KB each)
 - ➖ Snapshots contain PII → subject to GDPR review
+
+### ADR-008: Dual-provider API key rotation pools (v1.2)
+
+**Decision:** Both Groq and Gemini accept up to 3 rotating API keys. The client advances to the next key on 429 / quota / auth errors and only falls back to the *other* provider once every key in the active pool is exhausted.
+
+**Alternatives considered:**
+- Single key + exponential backoff (blocks the user for 30-60s per failure — unacceptable UX)
+- Pay for a higher-tier plan on one provider (unnecessary at free-tier personal-portfolio scale)
+- Key rotation on one provider only (the one most likely to throttle) — simpler but asymmetric
+
+**Why both sides rotate:** Testing the app myself burned through the primary Gemini key in an afternoon. Extending the same pattern I already had for Groq kept the code symmetric (one mental model, one test harness in `scripts/test_groq_rotation.py`) and tripled the daily envelope on both sides.
+
+**Trade-offs:**
+- ➕ Near-free capacity multiplier on the free tier (3× per provider)
+- ➕ Infra health is observable — `llm_rate_limit_hit` Mixpanel event fires on every rotation with `{provider, key_index, total_keys_configured}`
+- ➖ I own 6 free-tier dev accounts across two providers now
+- ➖ Rotation triggers hide the fact that a key's budget is exhausted — mitigated by the infra event + log lines
+
+### ADR-009: WeasyPrint HTML/CSS fallback before ReportLab (v1.2)
+
+**Decision:** When in-place PyMuPDF edits aren't feasible (designer / multi-column CVs), the rebuild router tries **WeasyPrint** first with semantic HTML templates, and only falls back to the legacy ReportLab rebuild when WeasyPrint is unavailable or fails.
+
+**Alternatives considered:**
+- Keep ReportLab only (status quo): produced CVs with no summary, `-` instead of bullets, missing contact details, and the wrong page count. Real users saw this and called it out.
+- Playwright / Chromium (full-fidelity but huge install and slow cold-start)
+- DOCX-then-LibreOffice-convert (platform coupling; brittle on Streamlit Cloud)
+
+**Why WeasyPrint:** Mid-weight dependency, excellent ATS output (standard fonts, linear reading order, `h1/h2/ul/li`), and I can express "preserve original page count" as a typography auto-scale rather than pixel gymnastics. The Jinja2 template gives me a single source of truth for the rebuild layout.
+
+**Shipping detail:** The native deps (`libpango`, `libcairo`, `libgdk-pixbuf`) are declared in `packages.txt` so Streamlit Cloud installs them on every deploy. If `packages.txt` isn't honoured on another host, the router transparently degrades to ReportLab so the feature never hard-fails the pipeline.
+
+**Trade-offs:**
+- ➕ Designer CVs now produce ATS-safe, page-count-preserving output by default
+- ➕ Falls back without user-visible errors when the host is missing system libs
+- ➖ Extra dependency footprint (~15 MB); Streamlit Cloud install time is ~20-40s longer
+- ➖ HTML/CSS rebuild doesn't match the original *visual* design — it's an ATS-first reflow, not a pixel-perfect reproduction. That's explicitly the trade-off I want.
 
 ---
 
@@ -318,40 +357,55 @@ Full event schema, privacy guarantees, and reproduction steps live in [`docs/MIX
 
 ## 8. Roadmap
 
-### Shipped (v0.9, April 20 2026)
+### Shipped (v1.2, 22 Apr 2026 — deployed on Streamlit Community Cloud)
 
+**v1.0 — core pipeline (Apr 20):**
 - Multi-agent LangGraph pipeline (supervisor + 9 worker/reviewer agents)
-- Groq-only LLM routing with 3-key rotation pool (v1.1 — Gemma removed)
 - RAG over CV with ChromaDB
-- Live job scraping (Indeed, Glassdoor, Jobs.ie, Builtin) with fallback
-- Diff-based CV tailoring with fabrication sanitizer
-- **Aggressive mode** — bullet rewrite/drop/reorder
-- Reviewer agent with retry
-- PDF in-place editing (preserves layout)
+- Live job scraping (LinkedIn, Indeed, Glassdoor, Jobs.ie, Builtin) with board fallback
+- Diff-based CV tailoring with fabrication sanitizer; aggressive bullet rewrite / drop / reorder mode
+- Reviewer agent with retry loop
+- PDF in-place editing via PyMuPDF (preserves original layout)
 - Cover letter generator
 - Email delivery via Gmail SMTP (app password)
-- **Experience-level dropdown** (6 tiers)
-- **YOE-based early-exit matcher** (saves 30-50% LLM budget)
+- Experience-level dropdown + YOE-based early-exit matcher (saves 30-50% matcher LLM budget)
 - Bulk send button with progress UI
-- Crash-safe snapshots
-- Rate-limit guardrails with capped waits
+- Crash-safe snapshots, capped rate-limit waits, per-run LLM budget cap
 
-### In progress (pre-launch)
+**v1.1 — LLM stack hardening (Apr 21):**
+- Gemma fully removed; dual-LLM architecture with **Gemini 2.5 Flash** for writing and **Groq Llama-3.3-70B** for structured tasks
+- Groq 3-key rotation pool
+- Centralised LLM routing (`llm_client.py`); no ad-hoc clients anywhere
+- GDPR baseline — consent gate, PII redaction in snapshots, `docs/PRIVACY.md`
+- Live Mixpanel dashboard (5 reports) with privacy-safe distinct_id
+- Token budgets tightened; no-drop bullet policy; bullet glyph + wrap-width fixes
 
-- Live pipeline validation (real LLM run with all new features)
-- Brother-share prep (`.env.example`, README)
-- Handoff documentation (this file + `HANDOFF_SUMMARY.md`)
+**v1.2 — production polish (Apr 22):**
+- **WeasyPrint HTML/CSS rebuild path** replaces ReportLab as the default fallback for designer / multi-column CVs; `packages.txt` ships native deps
+- **Canonical CV section order** enforced by both renderers (Header → Summary → Experience → Education → Skills → Other)
+- **Summary fabrication guard** — max 5% length shortening; CV-foreign proper nouns revert to original
+- **Cover letter fabrication guard** (prompt + post-gen) catches JD-only tool/framework names; retries with a tightened prompt before falling back to placeholder
+- **Gemini 3-key rotation pool** matching Groq; cross-provider fallback only when both pools exhausted
+- **Deployment-wide daily usage counter** backed by a file cache so all users and tabs see the same runs-left value; daily reset auto-detected from Groq response headers
+- **Mixpanel distinct_id** persisted via `?aid=<uuid>` query param so the funnel survives page refreshes
+- **Log noise** silenced (Streamlit watcher off, internal logger at error level)
+- PDF parser repairs mis-decoded bullet glyphs from symbol fonts
 
-### v2 (post-public-launch, conditional on feedback)
+### In progress
 
-- **Privacy layer** — PII redaction before LangSmith trace + consent banner
-- **Designer CV multi-column support** — column clustering + per-column reading order
-- **Pending-items from Perplexity** — HTML email, dynamic subjects, session cleanup, requirements.txt freeze
-- **KPI dashboard in Insight tab** — LLM calls, match score distribution, send success rate
-- **Copy-apply-link button** — opens the JD URL in a new tab
-- **Per-job progress bar** (replacing the single bulk one)
+- Real-world validation batch on the deployed app (a handful of live runs with my own CV)
+- Observing Mixpanel funnel conversion now that distinct_id is stable
+- Competitive teardown doc (Rezi, Teal, Kickresume) — still not started
 
-### v3 (if I commercialize)
+### v2 (conditional on user feedback from public deploy)
+
+- Designer CV multi-column in-place editing (currently uses WeasyPrint rebuild)
+- Outcome tracking + feedback loop (did this application get a reply?)
+- Per-user vector DB scoping + encryption at rest
+- Real authentication (magic link or OAuth) — prerequisite for per-user state
+- HTML email template, dynamic subject lines, per-job progress bar
+
+### v3 (if I commercialise)
 
 - Multi-tenant auth (currently session-scoped, not user-scoped)
 - Chrome extension for one-click apply
@@ -389,10 +443,10 @@ Full event schema, privacy guarantees, and reproduction steps live in [`docs/MIX
 
 Claude Sonnet is the best model for this kind of work, but:
 - **Rate limits** — shared trial pool hits caps constantly  
-- **Cost** — 5-10x more expensive per call than Groq  
-- **Observability** — Anthropic's API is less transparent about rate limit state than Groq/Gemini
+- **Cost** — 5-10x more expensive per call than Groq or Gemini free tier  
+- **Observability** — Anthropic's API is less transparent about rate-limit state than Groq/Gemini
 
-Trade-off: I lose some output quality, but gain reliability + cost scalability. If this were a paid product, Claude would be the creative-task default.
+Trade-off: I lose some output quality, but gain reliability + cost scalability on the free tier. If this were a paid product, Claude would likely be the creative-task default with Groq still handling bulk logic.
 
 ### "Why not just use Zapier / n8n?"
 
@@ -494,4 +548,4 @@ If I were interviewing myself for a PM role based on this project:
 
 ---
 
-*Last updated: April 20, 2026. Living document — treat any inconsistency with code as a bug in the doc.*
+*Last updated: 22 April 2026 (v1.2). Living document — treat any inconsistency with code as a bug in the doc.*

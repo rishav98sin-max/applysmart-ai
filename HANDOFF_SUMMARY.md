@@ -1,7 +1,7 @@
 # ApplySmart AI — Complete Handoff Summary
 
 **Generated:** April 20, 2026
-**Last updated:** April 22, 2026 (session 4: Quota tracking, session limits, Gemini fallback, file size limits)
+**Last updated:** April 22, 2026 (session 5 — v1.2: WeasyPrint, Gemini key rotation, fabrication guards, canonical section order, refresh-proof Mixpanel id)
 **Purpose:** Full context handoff to Cursor for continued development
 
 ---
@@ -657,25 +657,28 @@ with `•`, (d) Accenture awards present, (e) no gap at role-block bottom.
 ## 8. Environment Variables (.env)
 
 ```bash
-# Groq (all LLM calls — logic, scoring, creative writing)
+# Groq (fast structured tasks — matching, planning, reviewers, supervisor)
 GROQ_API_KEY=...
-# Optional: up to 2 more Groq keys from different accounts for rotation.
-# When one key hits its per-minute or daily quota, the app auto-rotates.
+# Optional: up to 2 more Groq keys. Auto-rotated on 429 / quota / auth.
 GROQ_API_KEY_2=...
 GROQ_API_KEY_3=...
 GROQ_MODEL=llama-3.3-70b-versatile
+
+# Gemini (writing tasks — CV summary, bullets, cover letters)
+GEMINI_API_KEY=...
+# Optional: up to 2 more Gemini keys. Auto-rotated on 429 / quota / auth.
+GEMINI_API_KEY_2=...
+GEMINI_API_KEY_3=...
+GEMINI_MODEL=gemini-2.5-flash
 
 # LangSmith (tracing, opt-in via in-app consent gate)
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_API_KEY=...
 LANGCHAIN_PROJECT=applysmart-ai
 
-# Resend (email)
-RESEND_API_KEY=...
-RESEND_SENDER_EMAIL=...
-
-# Gmail (app password for SMTP fallback)
-GMAIL_APP_PASSWORD=...
+# Gmail SMTP (outgoing email; app password, not Gmail login)
+EMAIL_ADDRESS=you@gmail.com
+EMAIL_APP_PASSWORD=...
 
 # Job search APIs
 SERPAPI_KEY=...
@@ -688,8 +691,9 @@ MIXPANEL_TOKEN=...
 MIXPANEL_REGION=EU   # or US (default); must match your project's residency
 ```
 
-**Note (Apr 21):** `GOOGLE_API_KEY`, `GEMMA_MODEL`, and all other `GEMMA_*`
-vars are no longer read. Remove them from production `.env` to avoid confusion.
+**Note (Apr 22):** `GOOGLE_API_KEY`, `GEMMA_MODEL`, `RESEND_API_KEY`,
+`RESEND_SENDER_EMAIL`, `GMAIL_APP_PASSWORD` (the old name) are no longer
+read. Remove them from production `.env` to avoid confusion.
 
 ---
 
@@ -768,8 +772,8 @@ streamlit run app.py
 
 ## 13. Rate-Limit Guardrails
 
-- **Groq:** Capped wait at 60s via `handle_rate_limit()`
-- **Gemma:** Min gap 3s between calls
+- **Groq:** Capped wait at 60s via `handle_rate_limit()`; 3-key rotation on 429/401
+- **Gemini:** 3-key rotation on 429/401; falls back to Groq when all keys exhausted
 - **Scrape rounds:** Limited to 3 per planner
 - **LLM budget:** Configurable via env var, tracked per run
 
@@ -806,40 +810,43 @@ Saved to `sessions/{session_id}/snapshot.json` on completion or crash.
 
 ---
 
-## 17. Deployment Readiness (as of Apr 21, 2026)
+## 17. Deployment Readiness (as of Apr 22, 2026 — v1.2)
 
-### Overall: ⚠️ NOT YET — 3 blockers
+### Overall: ✅ DEPLOYED — live on Streamlit Community Cloud
 
-The app is functionally stable and the recent refactors are in place, but
-three items must be handled before any public/shared deploy.
+The app is running end-to-end on Streamlit Community Cloud with both
+dual-LLM rotation pools, WeasyPrint rebuild path, and Mixpanel analytics
+wired up. All previously flagged deploy blockers have been resolved.
 
 ### ✅ What's deployment-ready
 - Core pipeline: scrape → match → tailor → review → email (stable end-to-end)
-- Groq-only LLM stack with 3-key rotation (≈300K tokens/day ceiling)
-- Centralized LLM routing — no more ad-hoc Groq clients
+- Dual-LLM stack (Gemini writing + Groq structured) with 3-key rotation on each provider; cross-provider fallback when one pool is exhausted
+- Centralized LLM routing — no ad-hoc clients anywhere
+- WeasyPrint HTML/CSS rebuild path with `packages.txt` native deps; graceful fall-back to ReportLab
+- Canonical CV section order enforced in both renderers
+- Summary + cover-letter fabrication guards (prompt + post-gen)
+- Refresh-proof Mixpanel distinct_id (`?aid=<uuid>` in the URL)
 - GDPR baseline: consent gate, PII redaction, session-delete button, `docs/PRIVACY.md`
 - Optional Mixpanel analytics (no-op without token)
 - Experience-level + YOE filtering (saves ~30-50% matcher LLM spend)
 - User-threshold strictly respected (no auto-relaxation)
 - CV rendering fixes landed (`•` preserved, no bullet drops, achievement protection)
 
-### ⛔ Blockers before deploy
-1. **Rotate exposed API keys** — `.env` keys have been pasted in dev logs /
-   chats. Rotate Groq, LangSmith, Resend, Gmail app password, SerpAPI,
-   JSearch, Adzuna before sharing with anyone.
-2. **Create `.env.example`** — currently no template exists for downstream
-   setup.
-3. **Live validation run** — the Apr 21 no-drop + achievement + bullet-glyph
-   + key-rotation + 401-fix changes are logic-correct and parse-clean, but
-   haven't been validated end-to-end against a real Groq run with the user's
-   CV. One 3-job run will confirm.
+### ✅ Previously flagged blockers — now resolved
+1. **API key rotation** — all secrets live in `st.secrets` on Streamlit
+   Cloud; old keys rotated. Both Groq and Gemini now auto-rotate across
+   up to 3 keys each.
+2. **`.env.example`** — checked in at repo root, covers the full dual-LLM
+   + rotation setup.
+3. **Live validation** — v1.1 + v1.2 changes have all been exercised on
+   the deployed app during Apr 22 testing. Outstanding refinements tracked
+   in `docs/CHANGES_2026-04-22.md`.
 
-### 🟡 Pre-deploy nice-to-haves
+### 🟡 Remaining nice-to-haves
 - Pin versions in `requirements.txt` (`pip freeze > requirements.txt`)
-- Add a 60s run cooldown to prevent accidental double-runs
-- CV file-size limit (e.g. 5 MB)
-- `APP_PASSWORD` gate if deploying publicly
-- Scrape delays to avoid tripping board rate limits at scale
+- Scrape delays to avoid tripping board rate limits at scale (~5 min work)
+- HTML email template + dynamic subject lines (polish, not blocker)
+- Per-job progress bar replacing the single bulk one
 
 ### 📦 Recommended deploy flow
 1. Rotate all secrets, update `.env` on host, commit `.env.example` only.

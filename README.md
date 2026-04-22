@@ -19,18 +19,30 @@ sees them.
 - **In-place PDF editing** — tailored CVs preserve the user's original
   layout, fonts, and colours via byte-level PyMuPDF edits. No generic
   template swap.
-- **Honest tailoring** — a second LLM grades every cover letter (0-100) for
-  fabrication; sub-threshold outputs are retried with critique feedback. A
-  sanitiser layer strips fabricated metrics/companies before the reviewer
-  even runs.
+- **WeasyPrint HTML/CSS rebuild fallback** — when a designer or
+  multi-column template can't be edited in place, we rebuild into an
+  ATS-safe, page-count-preserving PDF via semantic HTML instead of the
+  older ReportLab path.
+- **Honest tailoring** — prompt-level fabrication bans plus post-gen
+  guards that scan every summary and cover letter for tool/framework
+  names absent from the CV and auto-retry or revert. Works identically
+  on the Groq fallback path.
 - **Deterministic filters before LLM spend** — YOE + experience-level
   checks skip ~30-50% of LLM calls on broad scrapes.
+- **Dual-provider key rotation** — up to 3 Gemini keys + 3 Groq keys
+  rotate on 429 / quota / auth errors, multiplying the daily envelope
+  without a paid tier.
 - **Crash-safe, budgeted, observable** — consent-gated LangSmith tracing
-  (PII-masked), full Mixpanel product-analytics dashboard, run-snapshot-on-
-  crash, Groq 3-key rotation pool, and hard per-run LLM call ceilings.
+  (PII-masked), live Mixpanel product-analytics dashboard with a
+  refresh-proof anonymous id, run-snapshot-on-crash, and hard per-run
+  LLM call ceilings.
 
-Built on **LangGraph + Groq (Llama-3.3 70B) + Gemini 2.5 Flash + Streamlit + ChromaDB + PyMuPDF**.
-Designed to run end-to-end on free-tier API quotas. Uses a dual-LLM architecture: Groq for fast tasks (matching, planning, review), Gemini for writing tasks (CV tailoring, cover letters).
+Built on **LangGraph + Groq (Llama-3.3 70B) + Gemini 2.5 Flash + Streamlit + ChromaDB + PyMuPDF + WeasyPrint**.
+Designed to run end-to-end on free-tier API quotas. Uses a dual-LLM
+architecture: Groq for fast structured tasks (matching, planning,
+reviewers, supervisor), Gemini for writing tasks (CV summary rewrite,
+bullet tailoring, cover letters). Either provider can fall back to the
+other when all keys in its rotation pool are exhausted.
 
 ### Preview
 
@@ -173,8 +185,8 @@ First run downloads the MiniLM-L6 embedder (~80 MB) into
 
 | Variable | Purpose |
 |---|---|
-| `GROQ_API_KEY` | Fast LLM tasks (matcher, planner, reviewers, supervisor) |
-| `GEMINI_API_KEY` | Writing tasks (CV tailoring, cover letters) - get from https://aistudio.google.com/app/apikey |
+| `GROQ_API_KEY` | Fast LLM tasks (matcher, planner, reviewers, supervisor). Optional companions `GROQ_API_KEY_2`, `GROQ_API_KEY_3` enable auto-rotation |
+| `GEMINI_API_KEY` | Writing tasks (CV tailoring, cover letters) — get one at https://aistudio.google.com/app/apikey. Optional companions `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3` enable auto-rotation |
 | `EMAIL_ADDRESS` | Gmail account used as sender for SMTP delivery |
 | `EMAIL_APP_PASSWORD` | Gmail App Password (16-char; generate at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), requires 2FA) |
 
@@ -212,12 +224,13 @@ reads from both.
 
 ## Known limits
 
-- **Groq free tier.** Daily token cap + per-minute rate cap. Defaults are
-  tuned for it: `MAX_LLM_CALLS_PER_RUN=20`, `max_scrape_rounds=2`. If you
-  see the banner *"Groq rate limit hit"*, wait for the per-minute window
-  to roll over or the daily cap to reset at 00:00 Pacific.
-- **Gemini free tier.** 1,500 requests/day, 1M tokens/min. Used for CV tailoring
-  and cover letters. Falls back to Groq if unavailable or rate-limited.
+- **Groq free tier.** 100K tokens/day per key + per-minute rate cap. With
+  three keys rotated on 429 the daily envelope is ~300K tokens. If every
+  key is exhausted the app shows a clear banner instead of hanging.
+- **Gemini 2.5 Flash free tier.** ~250 requests/day per key on the Flash
+  tier at the time of writing. Configure up to three keys
+  (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`) to triple
+  the envelope. Any failure falls back to Groq automatically.
 - **Rate-limit cap.** Any wait longer than `MAX_RATE_LIMIT_WAIT` aborts the
   run instead of hanging for 10-35 min.
 - **Scrape boards.** LinkedIn scraping is anti-bot-aggressive; Indeed /
@@ -226,7 +239,9 @@ reads from both.
   files, and sub-500-char CVs are rejected by the pre-flight validator
   with a human-readable reason. See `docs/SUPPORTED_CV_FORMATS.md`.
 - **File size limit.** CV upload limited to 7 MB.
-- **Per-session run limit.** 3 runs per browser session per day to prevent quota abuse.
+- **Per-browser run limit.** 3 runs per anonymous id per day. The id is
+  stored in the URL (`?aid=<uuid>`) so it survives refreshes; a new
+  browser / incognito window still resets it.
 
 ---
 
@@ -244,6 +259,12 @@ You'll fit, but not with much room to spare.
 and remove the two lines below the `# Vector retrieval` comment in
 `requirements.txt`. The agent falls back to full-CV matching — more
 tokens per call, but same behaviour. Install drops to ~350 MB.
+
+**WeasyPrint native deps.** The HTML/CSS rebuild path needs
+`libpango`, `libcairo`, and friends at the OS level. `packages.txt` at
+the repo root declares them so Streamlit Cloud installs them on deploy.
+If you run the app on a host that doesn't honour `packages.txt`, the
+rebuild path degrades gracefully to ReportLab.
 
 ### Option B — Railway / Render / Fly.io (~$5-7/mo)
 
@@ -377,7 +398,9 @@ agents/
   cover_letter_reviewer.py  # fabrication grading
   reviewer.py            # tailored-CV quality review
   pdf_editor.py          # in-place PDF edits via PyMuPDF
-  pdf_formatter.py       # rebuild path via ReportLab
+  pdf_formatter.py       # rebuild router — tries WeasyPrint first, then ReportLab
+  pdf_formatter_weasy.py # HTML+CSS rebuild via WeasyPrint (ATS-safe)
+  templates/             # Jinja2 HTML templates for WeasyPrint
   email_agent.py         # Gmail SMTP delivery
   job_agent.py           # LangGraph supervisor + nodes
 app.py                   # Streamlit UI

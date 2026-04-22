@@ -1,28 +1,48 @@
 # ApplySmart AI — Roadmap
 
-*Product owner: Rishav Singh · Last updated: Apr 2026*
+*Product owner: Rishav Singh · Last updated: 22 Apr 2026 (v1.2)*
 
 This doc captures the path from "solo prototype that works on my laptop" to
 "multi-user product other people can trust with their CV and job history".
 
 It's deliberately **honest about gaps**: the current build is a functional
-prototype, not a production service. The items below are what separate the
-two, grouped by how soon they'd need to land.
+prototype deployed to Streamlit Cloud, not a production-grade service. The
+items below are what separate the two, grouped by how soon they'd need to
+land.
 
 ---
 
-## Where we are today (April 2026)
+## Where we are today (22 Apr 2026, v1.2)
 
-**Works end-to-end as a single-user tool:**
-- Upload a CV → scrape LinkedIn/Indeed/Glassdoor → score against the JD →
-  tailor CV + cover letter → generate PDFs → preview → email.
-- Fabrication reviewer, input validation, preview-before-send, and 6 other
-  guardrails against typical AI failure modes.
-- Crash-safe session snapshots, Groq-rate-limit handling, LLM budget cap.
+**Deployed on Streamlit Community Cloud** and fully usable end-to-end by a
+real user:
+- Upload a CV → scrape LinkedIn / Indeed / Glassdoor / Builtin / Jobs.ie →
+  score against each JD → tailor the CV summary + bullets + cover letter →
+  render to PDF → preview → email.
+- Dual-LLM architecture: **Groq** (Llama 3.3 70B) for structured tasks,
+  **Gemini 2.5 Flash** for writing. Both support up to 3 rotating API keys
+  and cross-provider fallback.
+- **PDF rendering pipeline:** PyMuPDF in-place edits first; **WeasyPrint**
+  HTML/CSS rebuild as ATS-safe fallback; ReportLab as a last-resort safety
+  net on hosts without WeasyPrint's native deps.
+- **Fabrication defence in depth:** prompt-level bans + post-generation
+  guards for both the summary and the cover letter. The guards run in
+  pure Python so they protect the Groq fallback path too.
+- **Canonical CV section order** enforced by the renderers — Header →
+  Summary → Experience → Education → Skills → Other — regardless of what
+  the LLM emits.
+- **Live Mixpanel dashboard** (5-step outcome funnel, retention, match
+  quality, runs-per-day, experience-level breakdown) with a refresh-proof
+  anonymous id stored in `?aid=<uuid>`.
+- **Deployment-wide daily usage counter** backed by a file-based cache so
+  all users and tabs see the same "runs left today" value.
+- Crash-safe session snapshots, capped rate-limit waits, hard LLM budget
+  per run, consent-gated LangSmith tracing, pre-flight CV validator,
+  prompt-injection fences.
 
-**What exists for "repeat usage":**
+**What exists for repeat usage:**
 - `application_tracker.py` keyed on **user email** remembers which job URLs
-  the user has already applied to. Next run skips those.
+  the user has already applied to; next run skips those.
 
 **What does not exist yet:**
 - Authentication of any kind (anyone can type any email into the UI).

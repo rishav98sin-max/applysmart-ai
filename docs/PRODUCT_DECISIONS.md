@@ -1,6 +1,6 @@
 # ApplySmart AI — Product Decisions Register
 
-Last updated: 2026-04-22
+Last updated: 2026-04-22 (evening)
 Owner: Rishav Singh
 
 This document is the concise "why" layer for portfolio and team handoff.
@@ -95,6 +95,38 @@ It complements `PM_CASE_STUDY.md` (narrative) with crisp product decisions.
 - **Options considered:** In-memory global, session state, file-based cache, database.
 - **Chosen approach:** File-based JSON cache with date-based daily reset.
 - **Trade-off:** Race condition possible with simultaneous writes, but acceptable given per-session run limit as primary abuse prevention.
+
+## Decision 12 — WeasyPrint HTML/CSS Rebuild Path Before ReportLab
+
+- **Decision:** When in-place PDF editing is impossible (designer / multi-column templates), attempt WeasyPrint HTML+CSS rebuild first; only fall back to ReportLab when WeasyPrint is unavailable.
+- **Why:** ReportLab rebuilds produced ATS-unfriendly output on designer CVs — no summary section, bullets rendered as `-`, missing contact details, often adding an unnecessary second page. WeasyPrint + Jinja2 templates give us semantic HTML (`h1`/`h2`/`ul`/`li`), standard fonts, and auto-scaled typography that preserves the original page count.
+- **Options considered:** Keep ReportLab only (low effort), Playwright/Chromium render (heavyweight, slower), WeasyPrint (mid-weight but ATS-safe), DOCX then LibreOffice convert (platform coupling).
+- **Chosen approach:** WeasyPrint primary, ReportLab safety net. System libs (`libpango`, `libcairo`, etc.) shipped via `packages.txt` for Streamlit Cloud.
+- **Trade-off:** Extra dependency footprint on the deploy host; render quality depends on `packages.txt` installing cleanly. Graceful fallback keeps the app functional even if WeasyPrint is missing locally.
+
+## Decision 13 — Canonical CV Section Order Independent of LLM Output
+
+- **Decision:** Both PDF renderers reorder tailored sections into a fixed sequence — **Header → Professional Summary → Experience → Projects → Education → Skills → Certifications / Other** — before drawing anything.
+- **Why:** Recruiters scan in a predictable order (6-second test). LLMs occasionally emit sections in an unconventional order, especially on the Groq fallback path; pure-Python sorting decouples layout from prompt variance.
+- **Options considered:** Trust LLM ordering (brittle), re-prompt the LLM to reorder (wastes calls), hard-code the order in the renderer (chosen).
+- **Chosen approach:** Python sort on the parsed section list using an explicit priority map.
+- **Trade-off:** Users who *want* a non-standard order (e.g. Skills before Experience for career switchers) can't override via the prompt. Acceptable for v1 — standard order is what ATS + recruiters expect.
+
+## Decision 14 — Dual-Provider Key Rotation for Resilience
+
+- **Decision:** Both Groq and Gemini support up to 3 rotating API keys (`*_API_KEY`, `*_API_KEY_2`, `*_API_KEY_3`). On 429 / quota / auth errors, the client advances to the next key and retries immediately.
+- **Why:** Free-tier quotas (Gemini 2.5 Flash in particular) are tight enough that a single developer testing the app can exhaust the daily envelope in an afternoon. Key rotation triples the daily envelope without paying for a tier upgrade.
+- **Options considered:** Single key + exponential backoff (user-blocking stalls), paid tier upgrade (unnecessary at current scale), key rotation (chosen).
+- **Chosen approach:** Identical rotation pattern on both providers. Gemini falls back to Groq only when all Gemini keys are exhausted, preserving quality where possible.
+- **Trade-off:** Managing multiple developer accounts per provider. Mitigated because each key still belongs to the same human — no additional user data is involved.
+
+## Decision 15 — Persistent Anonymous ID via URL Query Param
+
+- **Decision:** Mixpanel distinct_id is stored in the URL (`?aid=<uuid>`), not in Streamlit session state.
+- **Why:** Streamlit `session_state` resets on every tab refresh, reopen, or idle timeout. The Mixpanel funnel (cv_uploaded → run_started → run_completed → send_completed → job_marked_applied) was breaking on "Today" because users refreshed mid-funnel during testing, creating new "users" at each step. URL query params survive refreshes and back-navigation without a cookie dependency.
+- **Options considered:** `session_state` only (breaks on refresh), cookies via `extra-streamlit-components` (extra dep + UX friction), `st.context.cookies` (Streamlit ≥1.37 only, read-only), URL query param (chosen).
+- **Chosen approach:** Generate on first load, write back to `st.query_params`, reuse on subsequent loads.
+- **Trade-off:** URL carries a visible opaque id. Doesn't persist across browsers / incognito / different devices — which is acceptable for an anonymous funnel; authenticated users would get a stable email-hash id anyway.
 
 ---
 
