@@ -48,9 +48,35 @@ PARAGRAPH 4 — CLOSE (2-3 sentences):
 
 STRICT RULES:
 - 340-400 words total
-- Every fact must come ONLY from the CV — never invent anything
 - Plain text only — no headers, bullets, asterisks, markdown
 - Do NOT include "Dear Hiring Manager", "Warm Regards", or any salutation/sign-off
+
+HARD FABRICATION BAN (ZERO TOLERANCE):
+You may reference ONLY tools, technologies, languages, frameworks, methods,
+certifications, and employers that are LITERALLY written somewhere in the
+CANDIDATE CV block below. It is a critical failure to mention anything the
+CV does not contain.
+
+Examples of what you MUST NOT do:
+  - If the JD mentions "Python, JMeter, Selenium, Neo Load, GitHub, API
+    testing" but the CV only lists "Java, LoadRunner, VuGen, JIRA", you are
+    FORBIDDEN from writing "my skills in Python", "experience with JMeter",
+    "familiarity with GitHub", "API testing proficiency", etc. — even
+    framed as "exposure to" or "working knowledge of".
+  - If the JD says "Scrum, Kanban" and the CV has no agile methodology
+    listed, do NOT claim agile experience.
+  - If the JD wants "AWS" and the CV does not mention AWS/cloud, do NOT
+    claim cloud experience.
+
+If you cannot write the paragraph without JD-only terms, choose a DIFFERENT
+angle that IS grounded in the CV — the candidate's existing strengths are
+always enough to write a compelling letter. Paragraph 3 in particular
+MUST lead with a CV-verified achievement, never an aspiration based on
+JD keywords.
+
+Before writing each sentence, silently check: "Is every noun, tool,
+language, and claim in this sentence literally present in the CV above?"
+If the answer is no, rewrite the sentence using only CV facts.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CANDIDATE : {candidate_name}
