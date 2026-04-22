@@ -846,76 +846,32 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # ─── Daily budget panel ─────────────────────────────────────────
-    # Live Groq quota read from the x-ratelimit-* response headers on
-    # every LLM call (see agents.llm_client.get_quota_summary). Shows
-    # tokens remaining + an estimate of how many more full runs fit
-    # into today's daily window. Aggregates across all rotated keys.
-    # Collapsed by default to reduce sidebar scroll height.
-    with st.expander("Daily Budget", expanded=False):
-        try:
-            from agents.llm_client import get_quota_summary
-            _q = get_quota_summary()
-        except Exception:
-            _q = {"ready": False}
+    # ─── Daily usage (deployment-wide) ──────────────────────────────
+    # Single line showing how many agent runs are left in today's shared
+    # Groq pool. Decremented on every LLM call and persisted to the
+    # .quota_cache.json file, so User B sees what User A already used.
+    try:
+        from agents.llm_client import get_quota_summary
+        _q = get_quota_summary()
+    except Exception:
+        _q = {"ready": False}
 
-        if not _q.get("ready"):
+    if _q.get("ready"):
+        _runs     = max(0, int(_q.get("est_runs_left", 0)))
+        _pct_used = int(_q.get("pct_used", 0))
+        _reset    = _q.get("reset_tokens", "")
+
+        st.markdown(
+            f"<div class='sidebar-h' style='margin-top:8px;'>"
+            f"Daily usage: <b>{_runs} runs left today</b>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        if _pct_used >= 80:
             st.caption(
-                "💡 No Groq API keys configured — daily-budget meter unavailable."
+                f"⚠️ {100 - _pct_used}% of today's shared budget left"
+                + (f" · resets in {_reset}" if _reset else "")
             )
-        else:
-            _total    = _q.get("total_budget", 0)
-            _used     = _q.get("used", 0)
-            _rem      = _q.get("remaining", 0)
-            _pct_used = _q.get("pct_used", 0)
-            _runs     = _q.get("est_runs_left", 0)
-            _per_key  = _q.get("tokens_per_key", 0)
-            _keys_t   = _q.get("keys_total", 0)
-            _per_run  = _q.get("tokens_per_run", 0)
-            _reset    = _q.get("reset_tokens", "")
-
-            def _fmt_tokens(n: int) -> str:
-                if n >= 1_000_000:
-                    return f"{n/1_000_000:.1f}M"
-                if n >= 1_000:
-                    return f"{n/1_000:.0f}K"
-                return str(n)
-
-            # Two-metric display: how much of the pool is left + how many more
-            # full runs that buys us. Numbers are deployment-wide, not per-user.
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric(
-                    "Tokens left today",
-                    _fmt_tokens(_rem),
-                    delta=f"of {_fmt_tokens(_total)}",
-                    delta_color="off",
-                )
-            with col2:
-                st.metric(
-                    "Runs left (est.)",
-                    f"~{max(0, _runs)}",
-                    delta=f"{_keys_t} keys × {_fmt_tokens(_per_key)}",
-                    delta_color="off",
-                )
-
-            # Live progress of today's pool usage, 0-100%.
-            st.progress(
-                min(1.0, _pct_used / 100.0) if _pct_used else 0.0,
-                text=f"{_pct_used}% of daily pool used",
-            )
-
-            pct_remaining = 100 - _pct_used
-            if _total and pct_remaining < 20:
-                st.warning(
-                    f"Only ~{pct_remaining}% of today's Groq budget left. "
-                    f"Quota resets every 24h" +
-                    (f" ({_reset})" if _reset else "") +
-                    " — consider waiting before the next large run.",
-                    icon="⚠️",
-                )
-            elif _reset:
-                st.caption(f"Resets in {_reset} (Groq daily window)")
 
     st.markdown('<div class="sidebar-h">Privacy</div>', unsafe_allow_html=True)
     with st.expander("Privacy & data", expanded=False):

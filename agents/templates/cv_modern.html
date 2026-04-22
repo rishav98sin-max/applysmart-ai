@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CV — {{ candidate_name }}</title>
+<style>
+  @page {
+    size: {{ page_size }};
+    margin: {{ margin_top_mm }}mm {{ margin_right_mm }}mm {{ margin_bottom_mm }}mm {{ margin_left_mm }}mm;
+    @bottom-center {
+      content: counter(page) " / " counter(pages);
+      font-size: 8pt;
+      color: #888;
+    }
+  }
+  body {
+    font-family: "{{ body_font }}", Helvetica, Arial, sans-serif;
+    font-size: {{ body_font_size }}pt;
+    line-height: 1.35;
+    color: #222;
+    margin: 0;
+  }
+  /* ── Header ─────────────────────────────────────────── */
+  header.cv-header {
+    border-bottom: 2px solid {{ accent_color }};
+    padding-bottom: 6pt;
+    margin-bottom: 12pt;
+  }
+  header.cv-header h1 {
+    font-family: "{{ header_font }}", Helvetica, Arial, sans-serif;
+    font-size: {{ name_font_size }}pt;
+    color: {{ accent_color }};
+    margin: 0 0 2pt 0;
+    letter-spacing: 0.4pt;
+  }
+  header.cv-header .contact {
+    font-size: {{ small_font_size }}pt;
+    color: #555;
+    margin: 0;
+  }
+  header.cv-header .contact span + span::before {
+    content: " · ";
+    color: #aaa;
+  }
+  /* ── Section heading ─────────────────────────────────── */
+  h2.section {
+    font-family: "{{ header_font }}", Helvetica, Arial, sans-serif;
+    font-size: {{ section_font_size }}pt;
+    color: {{ accent_color }};
+    text-transform: uppercase;
+    letter-spacing: 0.8pt;
+    border-bottom: 1px solid #e0e0e0;
+    padding-bottom: 2pt;
+    margin: 14pt 0 6pt 0;
+  }
+  /* ── Role block ──────────────────────────────────────── */
+  .role {
+    margin-bottom: 10pt;
+    page-break-inside: avoid;
+  }
+  .role-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: {{ body_font_size }}pt;
+  }
+  .role-title {
+    font-weight: 600;
+    color: #222;
+  }
+  .role-dates {
+    font-size: {{ small_font_size }}pt;
+    color: #777;
+    font-style: italic;
+  }
+  .role-summary {
+    font-size: {{ small_font_size }}pt;
+    color: #444;
+    margin: 2pt 0 4pt 0;
+  }
+  /* ── Bullets ─────────────────────────────────────────── */
+  ul {
+    margin: 2pt 0 4pt 14pt;
+    padding: 0;
+  }
+  ul li {
+    margin-bottom: 2pt;
+    line-height: 1.35;
+  }
+  /* ── Skills & other paragraphs ───────────────────────── */
+  .skills, .paragraph {
+    font-size: {{ body_font_size }}pt;
+    margin: 2pt 0;
+  }
+  .skills strong {
+    color: {{ accent_color }};
+  }
+  /* ── Summary paragraph ───────────────────────────────── */
+  .summary {
+    font-size: {{ body_font_size }}pt;
+    margin: 0 0 6pt 0;
+    text-align: justify;
+  }
+</style>
+</head>
+<body>
+  <header class="cv-header">
+    <h1>{{ candidate_name }}</h1>
+    {% if contact_bits %}
+    <p class="contact">
+      {% for bit in contact_bits %}<span>{{ bit }}</span>{% endfor %}
+    </p>
+    {% endif %}
+  </header>
+
+  {% if summary %}
+  <h2 class="section">Professional Summary</h2>
+  <p class="summary">{{ summary }}</p>
+  {% endif %}
+
+  {% for section in sections %}
+    {% if section.heading %}
+      <h2 class="section">{{ section.heading }}</h2>
+    {% endif %}
+    {% for role in section.roles %}
+      <div class="role">
+        <div class="role-header">
+          <span class="role-title">{{ role.title }}</span>
+          {% if role.dates %}<span class="role-dates">{{ role.dates }}</span>{% endif %}
+        </div>
+        {% if role.sub %}<div class="role-summary">{{ role.sub }}</div>{% endif %}
+        {% if role.bullets %}
+          <ul>
+            {% for b in role.bullets %}<li>{{ b }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+    {% endfor %}
+    {% for para in section.paragraphs %}
+      <p class="paragraph">{{ para }}</p>
+    {% endfor %}
+  {% endfor %}
+</body>
+</html>

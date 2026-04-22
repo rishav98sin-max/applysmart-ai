@@ -532,16 +532,57 @@ def _display_section_title(section_type: str, heading_from_cv: str) -> str:
 # CV PDF GENERATOR
 # ─────────────────────────────────────────────────────────────
 
+# Prefer the HTML+CSS (WeasyPrint) renderer for the rebuild path — it
+# produces ATS-safe output that looks closer to a proper CV than the
+# ReportLab flow. ReportLab stays as a safety net for dev environments
+# where WeasyPrint's native deps (libpango, cairo) can't be installed.
+def _try_weasy_cv(
+    cv_text: str,
+    job_title: str,
+    company: str,
+    output_dir: str,
+    style_profile: dict,
+) -> Optional[str]:
+    try:
+        from agents import pdf_formatter_weasy as _weasy
+    except Exception as e:
+        print(f"   ⚠️  pdf_formatter_weasy import failed: {e}")
+        return None
+    if not _weasy.is_available():
+        return None
+    target = int(style_profile.get("page_count") or 1)
+    return _weasy.generate_cv_pdf_weasy(
+        cv_text=cv_text,
+        job_title=job_title,
+        company=company,
+        output_dir=output_dir,
+        style_profile=style_profile,
+        target_pages=max(1, target),
+    )
+
+
 def generate_cv_pdf_styled(
-    cv_text:       str,
-    job_title:     str,
-    company:       str,
-    output_dir:    str,
+    cv_text: str,
+    job_title: str,
+    company: str,
+    output_dir: str,
     style_profile: dict
 ) -> str:
-    safe_co    = company.replace(" ", "_").replace("/", "-")
+    # 1) Try WeasyPrint / HTML-CSS route first.
+    weasy_path = _try_weasy_cv(
+        cv_text=cv_text,
+        job_title=job_title,
+        company=company,
+        output_dir=output_dir,
+        style_profile=style_profile,
+    )
+    if weasy_path and os.path.exists(weasy_path) and os.path.getsize(weasy_path) > 0:
+        print(f"   🎨 CV rendered via WeasyPrint → {os.path.basename(weasy_path)}")
+        return weasy_path
+    # 2) Fall back to the legacy ReportLab renderer below.
+    safe_co = company.replace(" ", "_").replace("/", "-")
     safe_title = job_title.replace(" ", "_").replace("/", "-")
-    filepath   = os.path.join(output_dir, f"CV_{safe_co}_{safe_title}.pdf")
+    filepath = os.path.join(output_dir, f"CV_{safe_co}_{safe_title}.pdf")
 
     lm = float(style_profile.get("left_margin_mm", 18))
     rm = float(style_profile.get("right_margin_mm", 18))
@@ -716,6 +757,33 @@ def _parse_cover_letter_structure(
     return sal, body.strip(), "Warm Regards", candidate_name.strip()
 
 
+def _try_weasy_cl(
+    cover_letter: str,
+    job_title: str,
+    company: str,
+    output_dir: str,
+    style_profile: dict,
+    candidate_name: str,
+) -> Optional[str]:
+    try:
+        from agents import pdf_formatter_weasy as _weasy
+    except Exception as e:
+        print(f"   ⚠️  pdf_formatter_weasy import failed: {e}")
+        return None
+    if not _weasy.is_available():
+        return None
+    contact_bits = style_profile.get("contact_bits") or []
+    return _weasy.generate_cover_letter_pdf_weasy(
+        cover_letter   = cover_letter,
+        job_title      = job_title,
+        company        = company,
+        output_dir     = output_dir,
+        style_profile  = style_profile,
+        candidate_name = candidate_name,
+        contact_bits   = contact_bits,
+    )
+
+
 def generate_cover_letter_pdf_styled(
     cover_letter:   str,
     job_title:      str,
@@ -724,6 +792,19 @@ def generate_cover_letter_pdf_styled(
     style_profile:  dict,
     candidate_name: str = "Candidate",
 ) -> str:
+    # Prefer WeasyPrint HTML/CSS rendering; fall back to ReportLab.
+    weasy_path = _try_weasy_cl(
+        cover_letter   = cover_letter,
+        job_title      = job_title,
+        company        = company,
+        output_dir     = output_dir,
+        style_profile  = style_profile,
+        candidate_name = candidate_name,
+    )
+    if weasy_path and os.path.exists(weasy_path) and os.path.getsize(weasy_path) > 0:
+        print(f"   🎨 Cover letter rendered via WeasyPrint → {os.path.basename(weasy_path)}")
+        return weasy_path
+
     safe_co    = company.replace(" ", "_").replace("/", "-")
     safe_title = job_title.replace(" ", "_").replace("/", "-")
     filepath   = os.path.join(output_dir, f"CoverLetter_{safe_co}_{safe_title}.pdf")

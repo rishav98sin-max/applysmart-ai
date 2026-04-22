@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cover Letter — {{ candidate_name }}</title>
+<style>
+  @page {
+    size: {{ page_size }};
+    margin: {{ margin_top_mm }}mm {{ margin_right_mm }}mm {{ margin_bottom_mm }}mm {{ margin_left_mm }}mm;
+  }
+  body {
+    font-family: "{{ body_font }}", Georgia, "Times New Roman", serif;
+    font-size: {{ body_font_size }}pt;
+    line-height: 1.45;
+    color: #222;
+    margin: 0;
+  }
+  .sender {
+    font-size: {{ small_font_size }}pt;
+    color: #555;
+    margin-bottom: 18pt;
+    line-height: 1.3;
+  }
+  .sender .name {
+    font-weight: 600;
+    color: {{ accent_color }};
+    font-size: {{ body_font_size }}pt;
+  }
+  .date {
+    margin-bottom: 18pt;
+    font-size: {{ small_font_size }}pt;
+    color: #555;
+  }
+  .recipient {
+    margin-bottom: 18pt;
+    font-size: {{ small_font_size }}pt;
+  }
+  .salutation {
+    margin-bottom: 12pt;
+    font-weight: 500;
+  }
+  .body p {
+    margin: 0 0 10pt 0;
+    text-align: justify;
+  }
+  .signoff {
+    margin-top: 14pt;
+  }
+  .signoff .name {
+    font-weight: 600;
+    margin-top: 24pt;
+  }
+</style>
+</head>
+<body>
+  <div class="sender">
+    <div class="name">{{ candidate_name }}</div>
+    {% if contact_bits %}
+      {% for bit in contact_bits %}<div>{{ bit }}</div>{% endfor %}
+    {% endif %}
+  </div>
+
+  {% if date_line %}<div class="date">{{ date_line }}</div>{% endif %}
+
+  {% if recipient %}<div class="recipient">{{ recipient }}</div>{% endif %}
+
+  <div class="salutation">{{ salutation }}</div>
+
+  <div class="body">
+    {% for para in body_paragraphs %}<p>{{ para }}</p>{% endfor %}
+  </div>
+
+  <div class="signoff">
+    <div>{{ signoff }}</div>
+    <div class="name">{{ candidate_name }}</div>
+  </div>
+</body>
+</html>

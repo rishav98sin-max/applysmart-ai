@@ -70,6 +70,12 @@ def build_style_profile(pdf_path: str) -> Dict[str, Any]:
 
     try:
         doc = fitz.open(pdf_path)
+        # Record the original page count so the rebuild renderer can
+        # target the same length (1→1, 2→2). Defaults to 1.
+        try:
+            profile["page_count"] = int(doc.page_count) or 1
+        except Exception:
+            profile["page_count"] = 1
         page = doc[0]
 
         sizes, fonts, left_edges = _collect_span_stats(page)
