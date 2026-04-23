@@ -324,6 +324,7 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature,
                 max_tokens=max_tokens,
+                timeout=60.0,  # 60 second timeout to prevent indefinite hanging
             )
             # Defensive header capture — never block the response path.
             try:
@@ -507,6 +508,7 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
                     max_output_tokens=max_tokens,
                     temperature=temperature,
                 ),
+                timeout=60.0,  # 60 second timeout to prevent indefinite hanging
             )
             try:
                 if hasattr(response, "usage_metadata"):
@@ -531,6 +533,8 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
                 f"   ⚠️  Gemini call failed ({type(e).__name__}: {e}), "
                 f"falling back to Groq"
             )
+            # Add 3-second delay before switching providers to prevent rapid-fire failures
+            time.sleep(3)
             return _call_groq(
                 prompt, max_tokens=max_tokens, temperature=temperature
             )
