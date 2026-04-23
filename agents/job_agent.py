@@ -1121,16 +1121,6 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
             safe_title = title.replace(" ", "_").replace("/", "-")
             replica_path = os.path.join(out_dir, f"CV_{safe_co}_{safe_title}.pdf")
 
-            # Early quota exhaustion check - prevent degraded output
-            from agents.llm_client import get_quota_summary
-            quota = get_quota_summary()
-            if quota.get("est_runs_left", 0) <= 0:
-                raise RuntimeError(
-                    "Both Gemini and Groq quotas exhausted. "
-                    "Please try again tomorrow after the daily quota reset. "
-                    "Your CV and cover letter have not been generated to avoid producing degraded output."
-                )
-
             best_diff:   Optional[Dict[str, Any]] = None
             best_review: Optional[Dict[str, Any]] = None
 
@@ -1632,12 +1622,9 @@ def run_agent(
     print(f"   Source   : {source}")
     print(f"   Jobs     : {num_jobs}")
     print(f"   Threshold: {match_threshold}%")
-    if experience_level:
-        print(f"   Level    : {experience_level}")
-    if session_id:
-        print(f"   Session  : {session_id[:8]}…")
-    if llm_budget is not None:
-        print(f"   LLM cap  : {getattr(llm_budget, 'limit', '?')} calls")
+    print(f"   Level    : {experience_level if experience_level else 'Not specified'}")
+    print(f"   Session  : {session_id[:10]}…")
+    print(f"   LLM cap  : {llm_budget.calls if llm_budget else 'N/A'}")
     print(f"{'='*60}\n")
 
     initial_state: AgentState = {
