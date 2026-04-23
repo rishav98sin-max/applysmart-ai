@@ -481,20 +481,21 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
         print("   ⚠️  No GEMINI_API_KEY* found, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
 
-    # Rate limiting: enforce 13-second gap between calls to stay under
-    # Gemini 2.5 Flash free tier's 5 RPM global limit.
-    # Use a lock to prevent concurrent calls from bypassing the limit.
-    with _GEMINI_RATE_LIMIT_LOCK:
-        elapsed = time.time() - _LAST_GEMINI_CALL_TIME
-        if elapsed < 13:
-            sleep_time = 13 - elapsed
-            print(f"   ⏳ Gemini rate limit: sleeping {sleep_time:.1f}s before call...")
-            time.sleep(sleep_time)
-
     # Up to (num_keys) rotation attempts — one real call per key.
     attempts = len(_GEMINI_KEYS)
     last_err: Optional[Exception] = None
     for _ in range(attempts):
+        # Rate limiting: enforce 13-second gap between calls to stay under
+        # Gemini 2.5 Flash free tier's 5 RPM global limit.
+        # Use a lock to prevent concurrent calls from bypassing the limit.
+        # Check BEFORE each attempt to ensure rotated keys also respect the limit.
+        with _GEMINI_RATE_LIMIT_LOCK:
+            elapsed = time.time() - _LAST_GEMINI_CALL_TIME
+            if elapsed < 13:
+                sleep_time = 13 - elapsed
+                print(f"   ⏳ Gemini rate limit: sleeping {sleep_time:.1f}s before call...")
+                time.sleep(sleep_time)
+
         active = _gemini_configure_current()
         if not active:
             break
