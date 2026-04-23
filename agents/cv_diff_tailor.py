@@ -335,6 +335,52 @@ def _cv_vocabulary(outline: Dict[str, Any]) -> set:
     return {text}  # return as single-element set; callers use 'in' on the text
 
 
+def _check_professional_identity_fabrication(orig_summary: str, new_summary: str, cv_text_set: set) -> Optional[str]:
+    """
+    Check if the summary introduces a professional identity not supported by the CV.
+    
+    Allows: "passionate about transitioning to X", "interested in exploring X"
+    Disallows: Changing professional title (e.g., "Marketing" → "Sales") if X not in CV
+    
+    Returns error message if fabrication detected, None otherwise.
+    """
+    if not orig_summary or not new_summary:
+        return None
+    
+    cv_text = next(iter(cv_text_set), "") if cv_text_set else ""
+    if not cv_text:
+        return None
+    
+    # Extract professional identity phrases from both summaries
+    # Look for patterns like "X Professional", "X & Y Professional", "X Specialist"
+    orig_lower = orig_summary.lower()
+    new_lower = new_summary.lower()
+    
+    # Allow transition language
+    transition_phrases = [
+        "passionate about", "interested in", "eager to", "looking to",
+        "transitioning to", "pivot into", "exploring", "aspiring to"
+    ]
+    if any(phrase in new_lower for phrase in transition_phrases):
+        return None  # Allow transition language
+    
+    # Check if new summary adds a domain not in original CV
+    # Common professional domains to check
+    domains = [
+        "sales", "marketing", "engineering", "product", "design",
+        "operations", "finance", "hr", "consulting", "data"
+    ]
+    
+    for domain in domains:
+        # Check if domain appears in new summary but not in original
+        if domain in new_lower and domain not in orig_lower:
+            # Check if domain exists anywhere in original CV
+            if domain not in cv_text.lower():
+                return f"summary adds '{domain}' professional identity not present in original CV"
+    
+    return None
+
+
 def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
     """
     Return a list of capitalized/acronym phrases that appear in `summary`
@@ -687,17 +733,31 @@ def tailor_cv_diff(
     new_sum = (diff.get("summary") or "").strip()
     if new_sum and orig_summary:
         cv_vocab = _cv_vocabulary(outline)
-        foreign  = _foreign_capitalized_terms(new_sum, cv_vocab)
-        if foreign:
+        
+        # Check for professional identity fabrication
+        identity_error = _check_professional_identity_fabrication(orig_summary, new_sum, cv_vocab)
+        if identity_error:
             print(
-                f"   ⚠️  summary introduced CV-foreign terms {foreign!r} — "
-                f"reverting to original summary to avoid fabrication."
+                f"   ⚠️  {identity_error} — reverting to original summary to avoid fabrication."
             )
             diff["_debug"]["summary_reverts"].append({
-                "reason": "cv_foreign_terms",
-                "terms":  foreign[:8],
+                "reason": "professional_identity_fabrication",
+                "detail": identity_error,
             })
             diff["summary"] = orig_summary
+        else:
+            # Check for foreign capitalized terms
+            foreign = _foreign_capitalized_terms(new_sum, cv_vocab)
+            if foreign:
+                print(
+                    f"   ⚠️  summary introduced CV-foreign terms {foreign!r} — "
+                    f"reverting to original summary to avoid fabrication."
+                )
+                diff["_debug"]["summary_reverts"].append({
+                    "reason": "cv_foreign_terms",
+                    "terms":  foreign[:8],
+                })
+                diff["summary"] = orig_summary
 
     # ── Length-enforcement retry ─────────────────────────────────────
     # Triggers when the new summary is below 85% of the original word count.

@@ -1104,7 +1104,7 @@ def apply_edits(
             else:
                 report["skipped"].append("skills: section not found")
 
-        doc.save(output_path, deflate=True, garbage=3)
+        doc.save(output_path, deflate=True, garbage=0)
     finally:
         doc.close()
 
