@@ -1071,17 +1071,35 @@ if run_button:
                     st.write(f"• {w}")
         st.stop()
     if cv_report.warnings:
-        with st.expander(
-            f"⚠ CV compatibility: {cv_report.score}/100 — "
-            f"{len(cv_report.warnings)} warning(s). Click to review.",
-            expanded=False,
-        ):
-            for w in cv_report.warnings:
-                st.write(f"• {w}")
-            st.caption(
-                "The agent will still run, but output quality may be reduced. "
-                "You can stop the run if needed."
+        # Severe: multi-column / designer template, or compatibility <= 75.
+        # Show inline so the user can't miss it before clicking "Run agent".
+        is_severe = (
+            cv_report.score <= 75
+            or cv_report.details.get("has_sidebar")
+            or (cv_report.details.get("columns") or 1) >= 2
+            or cv_report.details.get("designer_sidebar_tokens")
+        )
+        if is_severe:
+            st.warning(
+                f"**⚠ CV compatibility: {cv_report.score}/100 — your CV may "
+                f"produce a degraded tailored output.**\n\n"
+                + "\n".join(f"- {w}" for w in cv_report.warnings)
+                + "\n\nThe agent will still run. For best results, upload a "
+                "clean single-column export (Word / Docs 'Simple' template, "
+                "or a plain LaTeX CV)."
             )
+        else:
+            with st.expander(
+                f"⚠ CV compatibility: {cv_report.score}/100 — "
+                f"{len(cv_report.warnings)} warning(s). Click to review.",
+                expanded=False,
+            ):
+                for w in cv_report.warnings:
+                    st.write(f"• {w}")
+                st.caption(
+                    "The agent will still run, but output quality may be reduced. "
+                    "You can stop the run if needed."
+                )
 
 
     # ── Run agent with live progress ────────────────────────────────────
@@ -1497,6 +1515,50 @@ def _render_match_card(job: Dict[str, Any]) -> None:
                 if cl_rev.get("feedback"):
                     st.caption("Reviewer feedback:")
                     st.write(cl_rev["feedback"])
+
+        # ── Tailored-CV insights (why the CV changed the amount it did) ──
+        # Surfaces the silent-failure counts so users see when safety
+        # guards fired. Source: best_review dict, populated by the
+        # _do_cv_tailor closure in agents/job_agent.py.
+        _tailor_bullet_reverts = int(review.get("_bullet_reverts", 0) or 0)
+        _tailor_summary_reverts = review.get("_summary_reverts") or []
+        _tailor_tables_detected = int(review.get("_tables_detected", 0) or 0)
+        _tailor_weaknesses = review.get("weaknesses") or []
+        if (
+            _tailor_bullet_reverts
+            or _tailor_summary_reverts
+            or _tailor_tables_detected
+            or _tailor_weaknesses
+        ):
+            with st.expander(
+                f"Tailored-CV insights (score {rev_score}/100)",
+                expanded=False,
+            ):
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Bullets reverted", _tailor_bullet_reverts)
+                m2.metric("Summary reverts", len(_tailor_summary_reverts))
+                m3.metric("Tables protected", _tailor_tables_detected)
+
+                if _tailor_bullet_reverts or _tailor_summary_reverts:
+                    st.caption(
+                        "**Reverts** happen when a rewrite looks like a "
+                        "fabrication — e.g. the LLM invented a skill or "
+                        "certification not in your CV, or swapped a JD "
+                        "keyword into your summary that your own CV never "
+                        "mentioned. We keep the original wording in those "
+                        "cases to protect you from recruiter pushback."
+                    )
+                if _tailor_tables_detected:
+                    st.caption(
+                        f"We detected **{_tailor_tables_detected} table(s)** "
+                        f"in your CV (typically education / scholastic / "
+                        f"skills grids) and left them visually untouched to "
+                        f"preserve formatting."
+                    )
+                if _tailor_weaknesses:
+                    st.caption("Reviewer weaknesses:")
+                    for w in _tailor_weaknesses:
+                        st.write(f"• {w}")
 
         # Apply-status checkbox — persists to application_tracker.
         # Current state: load from history each render so a refresh reflects reality.

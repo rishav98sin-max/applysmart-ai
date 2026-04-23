@@ -280,13 +280,92 @@ def _strip_bullet(text: str) -> str:
 # STRUCTURE EXTRACTION
 # ─────────────────────────────────────────────────────────────
 
+def _protected_table_zones(page: fitz.Page) -> List[fitz.Rect]:
+    """
+    Detect tables on the page and return their bounding rects. Any line whose
+    bbox intersects one of these zones is considered factual, non-editable
+    content (education grids, scholastic records, skills matrices, contact
+    header tables) and is excluded from `_collect_page_lines`.
+
+    Rationale: PyMuPDF reads a table cell as an independent text span at its
+    (x, y) origin. Our global (y, x) sort merges every cell in a row into one
+    horizontal string, destroying the grid before the LLM ever sees it. The
+    downstream rebuild/redact step then flattens the table visually too. By
+    dropping table lines before extraction, the original table is preserved
+    visually (we never touch it) and the LLM outline stays clean.
+
+    Fails soft: older PyMuPDF versions without `find_tables` return [].
+    """
+    try:
+        finder = getattr(page, "find_tables", None)
+        if finder is None:
+            return []
+        found = finder()
+        tables = getattr(found, "tables", None) or list(found)
+        zones: List[fitz.Rect] = []
+        # Cap real data tables at ~30% of page height. `find_tables()` is a
+        # heuristic that frequently classifies the decorative borders around
+        # a whole experience section on designer CVs (Canva/Novoresume) as a
+        # "table". Protecting those would strip every bullet on the page.
+        # Real education/scholastic/skills grids are short (2-5 rows).
+        page_h = float(page.rect.height) or 1.0
+        page_w = float(page.rect.width) or 1.0
+        MAX_H_RATIO = 0.30
+        for t in tables:
+            bbox = getattr(t, "bbox", None)
+            if bbox is None:
+                continue
+            try:
+                r = fitz.Rect(*bbox)
+            except Exception:
+                continue
+            if (r.y1 - r.y0) / page_h > MAX_H_RATIO:
+                continue  # too tall → decorative box, not a data table
+            if (r.x1 - r.x0) / page_w < 0.15:
+                continue  # absurdly narrow → probably a misdetect
+            zones.append(r)
+        return zones
+    except Exception:
+        # find_tables throws on malformed PDFs; treat as "no tables".
+        return []
+
+
+def _bbox_intersects_any(bbox: List[float], zones: List[fitz.Rect]) -> bool:
+    if not zones:
+        return False
+    try:
+        r = fitz.Rect(*bbox)
+    except Exception:
+        return False
+    for z in zones:
+        # Use centre-point containment plus rect intersection so we catch
+        # both tall cells and narrow multi-line cells.
+        cx = (r.x0 + r.x1) / 2.0
+        cy = (r.y0 + r.y1) / 2.0
+        if z.contains(fitz.Point(cx, cy)) or r.intersects(z):
+            return True
+    return False
+
+
+# Module-level counter so callers (apply_edits) can report how many lines
+# were filtered as table cells, for observability.
+_LAST_EXTRACT_STATS: Dict[str, int] = {"table_lines_filtered": 0, "tables_detected": 0}
+
+
 def _collect_page_lines(page: fitz.Page, pi: int) -> List[Dict[str, Any]]:
     """
     Return a y-sorted list of lines on a page, each with merged spans. Lines
     whose text strips to empty are kept and flagged as `is_marker=True` (these
     are the invisible bullet-glyphs that 'Print to PDF' PDFs emit via symbol
     fonts).
+
+    Lines whose bbox falls inside a detected table zone are dropped entirely
+    — see `_protected_table_zones` for rationale.
     """
+    table_zones = _protected_table_zones(page)
+    if table_zones:
+        _LAST_EXTRACT_STATS["tables_detected"] += len(table_zones)
+
     raw: List[Dict[str, Any]] = []
     for block in page.get_text("dict").get("blocks", []):
         if block.get("type") != 0:
@@ -295,6 +374,9 @@ def _collect_page_lines(page: fitz.Page, pi: int) -> List[Dict[str, Any]]:
             spans = line.get("spans", [])
             text  = "".join(s.get("text", "") for s in spans)
             bbox  = list(line["bbox"])
+            if _bbox_intersects_any(bbox, table_zones):
+                _LAST_EXTRACT_STATS["table_lines_filtered"] += 1
+                continue
             raw.append({
                 "text":      text,
                 "bbox":      bbox,
@@ -841,6 +923,9 @@ def apply_edits(
     doc = fitz.open(pdf_path)
     report: Dict[str, Any] = {"applied": {}, "skipped": []}
     font_cache: Dict[int, str] = {}
+    # Reset per-run extract stats so the report reflects THIS job only.
+    _LAST_EXTRACT_STATS["table_lines_filtered"] = 0
+    _LAST_EXTRACT_STATS["tables_detected"] = 0
     try:
         sections = extract_structure(pdf_path)
 
@@ -1016,6 +1101,11 @@ def apply_edits(
     finally:
         doc.close()
 
+    # Surface table-protection stats for the UI / Mixpanel.
+    report["tables"] = {
+        "detected": _LAST_EXTRACT_STATS["tables_detected"],
+        "lines_filtered": _LAST_EXTRACT_STATS["table_lines_filtered"],
+    }
     return report
 
 

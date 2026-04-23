@@ -69,6 +69,10 @@ _DATE_RX = re.compile(
 
 _BULLET_PREFIX_RX = re.compile(r"^\s*(?:[-•▪●◦*+]|\u2022|\uf0b7|[0-9]+[.)])\s+")
 
+# Matches a bullet glyph (with or without trailing whitespace) at the start
+# of a line — used to recognise continuation lines vs new bullets.
+_BULLET_GLYPH_RX = re.compile(r"^\s*(?:[-•▪●◦*+]|\u2022|\uf0b7|[0-9]+[.)])")
+
 
 def _classify_heading(text: str) -> Optional[str]:
     low = (text or "").strip().lower().rstrip(":").strip()
@@ -101,8 +105,95 @@ def _split_role_header(line: str) -> Dict[str, str]:
     return {"title": title or raw, "dates": dates}
 
 
+_EMAIL_RX = re.compile(r"[\w\.\+-]+@[\w\.-]+\.[A-Za-z]{2,}")
+_PHONE_RX = re.compile(r"(?:\+?\d[\d\s\-()]{6,}\d)")
+_URL_RX   = re.compile(r"https?://\S+|www\.\S+|linkedin\.com/\S+", re.IGNORECASE)
+_NAME_LIKE_RX = re.compile(
+    r"^[A-Z][A-Za-z'’.\-]+(?:\s+[A-Z][A-Za-z'’.\-]+){1,4}$"
+)
+
+
+# Words that look name-shaped (Title Case + 2 tokens) but are actually
+# section labels from designer templates. Treat as non-names.
+_NAME_BLOCKLIST = {
+    "scholastic record", "work experience", "professional experience",
+    "work history", "key skills", "technical skills", "core skills",
+    "core competencies", "awards achievements", "awards and achievements",
+    "new business", "project experience", "business development",
+}
+
+
+def _looks_like_name(text: str) -> bool:
+    """Best-effort name detector: 2-5 Title-Case tokens, no digits/@/urls."""
+    s = (text or "").strip()
+    if not s or len(s) > 60:
+        return False
+    if _EMAIL_RX.search(s) or _PHONE_RX.search(s) or _URL_RX.search(s):
+        return False
+    if any(c.isdigit() for c in s):
+        return False
+    # Reject ALL-CAPS strings (e.g. 'SCHOLASTIC RECORD') — real names are
+    # typically Title Case, never all upper.
+    letters = [c for c in s if c.isalpha()]
+    if letters and all(c.isupper() for c in letters):
+        return False
+    low = re.sub(r"[^a-z ]+", " ", s.lower()).strip()
+    low = re.sub(r"\s+", " ", low)
+    if low in _NAME_BLOCKLIST:
+        return False
+    return bool(_NAME_LIKE_RX.match(s))
+
+
+def _coalesce_bullet_bodies(lines: List[str]) -> List[str]:
+    """
+    Many CVs wrap bullet bodies across 2-3 lines. After the cv_parser step
+    that joins standalone bullet glyphs with their first body line, we still
+    see continuation lines with no bullet marker, e.g.
+
+        • Spearheaded the development and evolution of integrated marketing
+        LinkedIn, Instagram, YouTube — ensuring alignment with brand
+        business objectives.
+
+        • Planned and executed robust, platform-specific content calendars
+
+    The downstream section parser expects one bullet per line. Without
+    this coalescing it treats each continuation line as a new role header.
+
+    Rule: a non-empty, non-bullet line that directly follows a bullet line
+    (or a previous continuation) and is NOT a recognised section heading
+    is merged into the preceding bullet. A blank line ends the merge.
+    """
+    out: List[str] = []
+    in_bullet = False
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            out.append(raw)
+            in_bullet = False
+            continue
+        is_bullet_line = bool(_BULLET_GLYPH_RX.match(stripped))
+        is_heading     = _classify_heading(stripped) is not None
+        if (
+            in_bullet
+            and not is_bullet_line
+            and not is_heading
+        ):
+            # Merge into last output line.
+            if out:
+                out[-1] = (out[-1].rstrip() + " " + stripped).rstrip()
+            else:
+                out.append(raw)
+            continue
+        out.append(raw)
+        in_bullet = is_bullet_line
+    return out
+
+
 def _parse_cv(cv_text: str) -> Dict[str, Any]:
     lines = [ln.rstrip() for ln in (cv_text or "").splitlines()]
+
+    # Pre-pass: merge wrapped bullet bodies into single-line bullets.
+    lines = _coalesce_bullet_bodies(lines)
 
     # ── 1) Header: the first non-empty lines until the first known heading.
     header_lines: List[str] = []
@@ -116,14 +207,45 @@ def _parse_cv(cv_text: str) -> Dict[str, Any]:
             break
         header_lines.append(stripped)
         idx += 1
-        if len(header_lines) >= 5:
+        if len(header_lines) >= 8:
             break
 
-    candidate_name = header_lines[0] if header_lines else "Candidate"
+    # Prefer a real name line over whatever happens to come first (often an
+    # email, phone or tagline on designer templates).
+    candidate_name = "Candidate"
+    for h in header_lines:
+        if _looks_like_name(h):
+            candidate_name = h
+            break
+    if candidate_name == "Candidate" and header_lines:
+        # Fallback: first header line if it at least isn't an email/phone.
+        first = header_lines[0]
+        if not (_EMAIL_RX.search(first) or _PHONE_RX.search(first)):
+            candidate_name = first
+        else:
+            # Derive a display name from the local-part of the email as a
+            # last resort — better than literally printing the address.
+            m = _EMAIL_RX.search(first)
+            if m:
+                local = m.group(0).split("@", 1)[0]
+                # Strip ALL digits (emails often embed birth years mid-name),
+                # replace separators with spaces, collapse whitespace.
+                local = re.sub(r"[._\-]+", " ", local)
+                local = re.sub(r"\d+", " ", local)
+                local = re.sub(r"\s+", " ", local).strip()
+                if local:
+                    candidate_name = local.title()
+
     contact_bits: List[str] = []
-    for h in header_lines[1:]:
+    for h in header_lines:
+        if h == candidate_name:
+            continue
         parts = [p.strip() for p in re.split(r"[\|•·–—]|\s{2,}", h) if p.strip()]
-        contact_bits.extend(parts)
+        for p in parts:
+            # Filter out designer-template noise that isn't contact info.
+            if re.match(r"(?i)^(scholastic|work\s+experience|\d+\s*years?|female|male|dob[:\s])", p):
+                continue
+            contact_bits.append(p)
 
     # ── 2) Remaining body: group by section.
     summary_text = ""
@@ -203,6 +325,45 @@ def _parse_cv(cv_text: str) -> Dict[str, Any]:
             pending_para.append(stripped)
 
     flush_para()
+
+    # ── Section-kind repair pass ─────────────────────────────
+    # A common designer-template pattern is to write "PROFESSIONAL EXPERIENCE"
+    # directly above the summary paragraph (and then "WORK EXPERIENCE" above
+    # the actual role list). When that happens, the first experience-kind
+    # section contains no bullets, just a paragraph — which is really a
+    # summary. Promote it, so the template renders it in the right place.
+    if not summary_text:
+        for s in list(sections):
+            if s["kind"] != "experience":
+                continue
+            has_bullets = any(
+                len(r.get("bullets") or []) > 0 for r in s.get("roles", [])
+            )
+            has_paragraphs = bool(
+                (s.get("paragraphs") or [])
+                or any((r.get("title") or "").strip() for r in s.get("roles", []))
+            )
+            if has_bullets or not has_paragraphs:
+                continue
+            # Collect all paragraph-like text from this pseudo-section —
+            # include role.title AND role.sub, which together hold the
+            # soft-wrapped summary body after the section repair pass.
+            collected: List[str] = []
+            for p in (s.get("paragraphs") or []):
+                if p.strip():
+                    collected.append(p.strip())
+            for r in s.get("roles", []):
+                t = (r.get("title") or "").strip()
+                if t:
+                    collected.append(t)
+                sub = (r.get("sub") or "").strip()
+                if sub:
+                    collected.append(sub)
+            promoted = " ".join(collected).strip()
+            if promoted:
+                summary_text = promoted
+                sections.remove(s)
+                break
 
     # Drop a synthetic Summary "section" wrapper — template handles summary separately.
     sections = [s for s in sections if s["kind"] != "summary"]

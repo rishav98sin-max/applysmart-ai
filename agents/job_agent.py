@@ -1161,11 +1161,19 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
 
                     if best_review is None or review["score"] > best_review["score"]:
                         best_diff, best_review = diff, review
+                        # Piggyback the diff's _debug counters onto best_review
+                        # so the job-card UI can surface them without a new
+                        # plumbing path through the closure's return signature.
+                        _dbg = diff.get("_debug") or {}
+                        best_review["_bullet_reverts"] = int(
+                            _dbg.get("bullet_reverts_count", 0) or 0
+                        )
+                        best_review["_summary_reverts"] = list(
+                            _dbg.get("summary_reverts") or []
+                        )
 
-                    if review["verdict"] == "accept" or review["score"] >= REVIEWER_ACCEPT_THRESHOLD:
-                        break
-
-                    # Smart retry gate (v1.1 perf fix) — see docs/PERF_DECISIONS_v1.1.md
+                    # Count rewrites before the accept-check so the rewrite-
+                    # floor can override a too-conservative reviewer accept.
                     n_rewrites = sum(
                         1
                         for entries in (diff.get("bullets") or {}).values()
@@ -1173,19 +1181,33 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         for e in entries
                         if isinstance(e, dict) and e.get("text")
                     )
+                    n_bullets_total = sum(
+                        len(role.get("bullets") or [])
+                        for role in (outline_cache.get("roles") or [])
+                    )
+                    # Minimum-rewrite floor (fix #3): a diff with 0-1 rewrites
+                    # on a CV with 15+ bullets is indistinguishable from a
+                    # no-op from the user's POV. Force a retry rather than
+                    # accepting a cosmetic diff even when the reviewer is OK.
+                    rewrite_floor = max(2, n_bullets_total // 5)
+                    too_few_rewrites = (
+                        n_rewrites < rewrite_floor
+                        and n_bullets_total >= 5
+                        and attempt < MAX_TAILOR_RETRIES
+                    )
+
                     fb = (review.get("feedback") or "").lower()
                     wk = " ".join(review.get("weaknesses") or []).lower()
                     fab_flag = "fabricat" in fb or "fabricat" in wk or "invent" in fb
-                    if (
-                        attempt == 0
-                        and review["score"] >= 55
-                        and n_rewrites >= 3
-                        and not fab_flag
+
+                    if not too_few_rewrites and not fab_flag and (
+                        review["verdict"] == "accept"
+                        or review["score"] >= REVIEWER_ACCEPT_THRESHOLD
                     ):
                         print(
-                            f"   ✓  {tag} accepting first draft "
-                            f"(score={review['score']}, {n_rewrites} rewrites, "
-                            f"no fabrications) — skipping retry."
+                            f"   ✓  {tag} accepting "
+                            f"(score={review['score']}, {n_rewrites}/{n_bullets_total} "
+                            f"rewrites, no fabrications) — skipping retry."
                         )
                         break
 
@@ -1197,18 +1219,72 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         )
                         break
 
-                    feedback_in = review.get("feedback", "")
+                    # Build retry feedback. When the rewrite floor wasn't met,
+                    # augment with an explicit directive so the LLM knows to
+                    # rewrite more, not just address the reviewer's critique.
+                    reviewer_fb = review.get("feedback", "") or ""
+                    if too_few_rewrites:
+                        extra = (
+                            f" [rewrite floor] Your previous diff rewrote only "
+                            f"{n_rewrites} of {n_bullets_total} bullets — the "
+                            f"minimum is {rewrite_floor}. You MUST rewrite at "
+                            f"least {rewrite_floor} bullets on this retry, "
+                            f"leading with JD-relevant language while staying "
+                            f"factual to the CV."
+                        )
+                        feedback_in = (reviewer_fb + extra).strip()
+                        print(
+                            f"   ↻  {tag} rewrite-floor retry "
+                            f"({n_rewrites}/{n_bullets_total}, need "
+                            f"{rewrite_floor})"
+                        )
+                    else:
+                        feedback_in = reviewer_fb
                     prev_diff   = diff
 
                 if best_diff and (best_diff.get("summary") or best_diff.get("bullets") or best_diff.get("skills_order")):
                     report = apply_pdf_edits(state["cv_path"], best_diff, replica_path)
+                    # Stash table-protection stats onto best_review so the UI
+                    # job-card can show "N tables protected" in the insight
+                    # expander — same plumbing-free strategy as _bullet_reverts.
+                    if best_review is not None:
+                        _tbl_ui = report.get("tables") or {}
+                        best_review["_tables_detected"] = int(
+                            _tbl_ui.get("detected", 0) or 0
+                        )
+                        best_review["_table_lines_filtered"] = int(
+                            _tbl_ui.get("lines_filtered", 0) or 0
+                        )
+                    # ── Silent-failure observability (P3) ──
+                    # Mixpanel event so we can correlate "user says summary
+                    # didn't change" with guard firings in production.
+                    try:
+                        from agents.analytics import track_event
+                        _tbl = report.get("tables") or {}
+                        _dbg = (best_diff or {}).get("_debug") or {}
+                        track_event(
+                            "cv_tailor_applied",
+                            state.get("user_email") or "system_infra",
+                            {
+                                "company":               company,
+                                "title":                 title,
+                                "review_score":          int((best_review or {}).get("score", 0) or 0),
+                                "tables_protected":      int(_tbl.get("detected", 0) or 0),
+                                "table_lines_filtered":  int(_tbl.get("lines_filtered", 0) or 0),
+                                "bullet_reverts_count":  int(_dbg.get("bullet_reverts_count", 0) or 0),
+                                "summary_reverts_count": len(_dbg.get("summary_reverts") or []),
+                            },
+                        )
+                    except Exception:
+                        pass
                     if os.path.exists(replica_path) and os.path.getsize(replica_path) > 0:
                         cv_pdf = replica_path
                         rmode = "in_place"
                         print(
                             f"   ✅ {tag} Replica CV written "
                             f"(applied={list(report.get('applied', {}).keys())}, "
-                            f"review={best_review['score']}/100)"
+                            f"review={best_review['score']}/100, "
+                            f"tables_protected={(report.get('tables') or {}).get('detected', 0)})"
                         )
                     else:
                         print(f"   ⚠️  {tag} Replica output missing — falling back.")

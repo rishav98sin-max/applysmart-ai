@@ -55,6 +55,29 @@ MAX_PAGES             = 12
 MIN_ASCII_RATIO       = 0.70
 MIN_SECTION_HITS      = 2
 
+# Multi-column layout heuristics.
+# x_start positions are bucketed into 10 bins across the page width. A
+# bucket counts as a "column peak" when it holds at least this fraction
+# of all line starts AND is a local maximum against its neighbours.
+COLUMN_PEAK_MIN_RATIO = 0.10
+COLUMN_GAP_MIN_BINS   = 2  # peaks need at least this many empty-ish bins between them
+
+# Designer-template tells (case-insensitive). These appear in sidebars of
+# templated CVs (Canva / Novoresume / MS Publisher style) but virtually
+# never in clean ATS CVs.
+_DESIGNER_SIDEBAR_TOKENS = (
+    r"\bDOB\b",
+    r"\bdate of birth\b",
+    r"\bmarital status\b",
+    r"\bnationality\b",
+    r"\b(?:male|female|gender)\b",
+    r"\bSCHOLASTIC\s+RECORD\b",
+)
+_DESIGNER_SIDEBAR_RX = re.compile(
+    "|".join(_DESIGNER_SIDEBAR_TOKENS),
+    re.IGNORECASE,
+)
+
 # Standard section labels we know how to parse downstream. Used both for
 # the compatibility check here and by the diff tailor / pdf editor.
 _SECTION_RX = re.compile(
@@ -89,6 +112,104 @@ class ValidationReport:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+# ─────────────────────────────────────────────────────────────
+# Column layout detector
+# ─────────────────────────────────────────────────────────────
+
+def _detect_column_layout(doc: "fitz.Document") -> Dict[str, Any]:
+    """
+    Estimate whether the PDF uses a multi-column / designer-template
+    layout. Counts the x-start position of every text line across all
+    pages, bins them into 10 horizontal buckets, and looks for multiple
+    local peaks separated by at least COLUMN_GAP_MIN_BINS empty-ish bins.
+
+    Returns:
+      {
+        "columns":      int,   # 1 = single column, 2+ = multi-column
+        "has_sidebar":  bool,  # True if the smaller peak looks sidebar-sized
+        "x_bins":       list,  # raw histogram for debugging
+      }
+
+    Heuristic only — safe to over-warn on borderline 2-column CVs since the
+    user keeps agency to proceed.
+    """
+    x_starts: List[float] = []
+    page_widths: List[float] = []
+
+    try:
+        for page in doc:
+            page_widths.append(float(page.rect.width))
+            for block in page.get_text("dict").get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines", []):
+                    bbox = line.get("bbox") or []
+                    if len(bbox) < 2:
+                        continue
+                    spans = line.get("spans", [])
+                    txt = "".join(s.get("text", "") for s in spans).strip()
+                    if not txt:
+                        continue
+                    x_starts.append(float(bbox[0]))
+    except Exception:
+        return {"columns": 1, "has_sidebar": False, "x_bins": []}
+
+    if not x_starts or not page_widths:
+        return {"columns": 1, "has_sidebar": False, "x_bins": []}
+
+    mean_width = sum(page_widths) / len(page_widths)
+    if mean_width <= 0:
+        return {"columns": 1, "has_sidebar": False, "x_bins": []}
+
+    # Bin x-starts into 10 buckets across the page width.
+    bins = [0] * 10
+    for x in x_starts:
+        ratio = max(0.0, min(0.9999, x / mean_width))
+        bins[int(ratio * 10)] += 1
+
+    total = sum(bins) or 1
+    threshold = max(3, int(COLUMN_PEAK_MIN_RATIO * total))
+
+    # Find peaks: local maxima above threshold.
+    peaks: List[int] = []
+    for i, count in enumerate(bins):
+        if count < threshold:
+            continue
+        left  = bins[i - 1] if i > 0            else 0
+        right = bins[i + 1] if i < len(bins) - 1 else 0
+        if count >= left and count >= right:
+            peaks.append(i)
+
+    # Require at least COLUMN_GAP_MIN_BINS bin gap between peaks to count
+    # as truly separate columns (rejects small wiggles from justified text).
+    def _filter_gap(ps: List[int]) -> List[int]:
+        if not ps:
+            return []
+        kept = [ps[0]]
+        for p in ps[1:]:
+            if p - kept[-1] >= COLUMN_GAP_MIN_BINS:
+                kept.append(p)
+        return kept
+
+    peaks = _filter_gap(sorted(peaks))
+    columns = len(peaks) if len(peaks) >= 2 else 1
+
+    has_sidebar = False
+    if columns >= 2:
+        # "Sidebar" = a short peak in bins 0-2 that's materially smaller
+        # than the tallest peak (the main content column).
+        leftmost = peaks[0]
+        tallest  = max(bins[p] for p in peaks)
+        if leftmost <= 2 and bins[leftmost] < tallest * 0.7:
+            has_sidebar = True
+
+    return {
+        "columns":     columns,
+        "has_sidebar": has_sidebar,
+        "x_bins":      bins,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -243,6 +364,48 @@ def validate_cv(cv_path: str) -> ValidationReport:
             report.details["fonts"] = sorted(list(fonts))[:10]
         except Exception:
             pass
+
+        # ── 8. Multi-column / designer-template layout ──────
+        try:
+            layout = _detect_column_layout(doc)
+        except Exception:
+            layout = {"columns": 1, "has_sidebar": False, "x_bins": []}
+        report.details["columns"]     = layout["columns"]
+        report.details["has_sidebar"] = layout["has_sidebar"]
+
+        sidebar_tokens_hit = bool(_DESIGNER_SIDEBAR_RX.search(full_text))
+        report.details["designer_sidebar_tokens"] = sidebar_tokens_hit
+
+        # Also treat "3+ distinct fonts" as a weak designer-template signal
+        # (ATS-friendly CVs usually stick to 1-2 font families).
+        unique_fonts = len(report.details.get("fonts", []))
+        font_heavy   = unique_fonts >= 4
+        report.details["font_heavy"] = font_heavy
+
+        if layout["columns"] >= 2 or layout["has_sidebar"] or sidebar_tokens_hit:
+            bits = []
+            if layout["has_sidebar"]:
+                bits.append("a left-hand sidebar column")
+            elif layout["columns"] >= 2:
+                bits.append(f"{layout['columns']} columns of text")
+            if sidebar_tokens_hit:
+                bits.append("personal-details fields (e.g. DOB, scholastic record)")
+            if font_heavy:
+                bits.append(f"{unique_fonts} distinct fonts")
+            detail = " and ".join(bits) if bits else "a non-standard layout"
+            report.warnings.append(
+                "This CV appears to use a **designer / multi-column template** "
+                f"({detail}). The agent's tailoring and PDF rebuild expect a "
+                "single-column, ATS-style layout. Expect sections to be "
+                "reordered or renamed, bullets to lose their original position, "
+                "and the visual design to change. For best results, upload a "
+                "single-column export (Word / Docs 'Simple' template, or the "
+                "LaTeX 'moderncv' default)."
+            )
+            # Penalty grows with severity: 15 per tell, capped at 35.
+            penalty = 15 + (10 if layout["has_sidebar"] else 0) + \
+                      (10 if sidebar_tokens_hit else 0)
+            report.score -= min(35, penalty)
 
     finally:
         try:

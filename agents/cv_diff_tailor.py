@@ -85,6 +85,26 @@ _PROMPT_TEMPLATE = """You are a CV editor preparing a tailored application for a
 
 You must output a JSON object (no prose, no markdown) that describes edits.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR THINKING PROCESS (critical — do this BEFORE writing JSON):
+
+1. READ the job description. Identify 3-5 concrete skills, tools, or
+   responsibilities the JD emphasises most.
+2. SCAN the candidate's CV. For each role, mentally mark every bullet as
+   HIGHLY / PARTIALLY / TANGENTIALLY relevant to those JD emphases.
+3. DECIDE your rewrite plan: which bullets will you rewrite, and what
+   JD-language angle will each take? You should be planning to rewrite
+   ~50-70% of HIGHLY relevant roles' bullets, ~30% of PARTIALLY, and at
+   least one from each TANGENTIAL role.
+4. DRAFT each rewrite in your head, leading with a JD verb, keeping
+   every number/proper-noun from the original intact.
+5. ONLY NOW, format your rewrite plan into the JSON schema at the bottom.
+
+If you skip straight to JSON without doing steps 1-4 mentally, you will
+produce a diff with 0-2 rewrites and fail the user. The JSON schema is
+the LAST thing you think about, not the first.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 {safety_preamble}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -318,7 +338,20 @@ def _cv_vocabulary(outline: Dict[str, Any]) -> set:
 def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
     """
     Return a list of capitalized/acronym phrases that appear in `summary`
-    but NOT in any of the strings in `cv_text_set`. Stopwords are ignored.
+    but whose component words do NOT appear in any CV text. Stopwords are
+    ignored.
+
+    Rationale: the previous implementation flagged a whole phrase as foreign
+    if its verbatim lowercased form was absent from the CV. That over-fired
+    on legitimate re-phrasings like "Integrated Marketing Communications"
+    (when the CV has "integrated marketing") or "B2B Campaigns" (when the
+    CV has "B2B" + "campaigns" separately). We now inspect each content
+    word of the phrase: a phrase is only "foreign" if MORE THAN HALF of
+    its content words are missing from the CV vocabulary AND it contains
+    at least one acronym-ish token (≥2 uppercase letters). This still
+    catches real fabrications ("US GAAP", "IFRS", "SOX") when the CV
+    never mentions them, but lets through prose rewrites that re-compose
+    CV facts.
     """
     if not summary:
         return []
@@ -327,6 +360,9 @@ def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
         return []
     foreign: List[str] = []
     seen: set = set()
+    # Split CV text into a token set for cheap word-level membership.
+    cv_tokens = {w for w in re.split(r"\W+", cv_text) if w}
+    word_rx = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/&]*")
     for m in _CAPTERM_RX.finditer(summary):
         term = m.group(0).strip()
         if term in _CAPTERM_STOPWORDS:
@@ -335,13 +371,37 @@ def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
         if key in seen:
             continue
         seen.add(key)
-        if key not in cv_text:
+        # Short-circuit: whole phrase already in CV text → definitely safe.
+        if key in cv_text:
+            continue
+        # Decompose into content words and check each against the CV token
+        # set. Single-word matches beat the substring check.
+        words = [w.lower() for w in word_rx.findall(term)]
+        if not words:
+            continue
+        missing = [w for w in words if w not in cv_tokens and w not in cv_text]
+        # A phrase is foreign only if the majority of its words are missing
+        # AND it contains an all-caps acronym-like token. This keeps us from
+        # flagging "Integrated Marketing Communications" while still
+        # catching "US GAAP" / "IFRS" / "Agile Scrum" on a non-agile CV.
+        has_acronym_like = any(
+            len(w) >= 2 and w.isupper() and w.isalpha()
+            for w in word_rx.findall(term)
+        )
+        if len(missing) > len(words) / 2 and has_acronym_like:
             foreign.append(term)
     return foreign
 
 _MIN_BULLETS_PER_ROLE = 2
 _REWRITE_LEN_MIN_RATIO = 0.5   # rewrite must be at least 50% of original length
 _REWRITE_LEN_MAX_RATIO = 2.0   # and at most 200% — longer usually means fabrication
+
+
+# Module-level revert tracker — reset at the start of every `tailor_cv_diff`
+# call, populated by `_normalise_role_bullets` whenever _rewrite_is_safe
+# rejects an LLM rewrite. Surfaced in the diff's `_debug` block so the UI
+# and Mixpanel can count how many bullets were silently reverted.
+_LAST_BULLET_REVERTS: List[Dict[str, Any]] = []
 
 
 def _rewrite_is_safe(original: str, rewrite: str) -> tuple:
@@ -428,6 +488,11 @@ def _normalise_bullet_list(
                     f"   ⚠️  rewrite rejected (bullet {idx}, {reason}): "
                     f"{text[:80]!r} — reverting to original"
                 )
+                _LAST_BULLET_REVERTS.append({
+                    "bullet_index": idx,
+                    "reason": reason,
+                    "rewrite_preview": text[:120],
+                })
                 text = None   # fall back to original wording
         normalised.append({"i": idx, "text": text})
         seen.add(idx)
@@ -568,6 +633,9 @@ def tailor_cv_diff(
     if outline is None:
         outline = build_outline(cv_pdf_path)
 
+    # Reset the per-call bullet-revert tracker so counts reflect THIS job.
+    _LAST_BULLET_REVERTS.clear()
+
     orig_summary = (outline.get("summary") or "").strip()
     orig_words   = len(orig_summary.split()) if orig_summary else 0
 
@@ -598,6 +666,11 @@ def tailor_cv_diff(
     # Reject summaries that introduce proper nouns / skill terms absent
     # from the original CV text. Common failure: LLM adds JD-only skills
     # like "US GAAP", "IFRS", "SOX" etc. to the summary.
+    #
+    # Observability: record the reason (and foreign terms) on the diff
+    # itself under "_debug" so the pipeline can surface it in the UI /
+    # Mixpanel instead of dying silently in stdout.
+    diff.setdefault("_debug", {}).setdefault("summary_reverts", [])
     new_sum = (diff.get("summary") or "").strip()
     if new_sum and orig_summary:
         cv_vocab = _cv_vocabulary(outline)
@@ -607,14 +680,20 @@ def tailor_cv_diff(
                 f"   ⚠️  summary introduced CV-foreign terms {foreign!r} — "
                 f"reverting to original summary to avoid fabrication."
             )
+            diff["_debug"]["summary_reverts"].append({
+                "reason": "cv_foreign_terms",
+                "terms":  foreign[:8],
+            })
             diff["summary"] = orig_summary
 
     # ── Length-enforcement retry ─────────────────────────────────────
-    # Triggers whenever the new summary is below 95% of the original word
-    # count, matching the prompt's 95%-115% rule. If the retry is still
-    # too short, fall back to the ORIGINAL summary (no shortening allowed).
+    # Triggers when the new summary is below 85% of the original word count.
+    # The 85% floor catches real truncations (90→60 words) but allows modest
+    # compression (90→80) when the LLM tightens prose. Previously set to
+    # 95%, which reverted too many legitimate rewrites. If the retry is
+    # still short, fall back to the ORIGINAL summary (no shortening).
     new_words = len((diff.get("summary") or "").split())
-    _SUMMARY_MIN_RATIO = 0.95
+    _SUMMARY_MIN_RATIO = 0.85
     _SUMMARY_MAX_RATIO = 1.15
     if orig_words >= 20 and new_words and new_words < int(orig_words * _SUMMARY_MIN_RATIO):
         low  = int(orig_words * _SUMMARY_MIN_RATIO)
@@ -641,10 +720,17 @@ def tailor_cv_diff(
         elif orig_summary:
             # Retry still short — revert to original rather than ship a
             # noticeably shortened summary.
+            short_words = len(new_sum2.split()) if new_sum2 else 0
             print(
-                f"   ↺  retry still short ({len(new_sum2.split()) if new_sum2 else 0} words) "
+                f"   ↺  retry still short ({short_words} words) "
                 f"— reverting to original summary verbatim."
             )
+            diff["_debug"]["summary_reverts"].append({
+                "reason": "length_floor",
+                "new_words": short_words,
+                "original_words": orig_words,
+                "floor": int(orig_words * _SUMMARY_MIN_RATIO),
+            })
             diff["summary"] = orig_summary
             new_words = orig_words
 
@@ -721,4 +807,12 @@ def tailor_cv_diff(
         f"bullets_dropped={n_dropped} | "
         f"skills_reordered={'yes' if diff['skills_order'] else 'no'}"
     )
+
+    # Attach bullet-revert observability for the UI / Mixpanel. Keeps the
+    # diff shape stable for pdf_editor (it ignores _debug) while giving
+    # downstream reporting a count of bullets that were silently reverted
+    # by _rewrite_is_safe.
+    diff.setdefault("_debug", {})
+    diff["_debug"]["bullet_reverts"] = list(_LAST_BULLET_REVERTS)
+    diff["_debug"]["bullet_reverts_count"] = len(_LAST_BULLET_REVERTS)
     return diff
