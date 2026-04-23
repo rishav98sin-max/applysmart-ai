@@ -578,9 +578,11 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _append_bullet(role: Dict[str, Any], line: Dict[str, Any]) -> None:
+    text = _strip_bullet(line["text"])
     role["bullet_groups"].append({
         "lines": [line],
-        "text":  _strip_bullet(line["text"]),
+        "text":  text,
+        "total_char_length": len(text),
     })
 
 
@@ -590,7 +592,9 @@ def _attach_continuation(role: Dict[str, Any], line: Dict[str, Any]) -> None:
     # Continuation lines share x-indent with first bullet line (tolerant 40pt).
     if abs(line["bbox"][0] - first_x) <= 40:
         last["lines"].append(line)
-        last["text"] += " " + line["text"].strip()
+        continuation_text = line["text"].strip()
+        last["text"] += " " + continuation_text
+        last["total_char_length"] += len(continuation_text) + 1  # +1 for the space
 
 
 # ─────────────────────────────────────────────────────────────
@@ -671,7 +675,10 @@ def build_outline(pdf_path: str) -> Dict[str, Any]:
                 out["roles"].append({
                     "header":  r["header_text"].strip(),
                     "section": t,
-                    "bullets": [b["text"] for b in r["bullet_groups"]],
+                    "bullets": [
+                        {"text": b["text"], "length": b.get("total_char_length", len(b["text"]))}
+                        for b in r["bullet_groups"]
+                    ],
                 })
         elif t == "skills":
             # If the CV uses categorised skills (e.g. "Product: ... Delivery: ..."),

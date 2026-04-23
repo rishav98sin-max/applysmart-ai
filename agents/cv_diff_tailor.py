@@ -404,7 +404,7 @@ _REWRITE_LEN_MAX_RATIO = 2.0   # and at most 200% — longer usually means fabri
 _LAST_BULLET_REVERTS: List[Dict[str, Any]] = []
 
 
-def _rewrite_is_safe(original: str, rewrite: str) -> tuple:
+def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int] = None) -> tuple:
     """
     Guardrail: reject rewrites that look like fabrications or truncations.
     - Length must be 50%-200% of the original.
@@ -412,13 +412,20 @@ def _rewrite_is_safe(original: str, rewrite: str) -> tuple:
       rewrite. '25%' must stay '25%' (not '25 percent'), '600K' stays '600K'
       (not '60K'). This prevents both fabrication and semantic drift.
 
+    Args:
+        original: Original bullet text (for number token extraction)
+        rewrite: Proposed rewrite text
+        original_length: Complete logical bullet length (if provided, used instead of len(original))
+
     Returns (ok, reason). reason is "" when ok.
     """
     orig = (original or "").strip()
     new  = (rewrite or "").strip()
     if not new:
         return False, "empty rewrite"
-    lo, hi = len(orig) * _REWRITE_LEN_MIN_RATIO, len(orig) * _REWRITE_LEN_MAX_RATIO
+    # Use the provided original_length if available, otherwise fall back to len(orig)
+    orig_len = original_length if original_length is not None else len(orig)
+    lo, hi = orig_len * _REWRITE_LEN_MIN_RATIO, orig_len * _REWRITE_LEN_MAX_RATIO
     if not (lo <= len(new) <= hi):
         return False, f"length {len(new)} outside {int(lo)}-{int(hi)}"
     orig_nums = {m.group(0).strip().lower() for m in _NUMBER_RX.finditer(orig)}
@@ -432,7 +439,7 @@ def _rewrite_is_safe(original: str, rewrite: str) -> tuple:
 def _normalise_bullet_list(
     order_raw:   Any,
     n_bullets:   int,
-    orig_texts:  List[str],
+    orig_texts:  List[Any],
 ) -> List[Dict[str, Any]]:
     """
     Accept either:
@@ -481,8 +488,14 @@ def _normalise_bullet_list(
             continue
         # Guardrail rewrites
         if text is not None:
-            orig = orig_texts[idx] if idx < len(orig_texts) else ""
-            ok, reason = _rewrite_is_safe(orig, text)
+            orig_bullet = orig_texts[idx] if idx < len(orig_texts) else ""
+            if isinstance(orig_bullet, dict):
+                orig_text = orig_bullet.get("text", "")
+                orig_len = orig_bullet.get("length", len(orig_text))
+            else:
+                orig_text = orig_bullet
+                orig_len = len(orig_bullet) if orig_bullet else 0
+            ok, reason = _rewrite_is_safe(orig_text, text, original_length=orig_len)
             if not ok:
                 print(
                     f"   ⚠️  rewrite rejected (bullet {idx}, {reason}): "

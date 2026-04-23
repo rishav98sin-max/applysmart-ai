@@ -38,6 +38,10 @@ _GEMINI_KEYS: list = []
 _GEMINI_KEY_INDEX: int = 0
 _GEMINI_CONFIGURED_KEY: Optional[str] = None  # last key passed to genai.configure
 
+# Rate limiting for Gemini free tier (5 RPM globally across all keys).
+# Track last call time to enforce 13-second gap between calls.
+_LAST_GEMINI_CALL_TIME: float = 0.0
+
 # Per-key quota snapshot captured from Groq's x-ratelimit-* response headers
 # after every successful call. Kept mostly for the reset_tokens timestamp —
 # the primary "remaining" display is driven by file-based quota cache below.
@@ -459,8 +463,11 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
     Call Gemini via the active key in the rotation pool. On rate-limit /
     auth errors, rotate to the next key and retry. Falls back to Groq only
     after every configured Gemini key has been exhausted.
+
+    Rate limiting: Enforces 13-second gap between calls to stay under
+    Gemini 2.5 Flash free tier's 5 RPM global limit.
     """
-    global _GEMINI_KEYS
+    global _GEMINI_KEYS, _LAST_GEMINI_CALL_TIME
     if genai is None:
         print("   ⚠️  Gemini SDK not installed, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
@@ -470,6 +477,14 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
     if not _GEMINI_KEYS:
         print("   ⚠️  No GEMINI_API_KEY* found, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
+
+    # Rate limiting: enforce 13-second gap between calls to stay under
+    # Gemini 2.5 Flash free tier's 5 RPM global limit.
+    elapsed = time.time() - _LAST_GEMINI_CALL_TIME
+    if elapsed < 13:
+        sleep_time = 13 - elapsed
+        print(f"   ⏳ Gemini rate limit: sleeping {sleep_time:.1f}s before call...")
+        time.sleep(sleep_time)
 
     # Up to (num_keys) rotation attempts — one real call per key.
     attempts = len(_GEMINI_KEYS)
@@ -496,6 +511,8 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
                         _increment_gemini_tokens(total_tokens)
             except Exception:
                 pass
+            # Update timestamp after successful call
+            _LAST_GEMINI_CALL_TIME = time.time()
             return response.text.strip() if response.text else ""
         except Exception as e:
             last_err = e
