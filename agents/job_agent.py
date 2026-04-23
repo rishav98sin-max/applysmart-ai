@@ -1627,6 +1627,26 @@ def run_agent(
     print(f"   LLM cap  : {llm_budget.calls if llm_budget else 'N/A'}")
     print(f"{'='*60}\n")
 
+    # Early quota exhaustion check - test actual API availability
+    from agents.llm_client import chat_quality
+    try:
+        # Make a small test call to verify API is actually available
+        test_response = chat_quality("Hi", max_tokens=10, temperature=0.1)
+        if not test_response or len(test_response) < 5:
+            raise RuntimeError(
+                "Both Gemini and Groq quotas exhausted. "
+                "Please try again tomorrow after the daily quota reset. "
+                "Your CV and cover letter have not been generated to avoid producing degraded output."
+            )
+    except Exception as e:
+        # If the test call fails, assume quotas are exhausted
+        if "exhausted" in str(e).lower() or "429" in str(e) or "rate limit" in str(e).lower():
+            raise RuntimeError(
+                "Both Gemini and Groq quotas exhausted. "
+                "Please try again tomorrow after the daily quota reset. "
+                "Your CV and cover letter have not been generated to avoid producing degraded output."
+            )
+
     initial_state: AgentState = {
         "cv_path":             cv_path,
         "cv_text":             "",
