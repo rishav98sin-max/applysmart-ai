@@ -4,6 +4,7 @@ import os
 import time
 import random
 import json
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -40,7 +41,9 @@ _GEMINI_CONFIGURED_KEY: Optional[str] = None  # last key passed to genai.configu
 
 # Rate limiting for Gemini free tier (5 RPM globally across all keys).
 # Track last call time to enforce 13-second gap between calls.
+# Use a lock to prevent concurrent calls from bypassing the rate limit.
 _LAST_GEMINI_CALL_TIME: float = 0.0
+_GEMINI_RATE_LIMIT_LOCK = threading.Lock()
 
 # Per-key quota snapshot captured from Groq's x-ratelimit-* response headers
 # after every successful call. Kept mostly for the reset_tokens timestamp —
@@ -467,7 +470,7 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
     Rate limiting: Enforces 13-second gap between calls to stay under
     Gemini 2.5 Flash free tier's 5 RPM global limit.
     """
-    global _GEMINI_KEYS, _LAST_GEMINI_CALL_TIME
+    global _GEMINI_KEYS, _LAST_GEMINI_CALL_TIME, _GEMINI_RATE_LIMIT_LOCK
     if genai is None:
         print("   ⚠️  Gemini SDK not installed, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
@@ -480,11 +483,13 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
 
     # Rate limiting: enforce 13-second gap between calls to stay under
     # Gemini 2.5 Flash free tier's 5 RPM global limit.
-    elapsed = time.time() - _LAST_GEMINI_CALL_TIME
-    if elapsed < 13:
-        sleep_time = 13 - elapsed
-        print(f"   ⏳ Gemini rate limit: sleeping {sleep_time:.1f}s before call...")
-        time.sleep(sleep_time)
+    # Use a lock to prevent concurrent calls from bypassing the limit.
+    with _GEMINI_RATE_LIMIT_LOCK:
+        elapsed = time.time() - _LAST_GEMINI_CALL_TIME
+        if elapsed < 13:
+            sleep_time = 13 - elapsed
+            print(f"   ⏳ Gemini rate limit: sleeping {sleep_time:.1f}s before call...")
+            time.sleep(sleep_time)
 
     # Up to (num_keys) rotation attempts — one real call per key.
     attempts = len(_GEMINI_KEYS)
