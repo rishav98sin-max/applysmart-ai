@@ -1027,6 +1027,9 @@ def apply_edits(
                     # orphaned words on follow-on lines. Mirrors the summary
                     # path on line ~840.
                     rect.x1 = max(rect.x1, page.rect.width - 40)
+                    # Extend bottom to preserve content below edited section
+                    # This prevents cutting off awards, co-curricular, etc.
+                    rect.y1 = min(rect.y1 + 50, page.rect.height)
                     # Pick a body-text span (NOT the symbol-font bullet glyph) as
                     # style reference, scanning across all bullet lines.
                     ref = _pick_body_span(
@@ -1034,21 +1037,9 @@ def apply_edits(
                     )
                     if ref is None:
                         continue
-                    # Preserve bullet character from the original first bullet.
-                    # Keep U+2022 (•) as-is: _insert_fitted tries the embedded
-                    # font first (which renders • correctly) and only falls
-                    # back to the Base14 → ·  substitution if embedding fails.
-                    # Only PUA (Symbol/Wingdings) glyphs are pre-downgraded,
-                    # since those won't embed cleanly anywhere.
-                    orig_first = bullets[0]["lines"][0]["text"].lstrip()
+                    # Always use standard bullet character (•) for consistent rendering
+                    # This prevents "?" artifacts from special symbol fonts that don't embed properly
                     bullet_char = "\u2022"
-                    m = re.match(rf"^([{re.escape(_BULLET_CHARS)}])", orig_first)
-                    if m:
-                        b_char = m.group(1)
-                        if 0xE000 <= ord(b_char) <= 0xF8FF:
-                            bullet_char = "\u2022"   # PUA → •
-                        else:
-                            bullet_char = b_char
 
                     # Build new bullet block, using rewrite text when provided.
                     lines_out: List[str] = []

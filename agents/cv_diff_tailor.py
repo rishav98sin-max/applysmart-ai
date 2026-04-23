@@ -335,24 +335,31 @@ def _cv_vocabulary(outline: Dict[str, Any]) -> set:
     return {text}  # return as single-element set; callers use 'in' on the text
 
 
-def _check_professional_identity_fabrication(orig_summary: str, new_summary: str, cv_text_set: set) -> Optional[str]:
+def _check_professional_identity_fabrication(orig_summary: str, new_summary: str, outline: Dict[str, Any]) -> Optional[str]:
     """
     Check if the summary introduces a professional identity not supported by the CV.
     
     Allows: "passionate about transitioning to X", "interested in exploring X"
-    Disallows: Changing professional title (e.g., "Marketing" → "Sales") if X not in CV
+    Allows: Highlighting experience that exists in bullets (even if framed differently)
+    Disallows: Adding completely NEW skills that don't exist at all in the CV
     
     Returns error message if fabrication detected, None otherwise.
     """
     if not orig_summary or not new_summary:
         return None
     
-    cv_text = next(iter(cv_text_set), "") if cv_text_set else ""
-    if not cv_text:
-        return None
+    # Extract bullet text from outline to check for related experience
+    bullet_texts = []
+    for role in outline.get("roles", []):
+        for bullet in role.get("bullets", []):
+            if isinstance(bullet, dict):
+                bullet_texts.append(bullet.get("text", "").lower())
+            elif isinstance(bullet, str):
+                bullet_texts.append(bullet.lower())
+    
+    all_bullets_text = " ".join(bullet_texts)
     
     # Extract professional identity phrases from both summaries
-    # Look for patterns like "X Professional", "X & Y Professional", "X Specialist"
     orig_lower = orig_summary.lower()
     new_lower = new_summary.lower()
     
@@ -374,8 +381,34 @@ def _check_professional_identity_fabrication(orig_summary: str, new_summary: str
     for domain in domains:
         # Check if domain appears in new summary but not in original
         if domain in new_lower and domain not in orig_lower:
-            # Check if domain exists anywhere in original CV
-            if domain not in cv_text.lower():
+            # Check if related experience exists in bullets
+            # If bullets have relevant experience, allow the summary to frame it
+            # Example: bullets have "client relationships", "revenue" → allow "sales" in summary
+            related_keywords = {
+                "sales": ["client", "revenue", "quota", "account", "deal", "customer", "target", "growth"],
+                "marketing": ["campaign", "brand", "content", "social", "engagement", "reach", "promotion"],
+                "engineering": ["code", "develop", "build", "software", "technical", "system", "architecture"],
+                "product": ["feature", "roadmap", "user", "launch", "iteration", "strategy"],
+                "design": ["ui", "ux", "visual", "creative", "interface", "user experience"],
+                "operations": ["process", "workflow", "efficiency", "optimize", "scale", "logistics"],
+                "finance": ["budget", "financial", "reporting", "analysis", "forecast", "investment"],
+                "hr": ["recruitment", "hiring", "talent", "people", "culture", "onboarding"],
+                "consulting": ["advisory", "client", "strategy", "recommendation", "solution"],
+                "data": ["analytics", "analysis", "insight", "metrics", "report", "database"]
+            }
+            
+            if domain in related_keywords:
+                keywords = related_keywords[domain]
+                # Check if any related keywords exist in bullets
+                has_related_exp = any(keyword in all_bullets_text for keyword in keywords)
+                if has_related_exp:
+                    # Allow the domain in summary since related experience exists in bullets
+                    continue
+                else:
+                    # Block if no related experience exists in CV at all
+                    return f"summary adds '{domain}' professional identity with no supporting experience in CV bullets"
+            else:
+                # Domain not in our keyword list, be conservative and block it
                 return f"summary adds '{domain}' professional identity not present in original CV"
     
     return None
@@ -732,10 +765,9 @@ def tailor_cv_diff(
     diff.setdefault("_debug", {}).setdefault("summary_reverts", [])
     new_sum = (diff.get("summary") or "").strip()
     if new_sum and orig_summary:
-        cv_vocab = _cv_vocabulary(outline)
         
         # Check for professional identity fabrication
-        identity_error = _check_professional_identity_fabrication(orig_summary, new_sum, cv_vocab)
+        identity_error = _check_professional_identity_fabrication(orig_summary, new_sum, outline)
         if identity_error:
             print(
                 f"   ⚠️  {identity_error} — reverting to original summary to avoid fabrication."
@@ -747,6 +779,7 @@ def tailor_cv_diff(
             diff["summary"] = orig_summary
         else:
             # Check for foreign capitalized terms
+            cv_vocab = _cv_vocabulary(outline)
             foreign = _foreign_capitalized_terms(new_sum, cv_vocab)
             if foreign:
                 print(
