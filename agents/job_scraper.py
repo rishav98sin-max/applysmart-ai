@@ -129,13 +129,38 @@ def _scrape_via_jobspy(
 
         fetch_count = num_jobs * 3   # fetch 3x — let matcher filter quality
 
+        # Extract country from location for Indeed
+        # Default to Ireland if location is empty or doesn't contain a country
+        country_indeed = "Ireland"
+        if location:
+            loc_lower = location.lower()
+            # Common country names to detect
+            country_map = {
+                "usa": "United States",
+                "united states": "United States",
+                "uk": "United Kingdom",
+                "united kingdom": "United Kingdom",
+                "ireland": "Ireland",
+                "canada": "Canada",
+                "australia": "Australia",
+                "germany": "Germany",
+                "france": "France",
+                "netherlands": "Netherlands",
+                "spain": "Spain",
+                "italy": "Italy",
+            }
+            for country_key, country_value in country_map.items():
+                if country_key in loc_lower:
+                    country_indeed = country_value
+                    break
+
         df = jobspy_scrape(
             site_name                  = [site],
             search_term                = job_title,
             location                   = location,
             results_wanted             = fetch_count,
             hours_old                  = 168,          # 7 days
-            country_indeed             = "Ireland",
+            country_indeed             = country_indeed,
             linkedin_fetch_description = False,
         )
 

@@ -508,7 +508,6 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
                     max_output_tokens=max_tokens,
                     temperature=temperature,
                 ),
-                timeout=60.0,  # 60 second timeout to prevent indefinite hanging
             )
             try:
                 if hasattr(response, "usage_metadata"):

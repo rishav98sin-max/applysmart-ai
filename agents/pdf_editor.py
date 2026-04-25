@@ -1047,6 +1047,9 @@ def apply_edits(
                     for e in normalised:
                         original = bullets[e["i"]]["text"]
                         use_text = e["text"] if e["text"] is not None else original
+                        # Ensure use_text is a string (defensive against LLM returning dict)
+                        if not isinstance(use_text, str):
+                            use_text = str(use_text)
                         if e["text"] is not None:
                             n_rewrites_role += 1
                         lines_out.append(f"{bullet_char}   {use_text}")
