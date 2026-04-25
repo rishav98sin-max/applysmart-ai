@@ -1624,7 +1624,7 @@ def run_agent(
     print(f"   Threshold: {match_threshold}%")
     print(f"   Level    : {experience_level if experience_level else 'Not specified'}")
     print(f"   Session  : {session_id[:10]}…")
-    print(f"   LLM cap  : {llm_budget.calls if llm_budget else 'N/A'}")
+    print(f"   LLM cap  : {llm_budget.limit if llm_budget else 'N/A'}")
     print(f"{'='*60}\n")
 
     # Early quota exhaustion check - use conservative threshold
