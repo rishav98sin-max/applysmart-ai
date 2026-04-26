@@ -791,7 +791,6 @@ with st.sidebar:
     )
     location = st.text_input(
         "Location", placeholder="City or country", label_visibility="collapsed",
-        value=st.session_state.get("location_input", ""),
         key="location_input",
     )
 

@@ -66,7 +66,10 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
     for r in outline.get("roles", []):
         parts.append(f'Role "{r["header"]}" (section={r["section"]}):')
         for i, b in enumerate(r["bullets"]):
-            parts.append(f"  [{i}] {b}")
+            # Bullets from build_outline are dicts {"text": str, "length": int};
+            # tolerate legacy str entries too.
+            btext = b["text"] if isinstance(b, dict) else str(b)
+            parts.append(f"  [{i}] {btext}")
         parts.append("")
     skills = outline.get("skills") or []
     if skills:
@@ -324,7 +327,11 @@ def _cv_vocabulary(outline: Dict[str, Any]) -> set:
     for r in outline.get("roles", []) or []:
         parts.append(r.get("header") or "")
         for b in r.get("bullets") or []:
-            parts.append(b or "")
+            # build_outline emits {"text": str, "length": int}; legacy str also tolerated.
+            if isinstance(b, dict):
+                parts.append(b.get("text") or "")
+            elif isinstance(b, str):
+                parts.append(b)
     skills = outline.get("skills")
     if isinstance(skills, list):
         parts.extend(s for s in skills if isinstance(s, str))
