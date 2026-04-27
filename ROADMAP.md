@@ -1,6 +1,11 @@
 # ApplySmart AI — Roadmap
 
-*Product owner: Rishav Singh · Last updated: 22 Apr 2026 (v1.2)*
+*Product owner: Rishav Singh · Last updated: 27 Apr 2026 (v1.2)*
+
+> **Companion docs:**
+> `PM_CASE_STUDY.md` — customer hypothesis, product bets, falsifiable tests.
+> `docs/CHANGELOG.md` — version-by-version build log (what shipped in v1.0 → v1.2).
+> `HANDOFF_SUMMARY.md` — engineering / architecture handoff.
 
 This doc captures the path from "solo prototype that works on my laptop" to
 "multi-user product other people can trust with their CV and job history".
@@ -9,6 +14,12 @@ It's deliberately **honest about gaps**: the current build is a functional
 prototype deployed to Streamlit Cloud, not a production-grade service. The
 items below are what separate the two, grouped by how soon they'd need to
 land.
+
+> **Note on prioritisation:** the v2 product hypothesis (in `PM_CASE_STUDY.md` §9)
+> is *"validate before you build."* The P0 items below should be read as the
+> minimum compliance/safety floor before letting non-cohort users in — not as
+> features to ship before validation. If validation fails, none of the P1/P2
+> items happen.
 
 ---
 
