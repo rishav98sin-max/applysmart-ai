@@ -368,8 +368,12 @@ def _parse_cv(cv_text: str) -> Dict[str, Any]:
     # Drop a synthetic Summary "section" wrapper — template handles summary separately.
     sections = [s for s in sections if s["kind"] != "summary"]
 
-    # ── Enforce canonical ATS order: Experience → Education → Skills → others.
-    _ORDER = {"experience": 0, "projects": 1, "education": 2, "skills": 3, "certifications": 4}
+    # ── Enforce canonical ATS order:
+    #    Experience → Projects → Education → Certifications/Achievements → Skills.
+    # Skills sits AFTER certifications because recruiters skim the narrative
+    # blocks (experience→education→achievements) first, and the keyword-dense
+    # skills line is most useful as the closing reference, not mid-document.
+    _ORDER = {"experience": 0, "projects": 1, "education": 2, "certifications": 3, "skills": 4}
     sections.sort(key=lambda s: _ORDER.get(s.get("kind", ""), 99))
 
     return {

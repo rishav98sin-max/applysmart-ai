@@ -48,6 +48,7 @@ def extract_cv_style(pdf_path: str) -> dict:
         "primary_color":    "#2C3E50",
         "accent_color":     "#2980B9",
         "page_size":        "A4",
+        "page_count":       1,
         "has_color_header": False,
         "header_color":     "#2C3E50",
         "font_size_body":   10,
@@ -102,6 +103,14 @@ def extract_cv_style(pdf_path: str) -> dict:
         width  = page.rect.width
         height = page.rect.height
         style["page_size"] = "A4" if abs(height - 842) < 20 else "Letter"
+        # Capture original page count so the rebuild renderer can target it.
+        # Without this the WeasyPrint path always defaulted to 1 page, which
+        # truncates 2-page CVs visually (content overflows or auto-shrinks
+        # typography hard).
+        try:
+            style["page_count"] = max(1, int(doc.page_count))
+        except Exception:
+            style["page_count"] = 1
         doc.close()
 
     except Exception as e:
@@ -352,7 +361,7 @@ def _looks_like_academic_table(lines: list) -> bool:
         return False
     if re.search(r"year\s*\|.*degree|degree\s*\|.*university", blob, re.I):
         return True
-    if re.search(r"\d{4}\s*[-–]\s*\d{4}\s*\|", blob):
+    if re.search(r"\d{4}\s*[-–-]\s*\d{4}\s*\|", blob):
         return True
     return False
 
@@ -606,10 +615,13 @@ def generate_cv_pdf_styled(
     sections = _parse_cv_sections(cv_text)
 
     # Enforce canonical ATS order: header → summary → experience → projects
-    # → education → skills → certifications → others. "header" always first.
+    # → education → certifications/achievements → skills → others.
+    # Skills sits AFTER certifications because recruiters skim the narrative
+    # blocks (experience→education→achievements) first, and the keyword-dense
+    # skills line is most useful as the closing reference, not mid-document.
     _ORDER = {
         "header": 0, "summary": 1, "experience": 2, "projects": 3,
-        "education": 4, "skills": 5, "certifications": 6,
+        "education": 4, "certifications": 5, "skills": 6,
     }
     sections = sorted(sections, key=lambda s: _ORDER.get(s[0], 99))
 
