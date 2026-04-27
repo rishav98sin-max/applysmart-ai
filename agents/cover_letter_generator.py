@@ -229,7 +229,7 @@ def generate_cover_letter(
     job_description: str,
     job_title:       str = "",
     company:         str = "",
-    candidate_name:  str = "Rishav Singh",
+    candidate_name:  str = "",
     retries:         int = 3,
 ) -> str:
     from agents.runtime       import track_llm_call, handle_rate_limit
@@ -306,20 +306,27 @@ def generate_cover_letter(
                 if attempt < retries - 1:
                     time.sleep(4)
 
-    # ── Placeholder fallback (unchanged) ──────────────────────
-    print("   ⚠️  Cover letter failed after retries — using placeholder")
+    # ── Placeholder fallback ─────────────────────────────────
+    # MUST be CV-agnostic. We never know which user the LLM call failed for,
+    # so the placeholder cannot reference any specific employer, school, or
+    # achievement — doing so would fabricate a CV for whoever runs this app.
+    # Better to ship a short, neutral letter and surface the failure than
+    # to ship a confident-sounding letter that's factually wrong about the user.
+    print("   ⚠️  Cover letter failed after retries — using neutral placeholder")
+    role_phrase   = f"the {job_title} role" if job_title else "this role"
+    company_at    = f" at {company}" if company else ""
     placeholder_body = (
-        f"I am writing to express my strong interest in the {job_title} role at {company}. "
-        f"Having spent four years delivering complex technical projects at IBM and Accenture, "
-        f"I understand the demands of product-driven environments.\n\n"
-        f"My experience at IBM involved leading performance testing for banking clients — "
-        f"reducing system response times by 40% through systematic bottleneck identification.\n\n"
-        f"At Accenture, I led a team of five engineers delivering three major releases on "
-        f"schedule for Elevance Health, navigating competing priorities across cross-functional "
-        f"stakeholders.\n\n"
-        f"I would welcome the opportunity to discuss how my background aligns with your needs."
+        f"I am writing to express my strong interest in {role_phrase}{company_at}. "
+        f"After reviewing the job description, I believe my background aligns well "
+        f"with what you are looking for, and I would welcome the chance to discuss "
+        f"how my experience can contribute to your team.\n\n"
+        f"Please find my CV attached, which outlines the experience and skills most "
+        f"relevant to this position. I would be glad to walk through any specific "
+        f"areas in more detail at your convenience.\n\n"
+        f"Thank you for considering my application. I look forward to the opportunity "
+        f"to discuss how I can support your team's goals."
     )
-    return finalize_cover_letter(placeholder_body, candidate_name)
+    return finalize_cover_letter(placeholder_body, candidate_name or "")
 
 
 # ─────────────────────────────────────────────────────────────

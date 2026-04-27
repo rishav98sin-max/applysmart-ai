@@ -77,6 +77,13 @@ def _render_diff_for_review(
     #   legacy: {"Role Header": [2, 0, 1]}
     #   new:    {"Role Header": [{"i": 2, "text": "new wording" | None}, ...]}
     bullets_diff = diff.get("bullets") or {}
+
+    def _btext(b) -> str:
+        # build_outline emits {"text": str, "length": int}; tolerate legacy str.
+        if isinstance(b, dict):
+            return str(b.get("text") or "")
+        return str(b) if b is not None else ""
+
     for role in outline.get("roles", []):
         header = role["header"]
         originals = role.get("bullets", [])
@@ -91,7 +98,7 @@ def _render_diff_for_review(
                         continue
                     if not (0 <= idx < len(originals)):
                         continue
-                    orig_text = originals[idx]
+                    orig_text = _btext(originals[idx])
                     new_text  = item.get("text")
                     if isinstance(new_text, str) and new_text.strip():
                         # Show BOTH so the reviewer can spot fabrication.
@@ -107,11 +114,11 @@ def _render_diff_for_review(
                     except (TypeError, ValueError):
                         continue
                     if 0 <= idx < len(originals):
-                        rendered.append(f"  - {originals[idx]}")
+                        rendered.append(f"  - {_btext(originals[idx])}")
         else:
             # No edits for this role — show originals as-is.
             for b in originals:
-                rendered.append(f"  - {b}")
+                rendered.append(f"  - {_btext(b)}")
         parts.append(f"ROLE: {header}")
         parts.extend(rendered)
         parts.append("")

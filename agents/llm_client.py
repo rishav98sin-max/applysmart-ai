@@ -354,7 +354,12 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
                 _GROQ_KEY_INDEX = 0  # reset to key 1 after sleep
                 continue
             raise
-    return ""
+    # Loop exhausted without success. Raise instead of returning "" so callers
+    # don't silently parse JSON from empty string and produce garbage outputs.
+    raise RuntimeError(
+        f"Groq call failed after {attempts} attempts across "
+        f"{len(_GROQ_KEYS)} key(s) — all rate-limited or invalid."
+    )
 
 
 # ── Public quota API (consumed by the sidebar UI) ───────────────────────────

@@ -175,11 +175,15 @@ def _sanitise_plan(raw: Dict[str, Any], user_inputs: Dict[str, Any]) -> Dict[str
     user_thr = int(user_inputs.get("match_threshold", 60))
     min_matches = int(qb_raw.get("min_matches", 3)) if isinstance(qb_raw, dict) else 3
     min_score   = int(qb_raw.get("min_score",   user_thr)) if isinstance(qb_raw, dict) else user_thr
-    max_rounds  = int(qb_raw.get("max_scrape_rounds", min(2, len(bundles)))) if isinstance(qb_raw, dict) else min(2, len(bundles))
+    # Default to len(bundles) so the supervisor can cycle through every bundle
+    # if early rounds don't meet min_matches. Capped at 5 to bound cost on a
+    # huge plan, but no longer hard-capped at 2 (which made bundles 3+ unreachable).
+    default_rounds = min(5, len(bundles)) if bundles else 1
+    max_rounds  = int(qb_raw.get("max_scrape_rounds", default_rounds)) if isinstance(qb_raw, dict) else default_rounds
 
     min_matches = max(1, min(min_matches, 10))
     min_score   = max(40, min(min_score, 95))
-    max_rounds  = max(1, min(max_rounds, len(bundles), 2))
+    max_rounds  = max(1, min(max_rounds, len(bundles), 5))
 
     # ── emphasis_skills ──────────────────────────────────
     skills = raw.get("emphasis_skills")
