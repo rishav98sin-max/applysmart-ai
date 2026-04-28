@@ -193,15 +193,6 @@ def _apply_level_gap_penalty(
     return adjusted, note
 
 
-def _parse_retry_seconds(error_message: str) -> float:
-    match = re.search(r"Please try again in (\d+)m([\d.]+)s", str(error_message))
-    if match:
-        return int(match.group(1)) * 60 + float(match.group(2))
-    match = re.search(r"Please try again in ([\d.]+)s", str(error_message))
-    if match:
-        return float(match.group(1))
-    return 60
-
 
 def _extract_json(text: str) -> dict:
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -213,20 +204,15 @@ def _extract_json(text: str) -> dict:
     return {}
 
 
-def _call_with_retry(prompt: str, max_tokens: int = 400, retries: int = 3) -> str:
+def _call_with_retry(prompt: str, max_tokens: int = 400) -> str:
+    # C1: removed 3-retry exception loop. chat_quality already rotates Groq
+    # keys; this loop ran 3× on top of that on every match call (×30 jobs
+    # per scrape = up to 90 wasted calls when keys are exhausted). Match
+    # errors propagate to the per-job try/except in match_jobs_node which
+    # records the job as skipped and moves on.
     from agents.runtime import track_llm_call
-    for attempt in range(retries):
-        try:
-            track_llm_call(agent="matcher")
-            return chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
-        except Exception as e:
-            print(f"   ❌ LLM error (attempt {attempt+1}): {type(e).__name__}: {e}")
-            if attempt < retries - 1:
-                time.sleep(5)
-            else:
-                raise
-
-    return ""
+    track_llm_call(agent="matcher")
+    return chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
 
 
 def match_cv_to_job(

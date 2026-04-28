@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -29,16 +30,6 @@ load_dotenv()
 # ─────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────
-
-def _parse_retry_seconds(err: str) -> float:
-    m = re.search(r"Please try again in (\d+)m([\d.]+)s", str(err))
-    if m:
-        return int(m.group(1)) * 60 + float(m.group(2))
-    m = re.search(r"Please try again in ([\d.]+)s", str(err))
-    if m:
-        return float(m.group(1))
-    return 30.0
-
 
 def _extract_json(text: str) -> dict:
     if not text:
@@ -176,6 +167,62 @@ RULES (strict):
    explicitly asking for a per-JD tailored CV. A CV with 0-2 rewritten bullets
    across all roles is a FAILED tailoring — do not ship it.
 
+   ╔════════════════════════════════════════════════════════════════════╗
+   ║ NUMBER & PROPER-NOUN PRESERVATION — STRICTEST RULE IN THIS PROMPT  ║
+   ╠════════════════════════════════════════════════════════════════════╣
+   ║ Every numeric token (5%, 15%, 600K+, 3+, $2M, 18 months, 40%,      ║
+   ║ x2, 150+, 25%, etc.) AND every proper noun (employer name, tech    ║
+   ║ stack item, product name, certification) that appears in the       ║
+   ║ ORIGINAL bullet MUST appear VERBATIM in your rewrite.              ║
+   ║                                                                    ║
+   ║ A post-processor scans every rewrite. If even ONE numeric token    ║
+   ║ from the original is missing in your rewrite, the entire bullet    ║
+   ║ rewrite is REJECTED and the original is shown verbatim — wasting  ║
+   ║ your output and producing an un-tailored CV.                       ║
+   ║                                                                    ║
+   ║ BEFORE you write each rewrite, mentally do this:                   ║
+   ║   1. List every number in the original bullet                      ║
+   ║   2. List every proper noun (capitalised tech / company / product) ║
+   ║   3. Draft the rewrite leading with JD verbs/keywords               ║
+   ║   4. CHECK: are ALL items from steps 1-2 present in your draft?    ║
+   ║      If no → revise until they all appear, or abandon the rewrite  ║
+   ║      and return the original verbatim (text=null).                 ║
+   ║                                                                    ║
+   ║ EXAMPLES OF REWRITES THE GUARD WILL REJECT:                        ║
+   ║                                                                    ║
+   ║ Original:  "Drove 5% user growth and 15% retention improvement     ║
+   ║            through data-driven recommendations"                     ║
+   ║ BAD:      "Drove user growth and retention improvement through     ║
+   ║            data-driven product recommendations"                     ║
+   ║            ↑ MISSING: 5%, 15%  →  REJECTED                         ║
+   ║                                                                    ║
+   ║ Original:  "Authored artifacts for a 600K+ user platform,          ║
+   ║            reducing system latency by 30%"                          ║
+   ║ BAD:      "Authored artifacts for a large user platform,           ║
+   ║            applying AI product fluency"                             ║
+   ║            ↑ MISSING: 600K+, 30%  →  REJECTED                      ║
+   ║                                                                    ║
+   ║ Original:  "Led 3+ concurrent product initiatives managing         ║
+   ║            stakeholder alignment"                                   ║
+   ║ BAD:      "Led concurrent product initiatives, managing            ║
+   ║            stakeholder alignment across teams"                      ║
+   ║            ↑ MISSING: 3+  →  REJECTED                              ║
+   ║                                                                    ║
+   ║ EXAMPLES OF REWRITES THE GUARD WILL ACCEPT:                        ║
+   ║                                                                    ║
+   ║ Original:  "Drove 5% user growth and 15% retention improvement     ║
+   ║            through data-driven recommendations"                     ║
+   ║ GOOD:     "Owned roadmap that delivered 5% user growth and 15%     ║
+   ║            retention lift via data-driven recommendations"          ║
+   ║            ↑ 5% and 15% both verbatim → ACCEPTED                   ║
+   ║                                                                    ║
+   ║ Original:  "Authored artifacts for a 600K+ user platform,          ║
+   ║            reducing system latency by 30%"                          ║
+   ║ GOOD:     "Shipped product artifacts for the 600K+ user platform,  ║
+   ║            cutting system latency by 30% via prioritised PRDs"     ║
+   ║            ↑ 600K+ and 30% both verbatim → ACCEPTED                ║
+   ╚════════════════════════════════════════════════════════════════════╝
+
    Mandatory rewrite targets (per role):
      • HIGHLY RELEVANT role (job title, domain, or core tech match): rewrite
        **at least 50% of bullets, ideally 60-70%**. Lead every rewrite with
@@ -255,37 +302,28 @@ Return the JSON now:"""
 # on any error or missing key, so this is strictly an upgrade.
 # ─────────────────────────────────────────────────────────────
 
-def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 3) -> str:
-    from agents.runtime    import track_llm_call, handle_rate_limit
+def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
+    # C1: removed 3-retry exception loop. Both chat_gemini and chat_quality
+    # rotate keys internally; module-level retries on top multiply token waste
+    # on real exhaustion (worst case: 3 outer × 3 client-internal × N keys =
+    # ~9-30 calls for one logical tailor op, all hitting the same exhausted
+    # pool). Single attempt with empty-response Groq fallback (real signal:
+    # Gemini SAFETY block returns empty without raising). Exceptions
+    # propagate to the per-job try/except in job_agent._do_cv_tailor where
+    # the rebuild fallback path picks them up cleanly.
+    from agents.runtime    import track_llm_call
     from agents.llm_client import chat_gemini, chat_quality
 
-    for attempt in range(retries):
-        try:
-            track_llm_call(agent="cv_diff_tailor")
-            # Prefer Gemini; it handles long JSON + many roles/bullets better.
-            result = chat_gemini(prompt, max_tokens=max_tokens, temperature=0.2)
-            if result:
-                return result
-            # Explicit Groq fallback if Gemini returned empty (rare — chat_gemini
-            # already falls back internally, but belt-and-braces for 0-rewrite
-            # regression seen in the Cormac run).
-            print(f"   ⚠️  cv_diff_tailor: Gemini empty, trying Groq (attempt {attempt + 1})")
-            result = chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
-            if result:
-                return result
-            print(f"   ⚠️  cv_diff_tailor empty response (attempt {attempt + 1})")
-            time.sleep(4)
-
-        except Exception as e:
-            err = str(e).lower()
-            if any(x in err for x in ["rate", "429", "quota", "resource"]):
-                handle_rate_limit(_parse_retry_seconds(str(e)), agent="cv_diff_tailor")
-            else:
-                print(f"   ❌ cv_diff_tailor LLM error (attempt {attempt + 1}): {e}")
-                if attempt < retries - 1:
-                    time.sleep(3)
-
-    return ""
+    track_llm_call(agent="cv_diff_tailor")
+    # Prefer Gemini; it handles long JSON + many roles/bullets better.
+    result = chat_gemini(prompt, max_tokens=max_tokens, temperature=0.2)
+    if result:
+        return result
+    # Empty response from Gemini = real signal (SAFETY filter, not an error).
+    # Try Groq once before giving up — chat_gemini's internal Groq fallback
+    # only fires on exception, not on empty.
+    print("   ⚠️  cv_diff_tailor: Gemini returned empty — trying Groq once")
+    return chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -483,11 +521,38 @@ _REWRITE_LEN_MIN_RATIO = 0.5   # rewrite must be at least 50% of original length
 _REWRITE_LEN_MAX_RATIO = 2.0   # and at most 200% — longer usually means fabrication
 
 
-# Module-level revert tracker — reset at the start of every `tailor_cv_diff`
-# call, populated by `_normalise_role_bullets` whenever _rewrite_is_safe
-# rejects an LLM rewrite. Surfaced in the diff's `_debug` block so the UI
-# and Mixpanel can count how many bullets were silently reverted.
-_LAST_BULLET_REVERTS: List[Dict[str, Any]] = []
+# H4: thread-local revert tracker. Reset at the start of every
+# `tailor_cv_diff` call, populated by `_normalise_role_bullets` whenever
+# `_rewrite_is_safe` rejects an LLM rewrite. Surfaced in the diff's
+# `_debug` block so the UI and Mixpanel can count silent reverts.
+#
+# Thread-local because `TAILOR_JOB_CONCURRENCY=2` runs two tailor calls
+# concurrently and a module-level list would cross-contaminate the
+# observability data (thread A's reverts attributed to thread B's diff).
+_THREAD_LOCAL = threading.local()
+
+
+def _get_bullet_reverts() -> List[Dict[str, Any]]:
+    """Lazily-initialised per-thread bullet-revert list."""
+    if not hasattr(_THREAD_LOCAL, "bullet_reverts"):
+        _THREAD_LOCAL.bullet_reverts = []
+    return _THREAD_LOCAL.bullet_reverts
+
+
+# Backwards-compat shim: keep `_LAST_BULLET_REVERTS` as a property-like
+# accessor for any existing reads. Writes go through _get_bullet_reverts().
+class _BulletRevertsProxy:
+    """Backwards-compat shim — delegates list ops to thread-local storage."""
+    def __getattr__(self, name):
+        return getattr(_get_bullet_reverts(), name)
+    def __iter__(self):
+        return iter(_get_bullet_reverts())
+    def __len__(self):
+        return len(_get_bullet_reverts())
+    def __getitem__(self, idx):
+        return _get_bullet_reverts()[idx]
+
+_LAST_BULLET_REVERTS = _BulletRevertsProxy()
 
 
 def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int] = None) -> tuple:
@@ -808,7 +873,12 @@ def tailor_cv_diff(
     new_words = len((diff.get("summary") or "").split())
     _SUMMARY_MIN_RATIO = 0.85
     _SUMMARY_MAX_RATIO = 1.15
-    if orig_words >= 20 and new_words and new_words < int(orig_words * _SUMMARY_MIN_RATIO):
+    # H3: suppress the length-retry on reviewer-driven retries. The reviewer
+    # already triggered a re-tailor; cascading another inner retry on top
+    # multiplies token use without adding signal (the LLM saw the directive
+    # in the reviewer feedback already). Only run length-retry on first pass.
+    on_retry_pass = bool(feedback or previous_diff)
+    if (not on_retry_pass) and orig_words >= 20 and new_words and new_words < int(orig_words * _SUMMARY_MIN_RATIO):
         low  = int(orig_words * _SUMMARY_MIN_RATIO)
         high = int(orig_words * _SUMMARY_MAX_RATIO)
         print(
@@ -870,7 +940,16 @@ def tailor_cv_diff(
     # the whole CV, it defaulted to "safest path" and the tailoring is
     # shallow. Force exactly one retry with a loud directive. Suppressed
     # when we're already in a reviewer-driven retry (handled upstream).
-    if n_rewrites == 0 and not (feedback or previous_diff):
+    # B3: skip escape-hatch when the FIRST call returned a totally empty
+    # response (no summary, no bullets, no skills_order). That's a sign the
+    # LLM SAFETY-blocked, returned malformed JSON, or quota-exhausted
+    # mid-call — a second call is unlikely to help and just burns a slot
+    # under the 5 RPM Gemini ceiling. The supervisor-level B1 retry will
+    # handle it with a stricter prompt instead.
+    raw_was_empty = not (
+        diff.get("summary") or diff.get("bullets") or diff.get("skills_order")
+    )
+    if n_rewrites == 0 and not (feedback or previous_diff) and not raw_was_empty:
         total_bullets = sum(len(r.get("bullets") or []) for r in outline.get("roles", []))
         if total_bullets >= 3:
             print(
@@ -928,4 +1007,31 @@ def tailor_cv_diff(
     diff.setdefault("_debug", {})
     diff["_debug"]["bullet_reverts"] = list(_LAST_BULLET_REVERTS)
     diff["_debug"]["bullet_reverts_count"] = len(_LAST_BULLET_REVERTS)
+
+    # C3: total-revert detection. When fabrication guards reverted EVERY
+    # bullet rewrite AND the summary, the resulting "tailored" diff is
+    # functionally identical to the original CV. Flag this so the supervisor
+    # in job_agent._do_cv_tailor can force a retry with stricter prompting
+    # rather than shipping an unchanged CV with a deceptive high reviewer
+    # score (the reviewer would naturally accept the original CV).
+    summary_reverted = bool(diff["_debug"].get("summary_reverts"))
+    bullets_all_reverted = (
+        n_rewrites == 0
+        and len(_LAST_BULLET_REVERTS) > 0
+    )
+    has_summary_change = bool((diff.get("summary") or "").strip()) and not summary_reverted
+    has_bullet_change  = n_rewrites > 0
+    has_skills_change  = bool(diff.get("skills_order"))
+    diff["_debug"]["all_reverted"] = (
+        not has_summary_change
+        and not has_bullet_change
+        and not has_skills_change
+        and (summary_reverted or bullets_all_reverted)
+    )
+    if diff["_debug"]["all_reverted"]:
+        print(
+            "   🛡️  cv_diff_tailor: ALL changes reverted by fabrication "
+            "guards — diff is effectively a no-op. Caller should retry with "
+            "stricter prompting or skip the replica path."
+        )
     return diff

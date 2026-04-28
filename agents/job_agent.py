@@ -77,15 +77,6 @@ SETUP_ROUTES: Dict[str, str] = {
 ROUTE_END = "__END__"
 
 
-def _parse_retry_seconds(error_message: str) -> float:
-    match = re.search(r"Please try again in (\d+)m([\d.]+)s", str(error_message))
-    if match:
-        return int(match.group(1)) * 60 + float(match.group(2))
-    match = re.search(r"Please try again in ([\d.]+)s", str(error_message))
-    if match:
-        return float(match.group(1))
-    return 60
-
 
 def _extract_json_object(text: str) -> dict:
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -98,18 +89,17 @@ def _extract_json_object(text: str) -> dict:
 
 
 def _groq_supervisor_completion(prompt: str, max_tokens: int = 220) -> str:
+    # C1: removed 3-retry exception loop. chat_quality already rotates Groq
+    # keys internally; module-level retries on top just multiply token waste
+    # on real exhaustion. On exception, return "" — the supervisor's caller
+    # treats empty as "use deterministic fallback plan".
     from agents.runtime import track_llm_call
-    for attempt in range(3):
-        try:
-            track_llm_call(agent="supervisor")
-            return chat_quality(prompt, max_tokens=max_tokens, temperature=0.1)
-        except Exception as e:
-            print(f"   ❌ Supervisor LLM error (attempt {attempt + 1}): {e}")
-            if attempt < 2:
-                time.sleep(3)
-            else:
-                return ""
-    return ""
+    track_llm_call(agent="supervisor")
+    try:
+        return chat_quality(prompt, max_tokens=max_tokens, temperature=0.1)
+    except Exception as e:
+        print(f"   ❌ Supervisor LLM error: {type(e).__name__}: {e}")
+        return ""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1142,11 +1132,54 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         outline         = outline_cache,
                     )
                     if not (diff.get("summary") or diff.get("bullets") or diff.get("skills_order")):
-                        print(f"   ℹ️  {tag} Empty diff — accepting original layout.")
+                        # B1: Empty diff is NOT a 100/100 success. It means
+                        # Gemini SAFETY-blocked, returned malformed JSON, or
+                        # the prompt failed to engage. Two cases:
+                        #   1) We have retries left → mark for retry with
+                        #      a clear directive to actually produce edits.
+                        #   2) Out of retries → mark as 'rebuild_fallback'
+                        #      with score=55 so the UI shows the truth
+                        #      (we'll fall through to the rebuild path).
+                        if attempt < MAX_TAILOR_RETRIES:
+                            print(
+                                f"   ⚠️  {tag} Empty diff on attempt {attempt+1} — "
+                                f"forcing retry (likely Gemini SAFETY-block or "
+                                f"quota-exhausted JSON parse failure)."
+                            )
+                            feedback_in = (
+                                "[empty-diff] Your previous response produced no "
+                                "summary, no bullet edits, and no skills order. "
+                                "This is a failure. You MUST return a non-empty "
+                                "diff with: a rewritten summary that leads with "
+                                "JD verbs, AT LEAST 2 bullet rewrites on the most "
+                                "JD-relevant role, and a skills_order if reordering "
+                                "would help. Use ONLY facts from the CV — no "
+                                "fabrication — but DO produce edits."
+                            )
+                            prev_diff = diff
+                            try:
+                                from agents.analytics import track_event
+                                track_event("cv_tailor_empty_diff", "system_infra", {
+                                    "company": company, "title": title,
+                                    "attempt": attempt,
+                                })
+                            except Exception:
+                                pass
+                            continue
+                        # Out of retries — accept honestly as rebuild fallback.
+                        print(
+                            f"   ⚠️  {tag} Empty diff after {attempt+1} attempts — "
+                            f"falling through to rebuild path (no in-place tailor)."
+                        )
                         best_diff = diff
                         best_review = {
-                            "score": 100, "verdict": "accept",
-                            "feedback": "(empty diff — no changes to review)",
+                            "score": 55,
+                            "verdict": "rebuild_fallback",
+                            "feedback": (
+                                "In-place tailoring failed (empty diff after retries) — "
+                                "rebuilt CV from scratch using your style profile. "
+                                "Layout fidelity may differ from your original PDF."
+                            ),
                             "strengths": [], "weaknesses": [],
                         }
                         break
@@ -1171,6 +1204,41 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         best_review["_summary_reverts"] = list(
                             _dbg.get("summary_reverts") or []
                         )
+                        best_review["_all_reverted"] = bool(_dbg.get("all_reverted"))
+
+                    # C3: total-revert override. If every change was reverted
+                    # by fabrication guards, the reviewer is scoring the
+                    # ORIGINAL CV (not a tailored version) and will accept it
+                    # at high score. Force a retry with stricter prompting
+                    # rather than shipping an unchanged CV under a deceptive
+                    # accept verdict.
+                    all_reverted = bool((diff.get("_debug") or {}).get("all_reverted"))
+                    if all_reverted and attempt < MAX_TAILOR_RETRIES:
+                        print(
+                            f"   🛡️  {tag} all-revert detected — "
+                            f"forcing retry with stricter prompt"
+                        )
+                        feedback_in = (
+                            (review.get("feedback") or "")
+                            + " [all-reverted] Your previous diff had every "
+                              "rewrite blocked by the fabrication guard "
+                              "(introduced terms not in CV, or wrong "
+                              "professional identity). Rewrite using ONLY "
+                              "verbatim phrases and facts from the CV — no "
+                              "new acronyms, technologies, employers, or "
+                              "credentials. Lead with JD-relevant verbs but "
+                              "every noun must come from the CV."
+                        ).strip()
+                        prev_diff = diff
+                        try:
+                            from agents.analytics import track_event
+                            track_event("cv_tailor_all_reverted", "system_infra", {
+                                "company": company, "title": title,
+                                "attempt": attempt,
+                            })
+                        except Exception:
+                            pass
+                        continue
 
                     # Count rewrites before the accept-check so the rewrite-
                     # floor can override a too-conservative reviewer accept.
@@ -1310,12 +1378,41 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                 )
                 if cv_pdf and os.path.exists(cv_pdf):
                     rmode = "rebuilt"
+                    # B1: when we end up on rebuild path AND best_review
+                    # carried over the optimistic empty-diff stub from an
+                    # earlier branch, override it so the UI shows truth.
+                    # The replica path was attempted but failed; the user is
+                    # getting a brand-new ReportLab PDF, not their original
+                    # layout with surgical edits.
+                    if best_review is None or best_review.get("verdict") in (
+                        "accept", None,
+                    ) and best_review.get("score", 0) >= 90 and not (
+                        best_diff and (
+                            best_diff.get("summary")
+                            or best_diff.get("bullets")
+                            or best_diff.get("skills_order")
+                        )
+                    ):
+                        best_review = {
+                            "score": 65,
+                            "verdict": "rebuild_fallback",
+                            "feedback": (
+                                "Used rebuild path (LLM-rewritten text + ReportLab "
+                                "PDF) — your original layout was not preserved. "
+                                "Content IS tailored but visual fidelity differs "
+                                "from your uploaded CV."
+                            ),
+                            "strengths": [], "weaknesses": [],
+                            "_rebuild_mode": True,
+                        }
+                    elif best_review is not None:
+                        best_review["_rebuild_mode"] = True
             return cv_pdf, tcv_text, best_review, rmode
 
         # ── Fork: run cover-letter ‖ CV-tailor concurrently ──────────
         # Both paths are fully independent (shared read-only state only).
         # Expected ~40% wall-time cut per job since Gemma calls dominate.
-        print(f"\n   ⚡ {tag} parallel: cover-letter ‖ CV-tailor")
+        print(f"\n   {tag} parallel: cover-letter ‖ CV-tailor")
         cover_letter_text: str = ""
         cl_pdf_path: Optional[str] = None
         cl_review: Optional[Dict[str, Any]] = None
@@ -1358,9 +1455,15 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
             return {**job, "_tailor_error": str(e)}
 
     # ── Fork across jobs: bounded concurrency ────────────────────────
-    # 2 jobs at a time keeps us safely under Gemma free-tier RPM=30
-    # while ~halving total wall-time. Tunable via env.
-    job_concurrency = max(1, int(os.getenv("TAILOR_JOB_CONCURRENCY", "2")))
+    # B2 (Apr 27): default lowered 2 → 1. Gemini 2.5 Flash free tier caps at
+    # 5 RPM PER GOOGLE PROJECT (not per key) — see header
+    # `GenerateRequestsPerMinutePerProjectPerModel-FreeTier`. With 2 parallel
+    # jobs each making 4-6 Gemini calls (tailor + cover letter + retries),
+    # we hit the cap in <60s and the rest of the run cascades through
+    # Groq fallback, losing tailoring quality. Serial = slightly slower
+    # wall-time but reliable replica path completion. Power users with a
+    # paid Gemini key or a separate project per key can override via env.
+    job_concurrency = max(1, int(os.getenv("TAILOR_JOB_CONCURRENCY", "1")))
     jobs_to_tailor = state["matched_jobs"]
     print(
         f"   ⚡ tailor across-jobs concurrency={job_concurrency} "

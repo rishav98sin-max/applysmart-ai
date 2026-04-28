@@ -43,16 +43,6 @@ ACCEPT_THRESHOLD = int(os.getenv("COVER_REVIEWER_ACCEPT_THRESHOLD", "70"))
 # Helpers
 # ─────────────────────────────────────────────────────────────
 
-def _parse_retry_seconds(msg: str) -> float:
-    m = re.search(r"Please try again in (\d+)m([\d.]+)s", str(msg))
-    if m:
-        return int(m.group(1)) * 60 + float(m.group(2))
-    m = re.search(r"Please try again in ([\d.]+)s", str(msg))
-    if m:
-        return float(m.group(1))
-    return 60.0
-
-
 def _extract_json(text: str) -> Dict[str, Any]:
     m = re.search(r"\{.*\}", text, re.DOTALL)
     if m:
@@ -141,30 +131,18 @@ Return the review now:"""
 # LLM call — chat_fast (Groq) — reviewer is a logic/scoring task
 # ─────────────────────────────────────────────────────────────
 
-def _call_llm(prompt: str, max_tokens: int = 500, retries: int = 3) -> str:
-    from agents.runtime    import handle_rate_limit
-    from agents.llm_client import chat_fast   # ← reviewer = scoring logic = Groq
-
-    for attempt in range(retries):
-        try:
-            track_llm_call(agent="cover_reviewer")
-            result = chat_fast(prompt, max_tokens=max_tokens, temperature=0.1)
-            if result:
-                return result
-            print(f"   ⚠️  cover-reviewer empty response (attempt {attempt + 1})")
-            time.sleep(4)
-
-        except Exception as e:
-            err = str(e).lower()
-            if any(x in err for x in ["rate", "429", "quota", "resource"]):
-                handle_rate_limit(_parse_retry_seconds(str(e)), agent="cover_reviewer")
-            else:
-                print(f"   ❌ cover-reviewer error (attempt {attempt + 1}): "
-                      f"{type(e).__name__}: {e}")
-                if attempt < retries - 1:
-                    time.sleep(5)
-
-    return ""
+def _call_llm(prompt: str, max_tokens: int = 500) -> str:
+    # C1: removed 3-retry exception loop. chat_fast handles Groq key rotation
+    # internally; an exception here means the whole pool is exhausted and
+    # retrying just burns more failed-call quota. Single attempt; on exception,
+    # return "" so the fail-open path in review_cover_letter() handles it.
+    from agents.llm_client import chat_fast
+    track_llm_call(agent="cover_reviewer")
+    try:
+        return chat_fast(prompt, max_tokens=max_tokens, temperature=0.1)
+    except Exception as e:
+        print(f"   ❌ cover-reviewer error: {type(e).__name__}: {e}")
+        return ""
 
 
 # ─────────────────────────────────────────────────────────────

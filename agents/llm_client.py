@@ -6,7 +6,7 @@ import random
 import json
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Tuple
 
 from dotenv import load_dotenv
 
@@ -39,11 +39,40 @@ _GEMINI_KEYS: list = []
 _GEMINI_KEY_INDEX: int = 0
 _GEMINI_CONFIGURED_KEY: Optional[str] = None  # last key passed to genai.configure
 
-# Rate limiting for Gemini free tier (5 RPM globally across all keys).
-# Track last call time to enforce 13-second gap between calls.
-# Use a lock to prevent concurrent calls from bypassing the rate limit.
+# Rate limiting for Gemini free tier (P6 redesign — Apr 28).
+#
+# gemini-2.5-flash free tier: 10 RPM per Google Cloud project per model
+# (was 5 RPM historically; some projects may still be on the lower cap).
+# Strategy:
+#   • Global gap of `_GEMINI_MIN_GAP_S` (7s default ≈ 8.5 RPM) between any
+#     two call STARTS. Slot is reserved atomically inside the lock; the
+#     actual sleep happens outside so concurrent threads serialise without
+#     blocking each other on the lock.
+#   • Per-key cooldown table populated from Google's `retry_delay` field on
+#     429 responses. Cooled-down keys are skipped entirely until they
+#     recover. When ALL keys are cooling, we sleep until the soonest one
+#     recovers instead of falling straight to Groq.
+#   • `_LAST_GEMINI_CALL_TIME` is the FUTURE-RESERVED slot of the most
+#     recent call. We do NOT overwrite this after a successful call (that
+#     was the old race condition: an in-flight call's completion would
+#     clobber a later thread's reservation, letting the next caller squeeze
+#     in <gap seconds after the previous one and busting the RPM window).
 _LAST_GEMINI_CALL_TIME: float = 0.0
 _GEMINI_RATE_LIMIT_LOCK = threading.Lock()
+
+# Per-key cooldowns. Map: key_index → unix_timestamp_when_key_recovers.
+# Updated on 429 with `retry_delay` from Google. Honoured by
+# `_gemini_configure_current()` (skips cooled-down keys) and by
+# `_call_gemini` (sleeps until earliest recovery when ALL keys are cooling).
+# Reads/writes are dict-atomic under the GIL — no additional lock needed.
+_GEMINI_KEY_COOLDOWN_UNTIL: Dict[int, float] = {}
+
+# Global inter-call gap. 7s ≈ 8.5 RPM, comfortably under the 10 RPM tier
+# while leaving headroom for clock skew. If your project is still on the
+# legacy 5 RPM cap, the per-key cooldown logic + retry_delay parser will
+# detect 429s and back off automatically. Configurable via env so power
+# users with paid keys can tighten it (e.g. 1.0s for 60 RPM tier).
+_GEMINI_MIN_GAP_S: float = float(os.getenv("GEMINI_MIN_GAP_S", "7.0"))
 
 # Per-key quota snapshot captured from Groq's x-ratelimit-* response headers
 # after every successful call. Kept mostly for the reset_tokens timestamp —
@@ -154,15 +183,25 @@ def _load_gemini_keys() -> list:
 def _gemini_configure_current() -> Optional[str]:
     """
     Ensure `genai` is configured with the currently-selected key. Returns
-    the active key (or None if no keys are configured). Reconfigures lazily
-    only when the active key changes to avoid redundant SDK calls.
+    the active key (or None if no keys are configured / current key is
+    cooling down). Reconfigures lazily only when the active key changes
+    to avoid redundant SDK calls.
+
+    Defence-in-depth for P6 cooldowns: even if a caller forgets to use
+    `_next_available_gemini_key()` to pick a non-cooling key, this returns
+    None so the call falls through to Groq cleanly instead of hammering a
+    rate-limited key.
     """
     global _GEMINI_KEYS, _GEMINI_KEY_INDEX, _GEMINI_CONFIGURED_KEY
     if not _GEMINI_KEYS:
         _GEMINI_KEYS = _load_gemini_keys()
     if not _GEMINI_KEYS:
         return None
-    key = _GEMINI_KEYS[_GEMINI_KEY_INDEX % len(_GEMINI_KEYS)]
+    idx = _GEMINI_KEY_INDEX % len(_GEMINI_KEYS)
+    cooldown = _GEMINI_KEY_COOLDOWN_UNTIL.get(idx, 0.0)
+    if cooldown > time.time():
+        return None
+    key = _GEMINI_KEYS[idx]
     if key != _GEMINI_CONFIGURED_KEY:
         genai.configure(api_key=key)
         _GEMINI_CONFIGURED_KEY = key
@@ -197,6 +236,72 @@ def _rotate_gemini_key() -> bool:
     print(f"   ⚠️  All {len(_GEMINI_KEYS)} Gemini key(s) exhausted — "
           "falling back to Groq")
     return False
+
+
+# ────────────────────────────────────────────────────────────
+# P6 — Per-key cooldown helpers
+# ────────────────────────────────────────────────────────────
+
+def _parse_retry_delay_seconds(err: Exception) -> float:
+    """
+    Parse Google's `retry_delay { seconds: N }` field from a 429 error.
+    Falls back to regex on the stringified error, then to 60s default.
+    """
+    try:
+        details = getattr(err, "details", None)
+        if callable(details):
+            for d in details():
+                rd = getattr(d, "retry_delay", None)
+                secs = getattr(rd, "seconds", None) if rd is not None else None
+                if isinstance(secs, int) and secs > 0:
+                    return float(secs)
+    except Exception:
+        pass
+    import re as _re
+    s = str(err)
+    m = _re.search(
+        r"retry[_ ]delay\s*\{[^}]*?seconds:\s*(\d+)",
+        s, _re.IGNORECASE | _re.DOTALL,
+    )
+    if m:
+        return float(m.group(1))
+    m = _re.search(r"Please retry in (\d+(?:\.\d+)?)s", s)
+    if m:
+        return float(m.group(1))
+    return 60.0
+
+
+def _mark_gemini_key_cooldown(key_index: int, retry_delay_s: float) -> None:
+    """Set per-key cooldown — won't be eligible until the deadline."""
+    _GEMINI_KEY_COOLDOWN_UNTIL[key_index] = time.time() + retry_delay_s
+    print(
+        f"   ⏱  Gemini key #{key_index + 1} cooling for "
+        f"{retry_delay_s:.1f}s (until quota window resets)"
+    )
+
+
+def _next_available_gemini_key():
+    """
+    Find the next non-cooling key starting from the current rotation index.
+    Returns (key_index, 0.0) when one is ready immediately, or
+    (earliest_recovering_index, wait_seconds) when ALL keys are cooling.
+    Returns (None, 0.0) when no keys are configured at all.
+    """
+    if not _GEMINI_KEYS:
+        return None, 0.0
+    n = len(_GEMINI_KEYS)
+    now = time.time()
+    for offset in range(n):
+        idx = (_GEMINI_KEY_INDEX + offset) % n
+        cooldown = _GEMINI_KEY_COOLDOWN_UNTIL.get(idx, 0.0)
+        if cooldown <= now:
+            return idx, 0.0
+    earliest_idx = min(
+        range(n),
+        key=lambda i: _GEMINI_KEY_COOLDOWN_UNTIL.get(i, 0.0),
+    )
+    wait_s = max(0.0, _GEMINI_KEY_COOLDOWN_UNTIL[earliest_idx] - now)
+    return earliest_idx, wait_s
 
 
 def _groq_client(key: str = None):
@@ -349,10 +454,13 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
             if _is_rate_limit_error(e) or _is_auth_error(e):
                 if _rotate_groq_key():
                     continue  # try next key immediately, no sleep
-                # All keys exhausted — fall back to a short sleep
-                time.sleep(30)
-                _GROQ_KEY_INDEX = 0  # reset to key 1 after sleep
-                continue
+                # All keys exhausted — break out and raise the typed
+                # RuntimeError below instead of blocking 30s. Daily quotas
+                # don't reset in 30s, so the sleep was just guaranteeing a
+                # hung Streamlit session before the inevitable re-raise.
+                # Caller's per-job try/except in job_agent.py handles the
+                # exception cleanly as a job-level failure.
+                break
             raise
     # Loop exhausted without success. Raise instead of returning "" so callers
     # don't silently parse JSON from empty string and produce garbage outputs.
@@ -469,14 +577,24 @@ def chat_fast(prompt: str, max_tokens: int = 500, temperature: float = 0.1) -> s
 
 def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
     """
-    Call Gemini via the active key in the rotation pool. On rate-limit /
-    auth errors, rotate to the next key and retry. Falls back to Groq only
-    after every configured Gemini key has been exhausted.
+    Call Gemini via the active key in the rotation pool.
 
-    Rate limiting: Enforces 13-second gap between calls to stay under
-    Gemini 2.5 Flash free tier's 5 RPM global limit.
+    Rate-limit strategy (P6 redesign — Apr 28):
+      • Global gap of `_GEMINI_MIN_GAP_S` (7s default ≈ 8.5 RPM) between
+        any two call STARTS. The slot is reserved atomically inside a lock;
+        the actual sleep happens outside so concurrent threads serialise.
+      • Per-key cooldown table populated from Google's `retry_delay` field
+        on 429 responses. Cooled-down keys are skipped entirely until they
+        recover.
+      • When ALL keys are cooling, we sleep until the soonest recovery
+        rather than punting straight to Groq.
+      • The post-call timestamp is NOT updated — the reservation is the
+        source of truth. (Old bug: post-call overwrite let late-arriving
+        threads compute their slot from a stale `_LAST` value, squeezing
+        2-3 calls into a single 14s window and busting 5 RPM.)
     """
-    global _GEMINI_KEYS, _LAST_GEMINI_CALL_TIME, _GEMINI_RATE_LIMIT_LOCK
+    global _GEMINI_KEYS, _LAST_GEMINI_CALL_TIME, _GEMINI_KEY_INDEX
+
     if genai is None:
         print("   ⚠️  Gemini SDK not installed, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
@@ -487,24 +605,49 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
         print("   ⚠️  No GEMINI_API_KEY* found, falling back to Groq")
         return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
 
-    # Up to (num_keys) rotation attempts — one real call per key.
-    attempts = len(_GEMINI_KEYS)
+    n_keys = len(_GEMINI_KEYS)
     last_err: Optional[Exception] = None
-    for _ in range(attempts):
-        # Rate limiting: enforce 13-second gap between calls to stay under
-        # Gemini 2.5 Flash free tier's 5 RPM global limit.
-        # Use a lock to prevent concurrent calls from bypassing the limit.
-        # Check BEFORE each attempt to ensure rotated keys also respect the limit.
+
+    # Try every key once. On 429 we mark the key cooling and rotate.
+    for _ in range(n_keys):
+        # Pick a non-cooling key. If all are cooling, sleep until the
+        # soonest one recovers — better than punting to Groq when the
+        # wait is short (5-30s typically).
+        key_idx, wait_s = _next_available_gemini_key()
+        if key_idx is None:
+            break
+        if wait_s > 0:
+            print(
+                f"   ⏳ All {n_keys} Gemini key(s) cooling — "
+                f"sleeping {wait_s:.1f}s until key #{key_idx + 1} recovers..."
+            )
+            time.sleep(wait_s)
+        _GEMINI_KEY_INDEX = key_idx
+
+        # Reserve the global call slot (serialised across threads).
         with _GEMINI_RATE_LIMIT_LOCK:
-            elapsed = time.time() - _LAST_GEMINI_CALL_TIME
-            if elapsed < 13:
-                sleep_time = 13 - elapsed
-                print(f"   ⏳ Gemini rate limit: sleeping {sleep_time:.1f}s before call...")
-                time.sleep(sleep_time)
+            now = time.time()
+            # slot = max(now, _LAST + gap). Guarantees ≥ gap between
+            # consecutive call STARTS regardless of how long any individual
+            # call takes. Critical: we never write a value SMALLER than
+            # the existing _LAST (which would be the post-call overwrite
+            # bug we removed).
+            slot = max(now, _LAST_GEMINI_CALL_TIME + _GEMINI_MIN_GAP_S)
+            sleep_time = max(0.0, slot - now)
+            _LAST_GEMINI_CALL_TIME = slot
+        if sleep_time > 0:
+            print(
+                f"   ⏳ Gemini rate limit: sleeping {sleep_time:.1f}s "
+                f"before call..."
+            )
+            time.sleep(sleep_time)
 
         active = _gemini_configure_current()
         if not active:
-            break
+            # Current key is cooling (or no keys). Loop will pick the next
+            # non-cooling key on the following iteration via
+            # _next_available_gemini_key().
+            continue
         try:
             model = genai.GenerativeModel(GEMINI_MODEL)
             response = model.generate_content(
@@ -523,21 +666,37 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
                         _increment_gemini_tokens(total_tokens)
             except Exception:
                 pass
-            # Update timestamp after successful call
-            _LAST_GEMINI_CALL_TIME = time.time()
+            # NB: do NOT update _LAST_GEMINI_CALL_TIME here. The reservation
+            # we made above is authoritative; overwriting with time.time()
+            # would let queued threads compute fresh slots from a stale
+            # baseline and bust the RPM window (the old race condition).
             return response.text.strip() if response.text else ""
+
         except Exception as e:
             last_err = e
-            if _is_rate_limit_error(e) or _is_auth_error(e):
+            if _is_rate_limit_error(e):
+                # Honour Google's retry hint and mark this key cooling
+                retry_s = _parse_retry_delay_seconds(e)
+                _mark_gemini_key_cooldown(_GEMINI_KEY_INDEX, retry_s)
+                # rotate — next iteration picks a fresh key (or sleeps if
+                # all are cooling)
+                _rotate_gemini_key()
+                continue
+            if _is_auth_error(e):
+                # Auth = key broken; cool it for an hour so we don't
+                # retry it this run, and try the next key
+                _mark_gemini_key_cooldown(_GEMINI_KEY_INDEX, 3600.0)
                 if _rotate_gemini_key():
                     continue
-                break  # pool exhausted → break out to Groq fallback
-            # Non-rate-limit failure — don't burn all keys on the same bug.
+                break
+            # Non-RL / non-auth failure — try next Gemini key once,
+            # then fall through to Groq if no more keys
             print(
                 f"   ⚠️  Gemini call failed ({type(e).__name__}: {e}), "
-                f"falling back to Groq"
+                f"trying next Gemini key before Groq fallback"
             )
-            # Add 3-second delay before switching providers to prevent rapid-fire failures
+            if _rotate_gemini_key():
+                continue
             time.sleep(3)
             return _call_groq(
                 prompt, max_tokens=max_tokens, temperature=temperature
@@ -545,12 +704,11 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
 
     if last_err is not None:
         print(
-            f"   ⚠️  All Gemini keys exhausted ({type(last_err).__name__}: "
-            f"{last_err}) — falling back to Groq"
+            f"   ⚠️  All Gemini keys exhausted/cooling "
+            f"({type(last_err).__name__}: {str(last_err)[:200]}) — "
+            f"falling back to Groq"
         )
     return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
-
-
 def chat_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
     """Use Gemini 2.5 Flash for writing tasks (CV tailoring, cover letters)."""
     print(f"   🤖 [GEMINI / WRITING] requesting {max_tokens} tokens...")

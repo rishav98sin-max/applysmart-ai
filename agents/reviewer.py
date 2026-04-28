@@ -34,16 +34,6 @@ from agents.llm_client import chat_fast
 ACCEPT_THRESHOLD = int(os.getenv("REVIEWER_ACCEPT_THRESHOLD", "72"))
 
 
-def _parse_retry_seconds(err: str) -> float:
-    m = re.search(r"Please try again in (\d+)m([\d.]+)s", str(err))
-    if m:
-        return int(m.group(1)) * 60 + float(m.group(2))
-    m = re.search(r"Please try again in ([\d.]+)s", str(err))
-    if m:
-        return float(m.group(1))
-    return 30.0
-
-
 def _extract_json(text: str) -> dict:
     if not text:
         return {}
@@ -197,16 +187,19 @@ OUTPUT (JSON only, no prose, no markdown fences):
 Return the review now:"""
 
 
-def _call_llm(prompt: str, max_tokens: int = 500, retries: int = 3) -> str:
-    for attempt in range(retries):
-        try:
-            track_llm_call(agent="reviewer")
-            return chat_fast(prompt, max_tokens=max_tokens, temperature=0.1)
-        except Exception as e:
-            print(f"   ❌ reviewer LLM error (attempt {attempt+1}): {e}")
-            if attempt < retries - 1:
-                time.sleep(3)
-    return ""
+def _call_llm(prompt: str, max_tokens: int = 500) -> str:
+    # C1: removed module-level 3-retry loop. chat_fast already rotates Groq
+    # keys internally; retrying here just multiplies token waste on real
+    # exhaustion (3 module retries × N keys × inner client retries = 9-30 calls
+    # for a single logical operation, all hitting the same exhausted pool).
+    # Exceptions propagate to the per-job try/except in job_agent.py where
+    # they're handled gracefully as job-level failures.
+    track_llm_call(agent="reviewer")
+    try:
+        return chat_fast(prompt, max_tokens=max_tokens, temperature=0.1)
+    except Exception as e:
+        print(f"   ❌ reviewer LLM error: {type(e).__name__}: {e}")
+        return ""
 
 
 def _sanitise(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -273,13 +266,48 @@ def review_tailored_cv(
     text = _call_llm(prompt)
     raw  = _extract_json(text)
     if not raw:
-        # Fail-open: don't force a retry if reviewer itself is broken.
+        # C2: distinguish "reviewer didn't run" from "reviewer ran but emitted
+        # garbage". The latter is suspicious — malformed JSON often correlates
+        # with borderline-fabricating tailor output (LLM gets confused mid-
+        # rationale). Fail-OPEN only when the LLM produced no text at all
+        # (transport / quota failure). Fail-CLOSED with a forced retry when
+        # the LLM produced text we couldn't parse.
+        if not text:
+            # Genuine reviewer-unavailable case → don't block the pipeline.
+            try:
+                from agents.analytics import track_event
+                track_event("reviewer_failopen_noresponse", "system_infra", {
+                    "company": company, "title": job_title,
+                })
+            except Exception:
+                pass
+            return {
+                "score":      100,
+                "strengths":  [],
+                "weaknesses": [],
+                "feedback":   "(reviewer unavailable — accepted by default)",
+                "verdict":    "accept",
+            }
+        # Got text but couldn't parse JSON → fail-closed at score=50, retry.
+        try:
+            from agents.analytics import track_event
+            track_event("reviewer_failclosed_badjson", "system_infra", {
+                "company": company, "title": job_title,
+                "raw_preview": text[:200],
+            })
+        except Exception:
+            pass
+        print(
+            "   ⚠️  reviewer returned unparseable JSON — failing closed "
+            "(score=50, retry) instead of fail-open"
+        )
         return {
-            "score":      100,
+            "score":      50,
             "strengths":  [],
-            "weaknesses": [],
-            "feedback":   "(reviewer unavailable — accepted by default)",
-            "verdict":    "accept",
+            "weaknesses": ["reviewer JSON parse failed — output may be malformed"],
+            "feedback":   "Reviewer could not parse tailored output. "
+                          "Re-tailor with a stricter, more literal style.",
+            "verdict":    "retry",
         }
 
     review = _sanitise(raw)

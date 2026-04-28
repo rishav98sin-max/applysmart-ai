@@ -39,16 +39,6 @@ from agents.runtime import track_llm_call
 from agents.llm_client import chat_quality
 
 
-def _parse_retry_seconds(err: str) -> float:
-    m = re.search(r"Please try again in (\d+)m([\d.]+)s", str(err))
-    if m:
-        return int(m.group(1)) * 60 + float(m.group(2))
-    m = re.search(r"Please try again in ([\d.]+)s", str(err))
-    if m:
-        return float(m.group(1))
-    return 30.0
-
-
 def _extract_json(text: str) -> dict:
     if not text:
         return {}
@@ -129,17 +119,18 @@ EXAMPLE OUTPUT:
 Return the plan JSON now:"""
 
 
-def _call_llm(prompt: str, max_tokens: int = 900, retries: int = 3) -> str:
+def _call_llm(prompt: str, max_tokens: int = 900) -> str:
+    # C1: removed 3-retry exception loop. chat_quality already rotates Groq
+    # keys; an exception means the pool is exhausted, retrying just burns
+    # more failed-call quota. On exception, return "" so plan_search() falls
+    # back to the deterministic _fallback_plan() instead of hanging.
     from agents.runtime import track_llm_call
-    for attempt in range(retries):
-        try:
-            track_llm_call(agent="planner")
-            return chat_quality(prompt, max_tokens=max_tokens, temperature=0.3)
-        except Exception as e:
-            print(f"   ❌ planner LLM error (attempt {attempt+1}): {e}")
-            if attempt < retries - 1:
-                time.sleep(3)
-    return ""
+    track_llm_call(agent="planner")
+    try:
+        return chat_quality(prompt, max_tokens=max_tokens, temperature=0.3)
+    except Exception as e:
+        print(f"   ❌ planner LLM error: {type(e).__name__}: {e}")
+        return ""
 
 
 def _sanitise_plan(raw: Dict[str, Any], user_inputs: Dict[str, Any]) -> Dict[str, Any]:

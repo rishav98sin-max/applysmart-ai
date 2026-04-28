@@ -219,7 +219,20 @@ _HEADINGS: Dict[str, re.Pattern] = {
         re.I,
     ),
     "projects": re.compile(
-        r"^\s*(featured\s+projects?|key\s+projects?|projects?)\s*$",
+        # P0 (Apr 28): added "personal projects" + other common variants.
+        # The previous regex missed "Personal Projects" which is one of the
+        # most common project-section headings on CVs. The miss caused the
+        # entire projects block (often 200-300+ words of project bullets)
+        # to be absorbed into the preceding "Professional Summary" section,
+        # which then exploded the summary word-count baseline (e.g. 80 →
+        # 385 words) and broke the in-place tailor's summary slot, causing
+        # visible layout damage on the rendered PDF (role headers got
+        # clipped to "A" / "Cl" fragments because the rewritten summary
+        # overflowed into them).
+        r"^\s*(featured\s+projects?|key\s+projects?|"
+        r"personal\s+projects?|side\s+projects?|notable\s+projects?|"
+        r"selected\s+projects?|independent\s+projects?|"
+        r"open[\s\-]source\s+projects?|projects?)\s*$",
         re.I,
     ),
     "certifications": re.compile(
@@ -943,22 +956,60 @@ def apply_edits(
             if sum_sec is None:
                 sum_sec = _infer_summary_from_header(sections)
             if sum_sec and sum_sec["lines"]:
-                page = doc[sum_sec["lines"][0]["page"]]
-                rect = _union_rect([ln["bbox"] for ln in sum_sec["lines"]], pad=1.5)
-                # Extend rect to right page margin for wrap room.
-                rect.x1 = max(rect.x1, page.rect.width - 40)
-                ref = _first_span_of_lines(sum_sec["lines"])
-                if ref is not None:
-                    measured = _measure_line_gap(sum_sec["lines"])
-                    _redact_rect(page, rect)
-                    sz = _insert_fitted(
-                        page, rect, new_summary, ref, align=0,
-                        line_gap=measured,
-                        doc=doc, font_cache=font_cache,
+                # ── P4 (Apr 28): Summary overflow guard ────────
+                # If the rewritten summary is much longer than the original
+                # block, applying it via _insert_fitted() will overflow into
+                # the next section's text spans (role headers below get
+                # clipped to fragments — the "A" / "Cl" damage seen in the
+                # Barden run on Apr 27). Reject the summary edit cleanly
+                # so the supervisor's overflow signal can route to the
+                # rebuild path or trigger a stricter retry.
+                #
+                # Threshold 1.4×: legitimate tailored summaries can grow
+                # 10-30% naturally (added JD verbs, foregrounded facts).
+                # Beyond 1.4× we're in disaster territory (e.g. 80→385
+                # words from the Personal-Projects parser bug).
+                orig_text = " ".join(
+                    ln["text"] for ln in sum_sec["lines"]
+                ).strip()
+                orig_words = len(orig_text.split())
+                new_words = len(new_summary.split())
+                # Only enforce when we have a meaningful original to
+                # compare against — very short originals (<10 words) are
+                # often placeholder/empty summaries on stub CVs.
+                overflow_ratio = (new_words / orig_words) if orig_words >= 10 else 0.0
+                if overflow_ratio > 1.4:
+                    msg = (
+                        f"summary: rewrite is {new_words} words vs "
+                        f"{orig_words} original ({overflow_ratio:.1f}\u00d7) "
+                        f"\u2014 rejected to prevent layout overflow"
                     )
-                    report["applied"]["summary"] = {"fontsize": sz, "line_gap": round(measured, 3)}
+                    print(f"   \U0001f6e1\ufe0f  pdf_editor: {msg}")
+                    report["skipped"].append(msg)
+                    # Surface in the report's debug counters so the
+                    # supervisor can detect it via best_review._debug
+                    report.setdefault("_debug", {})["summary_overflow_rejected"] = {
+                        "orig_words": orig_words,
+                        "new_words": new_words,
+                        "ratio": round(overflow_ratio, 2),
+                    }
                 else:
-                    report["skipped"].append("summary: no reference span")
+                    page = doc[sum_sec["lines"][0]["page"]]
+                    rect = _union_rect([ln["bbox"] for ln in sum_sec["lines"]], pad=1.5)
+                    # Extend rect to right page margin for wrap room.
+                    rect.x1 = max(rect.x1, page.rect.width - 40)
+                    ref = _first_span_of_lines(sum_sec["lines"])
+                    if ref is not None:
+                        measured = _measure_line_gap(sum_sec["lines"])
+                        _redact_rect(page, rect)
+                        sz = _insert_fitted(
+                            page, rect, new_summary, ref, align=0,
+                            line_gap=measured,
+                            doc=doc, font_cache=font_cache,
+                        )
+                        report["applied"]["summary"] = {"fontsize": sz, "line_gap": round(measured, 3)}
+                    else:
+                        report["skipped"].append("summary: no reference span")
             else:
                 report["skipped"].append("summary: section not found")
 

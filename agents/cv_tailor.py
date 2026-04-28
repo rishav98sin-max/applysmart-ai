@@ -74,6 +74,40 @@ ABSOLUTE RULES — breaking any of these means failure:
 - Keep the same line breaks and blank lines between sections as the original
 - Keep section headings exactly as in the original
 
+═══════════════════════════════════════════════════════════════════════
+SECTION STRUCTURE — STRICTEST RULE FOR THE REBUILD RENDERER
+═══════════════════════════════════════════════════════════════════════
+The output is parsed back into discrete sections by a downstream renderer.
+If sections are merged, dropped, or renamed, the rendered PDF will show
+content under the wrong heading or merge entire blocks of text into the
+Professional Summary (a known failure mode).
+
+You MUST:
+- Preserve every section heading from the original VERBATIM, on its OWN
+  line, with a blank line above and below the heading.
+- Keep "Personal Projects" / "Side Projects" / "Notable Projects" / etc.
+  as a SEPARATE heading from "Professional Summary". Never merge a
+  Projects section into the Summary section.
+- Keep "Professional Experience" as a SEPARATE heading from the
+  Projects section. Never combine roles from different sections.
+- Preserve the exact heading text (case, spelling, spacing) the original
+  CV used. If the original says "Personal Projects", do NOT output
+  "Projects" or "Personal Projects:" or "PROJECTS".
+
+Example of CORRECT output (each heading on its own line, blank lines around):
+
+    Professional Summary
+
+    [paragraph here]
+
+    Personal Projects
+
+    [project block here]
+
+    Professional Experience
+
+    [role blocks here]
+
 OUTPUT: The complete tailored CV as plain text.
 """
 

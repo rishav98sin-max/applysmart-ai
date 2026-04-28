@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <title>Cover Letter — {{ candidate_name }}</title>
 <style>
+  /*
+   * P7 + P8 (Apr 28) — cover letter layout reshape.
+   *  - Top-left: company name only (no candidate name, no date)
+   *  - Subject line below
+   *  - "Dear Manager," (default salutation; can be overridden upstream)
+   *  - Body, then signoff (Warm Regards + candidate name)
+   *  - All text black (#000) — no blue/grey accents
+   *  - Hard one-page bound; the renderer auto-shrinks typography if a long
+   *    cover letter would otherwise overflow.
+   */
   @page {
     size: {{ page_size }};
     margin: {{ margin_top_mm }}mm {{ margin_right_mm }}mm {{ margin_bottom_mm }}mm {{ margin_left_mm }}mm;
@@ -12,66 +22,54 @@
     font-family: "{{ body_font }}", Georgia, "Times New Roman", serif;
     font-size: {{ body_font_size }}pt;
     line-height: 1.45;
-    color: #222;
+    color: #000;
     margin: 0;
   }
-  .sender {
-    font-size: {{ small_font_size }}pt;
-    color: #555;
-    margin-bottom: 18pt;
-    line-height: 1.3;
-  }
-  .sender .name {
-    font-weight: 600;
-    color: {{ accent_color }};
+  .company {
+    font-weight: 700;
     font-size: {{ body_font_size }}pt;
+    color: #000;
+    margin-bottom: 14pt;
   }
-  .date {
-    margin-bottom: 18pt;
-    font-size: {{ small_font_size }}pt;
-    color: #555;
-  }
-  .recipient {
-    margin-bottom: 18pt;
-    font-size: {{ small_font_size }}pt;
+  .subject {
+    font-weight: 600;
+    color: #000;
+    margin-bottom: 14pt;
   }
   .salutation {
     margin-bottom: 12pt;
     font-weight: 500;
+    color: #000;
   }
   .body p {
     margin: 0 0 10pt 0;
     text-align: justify;
+    color: #000;
   }
   .signoff {
     margin-top: 14pt;
+    color: #000;
   }
   .signoff .name {
     font-weight: 600;
+    color: #000;
     margin-top: 24pt;
   }
 </style>
 </head>
 <body>
-  <div class="sender">
-    <div class="name">{{ candidate_name }}</div>
-    {% if contact_bits %}
-      {% for bit in contact_bits %}<div>{{ bit }}</div>{% endfor %}
-    {% endif %}
-  </div>
+  {% if company %}<div class="company">{{ company }}</div>{% endif %}
 
-  {% if date_line %}<div class="date">{{ date_line }}</div>{% endif %}
+  {% if subject_line %}<div class="subject">{{ subject_line }}</div>{% endif %}
 
-  {% if recipient %}<div class="recipient">{{ recipient }}</div>{% endif %}
-
-  <div class="salutation">{{ salutation }}</div>
+  <div class="salutation">{{ salutation }},</div>
 
   <div class="body">
     {% for para in body_paragraphs %}<p>{{ para }}</p>{% endfor %}
   </div>
 
   <div class="signoff">
-    <div>{{ signoff }}</div>
+    <div>{{ signoff }},</div>
     <div class="name">{{ candidate_name }}</div>
   </div>
 </body>

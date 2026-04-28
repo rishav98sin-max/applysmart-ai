@@ -242,6 +242,13 @@ def _match_section_type(line: str) -> Optional[str]:
         ("summary", "summary"),
         ("featured projects", "projects"),
         ("key projects", "projects"),
+        ("personal projects", "projects"),
+        ("side projects", "projects"),
+        ("notable projects", "projects"),
+        ("selected projects", "projects"),
+        ("independent projects", "projects"),
+        ("open source projects", "projects"),
+        ("open-source projects", "projects"),
         ("projects", "projects"),
         ("professional experience", "experience"),
         ("work experience", "experience"),
@@ -265,6 +272,8 @@ def _match_section_type(line: str) -> Optional[str]:
     soft = [
         ("professional summary", "summary"),
         ("featured projects", "projects"),
+        ("personal projects", "projects"),
+        ("side projects", "projects"),
         ("professional experience", "experience"),
         ("academic achievements", "education"),
     ]
@@ -747,20 +756,28 @@ def _parse_cover_letter_structure(
     candidate_name: str,
 ) -> tuple:
     """
-    Expects: Dear Hiring Manager + body + Warm Regards + name.
+    Expects: Dear Manager (or Dear Hiring Manager) + body + Warm Regards + name.
     Returns (salutation, body_text, closing_line, signer_name).
     """
     text = (cover_letter or "").strip()
-    sal = "Dear Hiring Manager"
+    # P7 (Apr 28): default salutation simplified to "Dear Manager".
+    sal = "Dear Manager"
 
+    # Accept both "Dear Manager" and the legacy "Dear Hiring Manager"
+    # (some upstream prompts may still emit the longer form during the
+    # transition, and WeasyPrint's _SALUTATION_RX lets it through).
     m = re.match(
-        r"(?is)^\s*Dear\s+Hiring\s+Manager\s*\n+(.*?)\n+\s*Warm\s+Regards\s*\n+\s*(.+?)\s*$",
+        r"(?is)^\s*(Dear\s+(?:Hiring\s+)?Manager)\s*,?\s*\n+(.*?)\n+\s*"
+        r"(Warm\s+Regards|Best\s+Regards|Kind\s+Regards|Sincerely)\s*,?\s*\n+\s*(.+?)\s*$",
         text,
         re.DOTALL,
     )
     if m:
-        body, signer = m.group(1).strip(), m.group(2).strip()
-        return sal, body, "Warm Regards", signer
+        sal_captured = m.group(1).strip().rstrip(",")
+        body         = m.group(2).strip()
+        close_line   = m.group(3).strip().rstrip(",")
+        signer       = m.group(4).strip()
+        return sal_captured, body, close_line, signer
 
     # Fallback: strip any LLM salutation/sign-off heuristically
     body = text
@@ -855,6 +872,31 @@ def generate_cover_letter_pdf_styled(
         cover_letter, candidate_name
     )
 
+    # P7 (Apr 28): top-of-letter header — company name only, then subject
+    # line. Replaces the old date + recipient lines. Subject phrasing
+    # mirrors WeasyPrint: "Application for <Role> at <Company>".
+    subject_line = (
+        f"Application for {job_title}" if job_title else "Application"
+    )
+    if company and job_title:
+        subject_line = f"Application for {job_title} at {company}"
+
+    company_style = ParagraphStyle(
+        "CLCompany",
+        fontName=fbb,
+        fontSize=fs,
+        textColor=black,
+        alignment=TA_LEFT,
+        spaceAfter=14,
+    )
+    subject_style = ParagraphStyle(
+        "CLSubject",
+        fontName=fbb,
+        fontSize=fs,
+        textColor=black,
+        alignment=TA_LEFT,
+        spaceAfter=14,
+    )
     sal_style = ParagraphStyle(
         "CLSal",
         fontName=fbb,
@@ -867,7 +909,8 @@ def generate_cover_letter_pdf_styled(
         "CLBody",
         fontName=fb,
         fontSize=fs,
-        textColor=HexColor("#333333"),
+        # P8 (Apr 28): body color #333 → black for full black-only output.
+        textColor=black,
         alignment=TA_JUSTIFY,
         leading=lead,
         spaceAfter=10,
@@ -890,16 +933,18 @@ def generate_cover_letter_pdf_styled(
         spaceAfter=0,
     )
 
-    story = [
-        Paragraph(_safe_text(sal), sal_style),
-    ]
+    story: List = []
+    if company:
+        story.append(Paragraph(_safe_text(company), company_style))
+    story.append(Paragraph(_safe_text(subject_line), subject_style))
+    story.append(Paragraph(_safe_text(sal + ","), sal_style))
 
     for chunk in body_text.split("\n\n"):
         chunk = chunk.strip()
         if chunk:
             story.append(Paragraph(_safe_text(chunk), body_style))
 
-    story.append(Paragraph(_safe_text(close_line), close_style))
+    story.append(Paragraph(_safe_text(close_line + ","), close_style))
     story.append(Paragraph(_safe_text(signer), name_style))
 
     doc.build(story)

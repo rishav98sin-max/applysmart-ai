@@ -519,7 +519,11 @@ def _parse_cover_letter(cover_letter: str, candidate_name: str) -> Dict[str, Any
     text = (cover_letter or "").strip()
     lines = [ln.rstrip() for ln in text.splitlines()]
 
-    salutation = "Dear Hiring Manager"
+    # P7 (Apr 28): default salutation simplified to "Dear Manager".
+    # If the cover-letter generator emits a different one (e.g. "Dear Sarah"
+    # when the JD includes a hiring manager name), the salutation regex
+    # below will capture and pass it through.
+    salutation = "Dear Manager"
     signoff    = "Warm Regards"
 
     # Detect + consume salutation.
@@ -578,13 +582,25 @@ def generate_cover_letter_pdf_weasy(
 
         parts = _parse_cover_letter(cover_letter, candidate_name)
 
+        # P7 (Apr 28): new layout.
+        #   • company  — top-left header (replaces the old sender/name block)
+        #   • subject  — single-line "Application for <Role>" / "Application
+        #                for <Role> at <Company>"
+        # No longer passed: candidate_name (top), contact_bits, date_line,
+        # recipient. The candidate's name appears only in the signoff block.
+        subject_line = (
+            f"Application for {job_title}" if job_title else "Application"
+        )
+        if company and job_title:
+            # Slightly more specific phrasing when both are known
+            subject_line = f"Application for {job_title} at {company}"
+
         def _ctx(scale: float) -> Dict[str, Any]:
             ctx = _style_knobs(style_profile, scale=scale)
             ctx.update({
                 "candidate_name": candidate_name,
-                "contact_bits":   contact_bits or [],
-                "date_line":      datetime.now().strftime("%d %B %Y"),
-                "recipient":      f"Hiring Team, {company}" if company else "",
+                "company":        company or "",
+                "subject_line":   subject_line,
                 **parts,
             })
             return ctx
