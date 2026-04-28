@@ -60,6 +60,17 @@ _GEMINI_CONFIGURED_KEY: Optional[str] = None  # last key passed to genai.configu
 _LAST_GEMINI_CALL_TIME: float = 0.0
 _GEMINI_RATE_LIMIT_LOCK = threading.Lock()
 
+# ── Last-successful-LLM-source tracking (Apr 28 follow-up) ──────────────────
+# Set by _call_gemini and _call_groq on every successful return so callers
+# can log "which model produced this kept output". Values:
+#   "GEMINI key#1" / "GEMINI key#2" / "GEMINI key#3"  → live Gemini call
+#   "GROQ key#1"   / "GROQ key#2"                      → live Groq call
+#                                                        (also after Gemini fallback)
+#   "unknown"                                          → no successful call yet
+# Read via last_llm_source(). Module-global rather than per-call return value
+# so we don't have to refactor every caller's signature.
+_LAST_LLM_SOURCE: str = "unknown"
+
 # Per-key cooldowns. Map: key_index → unix_timestamp_when_key_recovers.
 # Updated on 429 with `retry_delay` from Google. Honoured by
 # `_gemini_configure_current()` (skips cooled-down keys) and by
@@ -449,6 +460,8 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
                         _increment_groq_tokens(total)
             except Exception:
                 pass
+            global _LAST_LLM_SOURCE
+            _LAST_LLM_SOURCE = f"GROQ key#{_GROQ_KEY_INDEX + 1}"
             return (resp.choices[0].message.content or "").strip()
         except Exception as e:
             if _is_rate_limit_error(e) or _is_auth_error(e):
@@ -670,6 +683,8 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
             # we made above is authoritative; overwriting with time.time()
             # would let queued threads compute fresh slots from a stale
             # baseline and bust the RPM window (the old race condition).
+            global _LAST_LLM_SOURCE
+            _LAST_LLM_SOURCE = f"GEMINI key#{_GEMINI_KEY_INDEX + 1}"
             return response.text.strip() if response.text else ""
 
         except Exception as e:
@@ -709,7 +724,20 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
             f"falling back to Groq"
         )
     return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
+
+
 def chat_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
     """Use Gemini 2.5 Flash for writing tasks (CV tailoring, cover letters)."""
     print(f"   🤖 [GEMINI / WRITING] requesting {max_tokens} tokens...")
     return _call_gemini(prompt, max_tokens=max_tokens, temperature=temperature)
+
+
+def last_llm_source() -> str:
+    """
+    Returns the source of the most recently successful LLM call as a short
+    human-readable tag (e.g. "GEMINI key#2" or "GROQ key#1"). Useful for
+    success-path logging — callers print the kept output's actual provider
+    after the response passes their guards. Returns "unknown" if no
+    successful call has happened yet (e.g. before the first call).
+    """
+    return _LAST_LLM_SOURCE

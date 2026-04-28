@@ -246,7 +246,7 @@ def generate_cover_letter(
 ) -> str:
     from agents.runtime       import track_llm_call, handle_rate_limit, BudgetExceeded
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
-    from agents.llm_client    import chat_gemini
+    from agents.llm_client    import chat_gemini, last_llm_source
 
     jd_wrapped = wrap_untrusted_block(job_description, label="JOB_DESCRIPTION")
     cv_wrapped = wrap_untrusted_block(cv_text,         label="CANDIDATE_CV")
@@ -307,6 +307,13 @@ def generate_cover_letter(
                 # Last attempt still fabricated — fall through to placeholder.
                 break
 
+            # Apr 28 follow-up: log which LLM produced the kept output.
+            # Helps diagnose "is Gemini ever actually used?" without combing
+            # through all the call-attempt logs.
+            print(
+                f"   ✅ Cover letter via {last_llm_source()} "
+                f"(attempt {attempt + 1}, {len(raw.split())} words)"
+            )
             return finalize_cover_letter(raw, candidate_name)
 
         except Exception as e:

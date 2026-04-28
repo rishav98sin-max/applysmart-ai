@@ -32,13 +32,95 @@ load_dotenv()
 # ─────────────────────────────────────────────────────────────
 
 def _extract_json(text: str) -> dict:
+    """
+    Robust JSON extraction. Handles:
+      • Plain JSON output
+      • Markdown-fenced output (```json ... ``` or just ``` ... ```)
+      • JSON with leading/trailing chatter ("Here is the JSON: { ... }")
+      • Multi-line JSON (DOTALL)
+
+    Apr 28 follow-up: the previous regex `\\{.*\\}` with greedy match would
+    fail silently on markdown-wrapped responses (Gemini commonly wraps JSON
+    in ```json fences) AND on responses where the regex grabbed too much
+    (first `{` to last `}`) including non-JSON chatter between two JSON
+    blocks. This extractor tries strict-parse first (after fence removal),
+    then falls back to balanced-brace scanning, and finally the legacy
+    regex. On TOTAL failure it logs the first 400 chars of the raw response
+    so we can diagnose what the model actually returned instead of treating
+    the failure as a silent "empty diff" retry.
+    """
     if not text:
         return {}
-    for match in re.finditer(r"\{.*\}", text, re.DOTALL):
+
+    # 1) Strip markdown fences (```json ... ``` or ``` ... ```) on a stripped
+    #    copy, then try a strict json.loads. This handles ~80% of real cases.
+    stripped = text.strip()
+    fence_rx = re.compile(
+        r"^```(?:json|JSON)?\s*\n?(.*?)\n?\s*```\s*$",
+        re.DOTALL,
+    )
+    m = fence_rx.match(stripped)
+    if m:
+        stripped = m.group(1).strip()
+    try:
+        result = json.loads(stripped)
+        if isinstance(result, dict):
+            return result
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # 2) Balanced-brace scan: find the first '{' and walk forward tracking
+    #    nesting depth + string state, stopping at the matching '}'. This
+    #    correctly handles nested objects without the greedy-regex pitfall.
+    start = stripped.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        escape = False
+        for i in range(start, len(stripped)):
+            ch = stripped[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = stripped[start:i + 1]
+                    try:
+                        result = json.loads(candidate)
+                        if isinstance(result, dict):
+                            return result
+                    except json.JSONDecodeError:
+                        pass
+                    break
+        # Move past this '{' and try the next one
+        start = stripped.find("{", start + 1)
+
+    # 3) Legacy fallback: the original regex (non-greedy) catches some cases
+    #    where the balanced scan above didn't (e.g. malformed strings).
+    for match in re.finditer(r"\{.*?\}", text, re.DOTALL):
         try:
             return json.loads(match.group())
         except json.JSONDecodeError:
             continue
+
+    # 4) Total failure — log a sample so the next debug session has data.
+    #    Empty-diff retries previously hid this completely.
+    sample = (text[:400] + "...") if len(text) > 400 else text
+    print(
+        f"   ⚠️  cv_diff_tailor: JSON parse failed on raw response "
+        f"({len(text)} chars). First 400: {sample!r}"
+    )
     return {}
 
 
@@ -312,7 +394,7 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
     # propagate to the per-job try/except in job_agent._do_cv_tailor where
     # the rebuild fallback path picks them up cleanly.
     from agents.runtime    import track_llm_call
-    from agents.llm_client import chat_gemini, chat_quality
+    from agents.llm_client import chat_gemini, chat_quality, last_llm_source  # noqa: F401
 
     track_llm_call(agent="cv_diff_tailor")
     # Prefer Gemini; it handles long JSON + many roles/bullets better.
@@ -991,8 +1073,16 @@ def tailor_cv_diff(
                 new_words   = rr_sum_words or new_words
 
     tag = " (retry)" if feedback or previous_diff else ""
+    # Apr 28 follow-up: include LLM source so we can see at a glance whether
+    # this kept diff came from Gemini or Groq fallback. Late import to avoid
+    # an unconditional dependency on llm_client at module load time.
+    try:
+        from agents.llm_client import last_llm_source as _lls
+        src = _lls()
+    except Exception:
+        src = "unknown"
     print(
-        f"   ✂️  cv_diff_tailor{tag}: "
+        f"   ✂️  cv_diff_tailor{tag} [via {src}]: "
         f"summary={new_words}/{orig_words}w | "
         f"roles_edited={len(diff['bullets'])} | "
         f"bullets_rewritten={n_rewrites} | "
