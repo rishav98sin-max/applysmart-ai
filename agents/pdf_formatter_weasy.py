@@ -52,13 +52,43 @@ def _env() -> "Environment":
 # ─────────────────────────────────────────────────────────────
 
 _SECTION_ALIASES = {
-    "summary":        ("summary", "professional summary", "profile", "about"),
-    "experience":     ("experience", "professional experience", "work experience", "employment"),
-    "projects":       ("projects", "featured projects", "selected projects"),
-    "education":      ("education", "academic", "qualifications"),
-    "skills":         ("skills", "key skills", "technical skills", "core skills"),
-    "certifications": ("certifications", "licenses", "awards", "achievements"),
+    "summary":        ("summary", "professional summary", "profile", "about",
+                       "career summary", "executive summary",
+                       "summary of qualifications"),
+    "experience":     ("experience", "professional experience", "work experience",
+                       "employment", "career history", "work history",
+                       "employment history", "professional background"),
+    "projects":       ("projects", "featured projects", "selected projects",
+                       "personal projects", "self projects", "self-projects",
+                       "side projects", "side-projects", "key projects",
+                       "notable projects", "recent projects", "academic projects",
+                       "independent projects", "relevant projects",
+                       "own projects", "passion projects", "portfolio",
+                       "project experience", "project work"),
+    "education":      ("education", "academic", "qualifications",
+                       "academic background", "academic qualifications",
+                       "degrees", "academic credentials"),
+    "skills":         ("skills", "key skills", "technical skills", "core skills",
+                       "expertise", "competencies", "professional skills",
+                       "core competencies", "technical expertise",
+                       "areas of expertise"),
+    "certifications": ("certifications", "licenses", "awards", "achievements",
+                       "professional certifications", "credentials",
+                       "honors", "honors & awards", "honours", "awards & honors"),
 }
+
+# Apr 28 follow-up: regex fallback for project headings that don't exactly
+# match a phrase in the alias table. Captures arbitrary qualifiers like
+# "Independent", "Open Source", "Capstone", "Research", etc. before
+# "Project(s)", which the static alias list can't enumerate exhaustively.
+# Pattern matches lines like:
+#   "Capstone Projects", "Open-Source Projects", "Research Project",
+#   "Side Project Highlights", "Major Projects" — all classified as projects.
+_PROJECTS_HEADING_RX = re.compile(
+    r"^\s*([a-z][a-z\-]*[\s\-]+){0,3}projects?\s*(highlights|portfolio|showcase)?\s*:?\s*$",
+    re.IGNORECASE,
+)
+
 
 _DATE_RX = re.compile(
     r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*\d{4}[^\n]*"
@@ -79,6 +109,13 @@ def _classify_heading(text: str) -> Optional[str]:
     for key, aliases in _SECTION_ALIASES.items():
         if low in aliases:
             return key
+    # Apr 28 follow-up: regex fallback for project-section headings whose
+    # exact phrasing isn't in the static alias table (e.g. "Capstone
+    # Projects", "Open-Source Projects", "Side Project Highlights"). Length
+    # cap (<=40 chars) prevents misclassifying a paragraph that happens to
+    # contain the word "projects" inline.
+    if len(low) <= 40 and _PROJECTS_HEADING_RX.match(low):
+        return "projects"
     return None
 
 

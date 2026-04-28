@@ -22,7 +22,11 @@ from agents.job_scraper import boards_fallback_sequence, scrape_jobs
 from agents.job_matcher import match_cv_to_job
 from agents.cv_tailor import tailor_cv
 from agents.cv_diff_tailor import tailor_cv_diff
-from agents.pdf_editor import apply_edits as apply_pdf_edits, build_outline as _build_outline
+from agents.pdf_editor import (
+    apply_edits as apply_pdf_edits,
+    build_outline as _build_outline,
+    detect_replica_compatibility as _detect_replica_compatibility,
+)
 from agents.reviewer    import review_tailored_cv, ACCEPT_THRESHOLD as REVIEWER_ACCEPT_THRESHOLD
 from agents.cover_letter_generator import generate_cover_letter
 from agents.cv_style_agent import build_style_profile
@@ -1119,9 +1123,36 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                 feedback_in = ""
                 prev_diff: Optional[Dict[str, Any]] = None
 
+                # Apr 28 follow-up: sniff layout BEFORE attempting replica.
+                # Two-column / image-heavy / scanned CVs cannot be edited
+                # in-place without visible corruption — short-circuit straight
+                # to the rebuild path so we don't ship a broken replica.
+                replica_check = _detect_replica_compatibility(state["cv_path"])
+                if not replica_check.get("compatible", True):
+                    reason = replica_check.get("reason", "unknown")
+                    print(
+                        f"   Skipping replica path — CV layout "
+                        f"detected as '{reason}' (n_columns="
+                        f"{replica_check.get('n_columns')}, "
+                        f"image_ratio={replica_check.get('image_ratio')}). "
+                        f"Routing directly to rebuild."
+                    )
+                    best_diff = {}
+                    best_review = {
+                        "score": 60,
+                        "verdict": "rebuild_fallback",
+                        "feedback": (
+                            f"In-place tailoring skipped: source PDF layout is "
+                            f"'{reason}' which the replica path cannot edit "
+                            f"safely. Rebuilt from scratch with your style profile."
+                        ),
+                        "strengths": [], "weaknesses": [],
+                    }
+                    raise StopIteration  # break out to rebuild path below
+
                 for attempt in range(MAX_TAILOR_RETRIES + 1):
                     attempt_label = "first attempt" if attempt == 0 else f"retry #{attempt}"
-                    print(f"   🧬 {tag} Replica-tailor CV ({attempt_label})...")
+                    print(f"   Replica-tailor CV ({attempt_label})...")
                     diff = tailor_cv_diff(
                         cv_pdf_path     = state["cv_path"],
                         job_description = jd,

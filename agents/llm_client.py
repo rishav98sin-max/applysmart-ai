@@ -684,7 +684,8 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
             # would let queued threads compute fresh slots from a stale
             # baseline and bust the RPM window (the old race condition).
             global _LAST_LLM_SOURCE
-            _LAST_LLM_SOURCE = f"GEMINI key#{_GEMINI_KEY_INDEX + 1}"
+            _displayed_key = (_GEMINI_KEY_INDEX % len(_GEMINI_KEYS)) + 1 if _GEMINI_KEYS else 1
+            _LAST_LLM_SOURCE = f"GEMINI key#{_displayed_key}"
             return response.text.strip() if response.text else ""
 
         except Exception as e:

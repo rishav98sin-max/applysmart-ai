@@ -229,10 +229,16 @@ _HEADINGS: Dict[str, re.Pattern] = {
         # visible layout damage on the rendered PDF (role headers got
         # clipped to "A" / "Cl" fragments because the rewritten summary
         # overflowed into them).
-        r"^\s*(featured\s+projects?|key\s+projects?|"
-        r"personal\s+projects?|side\s+projects?|notable\s+projects?|"
-        r"selected\s+projects?|independent\s+projects?|"
-        r"open[\s\-]source\s+projects?|projects?)\s*$",
+        #
+        # Apr 28 follow-up: generalised to ANY single qualifier word + the
+        # word "projects?" (with optional ":" or "highlights/portfolio/
+        # showcase" suffix). Captures arbitrary user variants we can't
+        # enumerate exhaustively (capstone projects, research projects,
+        # passion projects, capstone-projects, academic projects, etc.).
+        # The 3-word qualifier cap and per-word [a-z\-]+ pattern keep us
+        # from matching paragraph text that happens to contain "projects".
+        r"^\s*(?:[a-z][a-z\-]*[\s\-]+){0,3}projects?\s*"
+        r"(?:highlights|portfolio|showcase)?\s*:?\s*$",
         re.I,
     ),
     "certifications": re.compile(
@@ -850,6 +856,223 @@ def _union_rect(bboxes: List[List[float]], pad: float = 1.0) -> fitz.Rect:
     return fitz.Rect(x0, y0, x1, y1)
 
 
+# ─────────────────────────────────────────────────────────────
+# Data-driven rect boundaries (Apr 28 follow-up — replaces
+# hardcoded `+50` / `width-40` geometry that broke role headers
+# whenever a user's CV spacing didn't match the author's template)
+# ─────────────────────────────────────────────────────────────
+
+def _all_lines_on_page(sections: List[Dict[str, Any]], page_idx: int) -> List[Dict[str, Any]]:
+    """Flatten every line on `page_idx` across all sections, ordered by y0."""
+    out: List[Dict[str, Any]] = []
+    for sec in sections:
+        # heading line (if any) — also a real line on the page
+        hb = sec.get("heading_bbox")
+        if hb and sec.get("page") == page_idx:
+            out.append({
+                "bbox": hb,
+                "text": sec.get("heading", ""),
+                "_kind": "heading",
+                "_section_type": sec.get("type"),
+            })
+        for ln in sec.get("lines", []):
+            if ln.get("page") != page_idx:
+                continue
+            out.append({
+                "bbox": ln["bbox"],
+                "text": ln.get("text", ""),
+                "_kind": "line",
+                "_section_type": sec.get("type"),
+            })
+    out.sort(key=lambda r: (round(r["bbox"][1], 2), round(r["bbox"][0], 2)))
+    return out
+
+
+def _next_y0_below(
+    rect: fitz.Rect,
+    lines: List[Dict[str, Any]],
+    page_height: float,
+    bottom_margin: float = 36.0,
+) -> float:
+    """
+    Find the y-coordinate of the FIRST content line whose top sits below
+    `rect.y1`. Returns that y0 (so callers can set `rect.y1 = result - small_gap`
+    and never overflow into the next element).
+
+    Falls back to `page_height - bottom_margin` when nothing follows on the
+    page (i.e. this is the last block before the footer).
+
+    This is the data-driven replacement for the old `rect.y1 + 50` magic
+    number that would clip role headers whenever the CV's natural spacing
+    happened to be tighter than 50pt.
+    """
+    candidates = [
+        ln["bbox"][1]
+        for ln in lines
+        if ln["bbox"][1] > rect.y1 + 0.5  # strictly below current rect
+    ]
+    if candidates:
+        return min(candidates)
+    return max(rect.y1, page_height - bottom_margin)
+
+
+def _measured_right_margin(
+    lines: List[Dict[str, Any]],
+    page_width: float,
+    fallback: float = 40.0,
+) -> float:
+    """
+    Return the x1-coordinate of the rightmost CONTENT on the page.
+
+    This is the data-driven replacement for the old `page.rect.width - 40`
+    margin assumption — it reads the CV's actual right-edge from where text
+    already sits, instead of imposing a fixed 40pt right margin that breaks
+    on CVs designed with wider/narrower margins.
+
+    Excludes lines that sit very close to the page right edge (likely
+    decorative / header artefacts) by clamping to the 95th percentile of
+    observed x1 values when sample size is large enough.
+    """
+    if not lines:
+        return page_width - fallback
+    xs = sorted(ln["bbox"][2] for ln in lines)
+    if len(xs) >= 5:
+        # 95th percentile of content right-edges. A few outlier-wide lines
+        # (e.g. a header rule line) shouldn't dictate the wrap margin for
+        # the body block we're editing.
+        idx = max(0, int(0.95 * len(xs)) - 1)
+        return xs[idx]
+    return xs[-1]
+
+
+def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
+    """
+    Sniff the PDF's layout to decide whether the in-place replica path is
+    likely to produce a clean output, or whether we should bail out and use
+    the rebuild path immediately.
+
+    Returns a dict:
+      {
+        "compatible":   bool,
+        "reason":       "single-column" | "multi-column" |
+                        "image-heavy" | "scanned" | "empty",
+        "n_columns":    int,
+        "image_ratio":  float,
+        "n_text_lines": int,
+      }
+
+    Apr 28 follow-up: prevents replica corruption on designer / two-column /
+    image-based CVs that we'd otherwise attempt to edit in-place and ship
+    visibly broken (e.g. cross-column text bleed, font-substitution clipping,
+    extracted-text gaps from image-only pages). When `compatible=False` the
+    caller should skip `apply_pdf_edits` entirely and route to the rebuild
+    path.
+    """
+    result: Dict[str, Any] = {
+        "compatible":   True,
+        "reason":       "single-column",
+        "n_columns":    1,
+        "image_ratio":  0.0,
+        "n_text_lines": 0,
+    }
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        result["compatible"] = False
+        result["reason"] = f"open-failed: {type(e).__name__}"
+        return result
+
+    try:
+        if doc.page_count == 0:
+            result["compatible"] = False
+            result["reason"] = "empty"
+            return result
+
+        # We only need the first 1-2 pages — most replica-incompatible CVs
+        # show their layout pattern on page 1 alone.
+        pages_to_check = min(2, doc.page_count)
+        all_x0:     List[float] = []
+        n_lines     = 0
+        image_area  = 0.0
+        page_area   = 0.0
+
+        for pi in range(pages_to_check):
+            page = doc[pi]
+            page_area += float(page.rect.width) * float(page.rect.height)
+
+            # Image area
+            try:
+                for img in page.get_images(full=True):
+                    # Each img tuple: (xref, smask, width, height, ...)
+                    rects = page.get_image_rects(img[0]) or []
+                    for r in rects:
+                        image_area += float(r.width) * float(r.height)
+            except Exception:
+                pass
+
+            # Text lines and their x0 positions
+            for block in page.get_text("dict")["blocks"]:
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines", []):
+                    spans = line.get("spans", [])
+                    text = "".join(s.get("text", "") for s in spans).strip()
+                    if not text:
+                        continue
+                    x0 = float(line["bbox"][0])
+                    all_x0.append(x0)
+                    n_lines += 1
+
+        result["n_text_lines"] = n_lines
+        result["image_ratio"]  = round(image_area / page_area, 3) if page_area > 0 else 0.0
+
+        # Scanned / image-only PDF — almost no extractable text
+        if n_lines < 8:
+            result["compatible"] = False
+            result["reason"] = "scanned"
+            return result
+
+        # Image-heavy designer template — treat like rebuild candidate
+        if result["image_ratio"] > 0.30:
+            result["compatible"] = False
+            result["reason"] = "image-heavy"
+            return result
+
+        # Column detection: cluster x0 values into buckets of width 25pt and
+        # count how many buckets contain >= 15% of all lines. A single-column
+        # CV has one dominant cluster; a two-column CV has two.
+        if all_x0:
+            buckets: Dict[int, int] = {}
+            for x in all_x0:
+                key = int(x // 25)
+                buckets[key] = buckets.get(key, 0) + 1
+            min_for_col = max(3, int(0.15 * n_lines))
+            dominant = [b for b, c in buckets.items() if c >= min_for_col]
+            # Cluster adjacent buckets — a wrapped paragraph spans 1-2
+            # adjacent buckets but it's still ONE column. Group buckets
+            # within 2 of each other.
+            if dominant:
+                dominant.sort()
+                groups = [[dominant[0]]]
+                for b in dominant[1:]:
+                    if b - groups[-1][-1] <= 2:
+                        groups[-1].append(b)
+                    else:
+                        groups.append([b])
+                result["n_columns"] = len(groups)
+                if len(groups) >= 2:
+                    result["compatible"] = False
+                    result["reason"] = "multi-column"
+                    return result
+
+        return result
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+
 def _is_symbolic_font_name(name: str) -> bool:
     """
     Heuristic: fonts named Symbol/Wingdings/Dingbats/ZapfDingbats etc. carry
@@ -1089,10 +1312,30 @@ def apply_edits(
                         "ratio": round(overflow_ratio, 2),
                     }
                 else:
-                    page = doc[sum_sec["lines"][0]["page"]]
+                    page_idx = sum_sec["lines"][0]["page"]
+                    page = doc[page_idx]
                     rect = _union_rect([ln["bbox"] for ln in sum_sec["lines"]], pad=1.5)
-                    # Extend rect to right page margin for wrap room.
-                    rect.x1 = max(rect.x1, page.rect.width - 40)
+                    # Apr 28 follow-up: data-driven rect extension. Replaces
+                    # the old hardcoded `width-40` (broke on non-standard
+                    # margins) and avoids any vertical extension at all on
+                    # the summary block — the next-sibling y0 of the first
+                    # role/projects/skills heading naturally bounds it.
+                    page_lines = _all_lines_on_page(sections, page_idx)
+                    # Exclude the summary's own lines from the right-margin
+                    # measurement so an unusually short summary doesn't
+                    # constrain its own wrap zone.
+                    own_y_min = min(ln["bbox"][1] for ln in sum_sec["lines"]) - 0.5
+                    own_y_max = max(ln["bbox"][3] for ln in sum_sec["lines"]) + 0.5
+                    other_lines = [
+                        ln for ln in page_lines
+                        if not (own_y_min <= ln["bbox"][1] <= own_y_max)
+                    ]
+                    rect.x1 = max(rect.x1, _measured_right_margin(other_lines, page.rect.width))
+                    # Bound y1 strictly below the next sibling minus a 2pt
+                    # safety gap. If nothing below, leave the union rect's
+                    # natural bottom (don't extend it artificially).
+                    next_y0 = _next_y0_below(rect, other_lines, page.rect.height)
+                    rect.y1 = min(rect.y1, max(rect.y1, next_y0 - 2.0))
                     ref = _first_span_of_lines(sum_sec["lines"])
                     if ref is not None:
                         measured = _measure_line_gap(sum_sec["lines"])
@@ -1164,18 +1407,43 @@ def apply_edits(
                     if trivial:
                         continue
 
-                    page = doc[bullets[0]["lines"][0]["page"]]
+                    page_idx = bullets[0]["lines"][0]["page"]
+                    page = doc[page_idx]
                     all_boxes = [ln["bbox"] for b in bullets for ln in b["lines"]]
                     rect = _union_rect(all_boxes, pad=1.5)
-                    # Extend to right page margin for wrap room — without this,
-                    # rewritten (often longer) bullets are constrained to the
-                    # narrowest original bullet's right edge, producing ugly
-                    # orphaned words on follow-on lines. Mirrors the summary
-                    # path on line ~840.
-                    rect.x1 = max(rect.x1, page.rect.width - 40)
-                    # Extend bottom to preserve content below edited section
-                    # This prevents cutting off awards, co-curricular, etc.
-                    rect.y1 = min(rect.y1 + 50, page.rect.height)
+
+                    # Apr 28 follow-up: data-driven boundaries. Replaces TWO
+                    # hardcoded magic numbers that broke on CV variations:
+                    #   1) `page.rect.width - 40`  → measured right margin
+                    #   2) `rect.y1 + 50`          → next-sibling y0
+                    #
+                    # The OLD `+50` was the root cause of the role-header
+                    # clipping bug ("V"/"P"/"Cl" fragments): when a CV's
+                    # natural spacing put the next role header within 50pt
+                    # of the last bullet, the redact rect overlapped the
+                    # next role and erased it. The redrawn bullet text
+                    # would then partially overlay the next role header,
+                    # leaving only the leading 1-2 chars visible.
+                    #
+                    # New logic: bound y1 below the next sibling on the
+                    # page minus a 2pt safety gap. Never overflows into
+                    # ANY following content regardless of CV layout.
+                    page_lines = _all_lines_on_page(sections, page_idx)
+                    # Exclude this role's own bullet lines from the lookup
+                    # so we find the NEXT role/section, not our own bullets.
+                    own_y_min = rect.y0 - 0.5
+                    own_y_max = rect.y1 + 0.5
+                    other_lines = [
+                        ln for ln in page_lines
+                        if not (own_y_min <= ln["bbox"][1] <= own_y_max)
+                    ]
+                    rect.x1 = max(rect.x1, _measured_right_margin(other_lines, page.rect.width))
+                    next_y0 = _next_y0_below(rect, other_lines, page.rect.height)
+                    # Cap downward extension at next_y0 - 2pt safety gap.
+                    # Allow extending DOWN to that limit (rewritten bullets
+                    # may be longer than originals and need wrap room) but
+                    # never beyond — that's what protects role headers.
+                    rect.y1 = max(rect.y1, next_y0 - 2.0)
                     # Pick a body-text span (NOT the symbol-font bullet glyph) as
                     # style reference, scanning across all bullet lines.
                     ref = _pick_body_span(
@@ -1227,9 +1495,23 @@ def apply_edits(
         if skills_order:
             sk_sec = next((s for s in sections if s["type"] == "skills"), None)
             if sk_sec and sk_sec["lines"]:
-                page = doc[sk_sec["lines"][0]["page"]]
+                page_idx = sk_sec["lines"][0]["page"]
+                page = doc[page_idx]
                 rect = _union_rect([ln["bbox"] for ln in sk_sec["lines"]], pad=1.5)
-                rect.x1 = max(rect.x1, page.rect.width - 40)
+                # Apr 28 follow-up: data-driven margins (see bullets path
+                # above for full rationale). Skills section is usually last
+                # so y1 typically extends to the page bottom margin via
+                # _next_y0_below's fallback.
+                page_lines = _all_lines_on_page(sections, page_idx)
+                own_y_min = min(ln["bbox"][1] for ln in sk_sec["lines"]) - 0.5
+                own_y_max = max(ln["bbox"][3] for ln in sk_sec["lines"]) + 0.5
+                other_lines = [
+                    ln for ln in page_lines
+                    if not (own_y_min <= ln["bbox"][1] <= own_y_max)
+                ]
+                rect.x1 = max(rect.x1, _measured_right_margin(other_lines, page.rect.width))
+                next_y0 = _next_y0_below(rect, other_lines, page.rect.height)
+                rect.y1 = max(rect.y1, next_y0 - 2.0)
                 ref = _first_span_of_lines(sk_sec["lines"])
                 if ref is not None:
                     reordered = ", ".join(s.strip() for s in skills_order if s.strip())

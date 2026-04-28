@@ -281,6 +281,21 @@ def _match_section_type(line: str) -> Optional[str]:
         if hl.startswith(phrase) and len(hl) <= len(phrase) + 20:
             return stype
 
+    # Apr 28 follow-up: regex fallback for project-section headings whose
+    # exact phrasing isn't enumerated above. Matches up to 3 qualifier
+    # words before "Project(s)" plus optional suffix like "Highlights".
+    # Captures variants like "Capstone Projects", "Research Project",
+    # "Open-Source Projects" without us having to list every possibility.
+    if (
+        len(hl) <= 40
+        and re.match(
+            r"^([a-z][a-z\-]*[\s\-]+){0,3}projects?\s*(highlights|portfolio|showcase)?\s*:?\s*$",
+            hl,
+            re.I,
+        )
+    ):
+        return "projects"
+
     return None
 
 
