@@ -252,6 +252,71 @@ def _classify_heading(text: str) -> Optional[str]:
     return None
 
 
+# P0-followup (Apr 28): handle the case where PyMuPDF returns a heading
+# merged with the following line's content as a single string. Observed
+# repeatedly on tight-spacing CVs:
+#
+#   "Personal Projects ApplySmart AI | Agentic AI Product Jan 2026 - Present"
+#
+# arrives as ONE extracted line because the visual gap between the heading
+# and the next paragraph is small enough that PyMuPDF clusters them into
+# the same "line". The strict `^...$` regex in `_classify_heading` then
+# misses the heading completely, and the entire projects block flows into
+# whatever section came before (typically Summary), exploding its word
+# count from ~80 to ~385 and breaking the in-place tailor's summary slot.
+#
+# This helper detects the merged case specifically for the projects family
+# of headings (where it has been seen in the wild) and returns the heading
+# text and remainder so the caller can split the line into two logical
+# lines: the heading + the first content line of the projects section.
+#
+# Scope is intentionally narrow:
+#   • Only PROJECTS headings (Personal/Side/Notable/Selected/etc.).
+#     We do NOT extend this to summary/experience/education because the
+#     regex would false-positive on prose like "Education taught me..."
+#     or "Experience working with..." in body text.
+#   • Only when the remainder looks like a project subtitle: contains a
+#     pipe, em/en-dash, year (19xx/20xx), or month-year pattern. Without
+#     these signals we'd risk splitting bullets like "Personal projects
+#     taught me to ship end-to-end".
+_MERGED_PROJECT_HEADING_RX = re.compile(
+    r"^\s*("
+    r"featured\s+projects?|key\s+projects?|"
+    r"personal\s+projects?|side\s+projects?|notable\s+projects?|"
+    r"selected\s+projects?|independent\s+projects?|"
+    r"open[\s\-]source\s+projects?"
+    r")\s+(?=\S)",
+    re.I,
+)
+_PROJECT_SUBTITLE_HINT_RX = re.compile(
+    r"[|–—]"                                              # pipe / en-dash / em-dash
+    r"|\b(?:19|20)\d{2}\b"                                # 19xx / 20xx year
+    r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"  # month
+    r"\w*\.?\s+\d{4}\b",
+    re.I,
+)
+
+
+def _try_split_merged_heading(text: str) -> Optional[tuple]:
+    """
+    Detect "<known projects heading> <project subtitle...>" merged into one
+    extraction line. Returns (kind, heading_text, remainder_text) on a
+    confident match, else None.
+    """
+    if not text or len(text) > 400:
+        return None
+    m = _MERGED_PROJECT_HEADING_RX.match(text)
+    if not m:
+        return None
+    heading_text = m.group(1).strip()
+    remainder    = text[m.end():].strip()
+    if not remainder or len(remainder) < 4:
+        return None
+    if not _PROJECT_SUBTITLE_HINT_RX.search(remainder):
+        return None
+    return ("projects", heading_text, remainder)
+
+
 # Union of bullet-like chars we recognise as markers:
 #   - ASCII dash / asterisk
 #   \u2022 • (unicode bullet)   \u00b7 · (middle dot)
@@ -464,6 +529,36 @@ def extract_structure(pdf_path: str) -> List[Dict[str, Any]]:
                     }
                     marker_pending = False
                     continue
+
+                # P0-followup: handle merged-heading lines like
+                #   "Personal Projects ApplySmart AI | Agentic AI Product Jan 2026 - Present"
+                # by splitting into a synthetic heading + remainder content line.
+                split = _try_split_merged_heading(text)
+                if split is not None:
+                    merged_kind, heading_text, remainder = split
+                    sections.append(current)
+                    current = {
+                        "type":         merged_kind,
+                        "heading":      heading_text,
+                        "page":         pi,
+                        "heading_bbox": list(ln["bbox"]),
+                        "lines":        [],
+                    }
+                    # The remainder text shares the same source bbox/spans as
+                    # the original merged line. Down-stream consumers rely on
+                    # `bbox` being present, so we reuse it; this is cosmetically
+                    # imperfect (the remainder visually starts mid-line) but it
+                    # keeps the line a valid editable target.
+                    current["lines"].append({
+                        "text":  remainder,
+                        "bbox":  ln["bbox"],
+                        "spans": ln["spans"],
+                        "page":  pi,
+                        "preceded_by_marker": marker_pending,
+                    })
+                    marker_pending = False
+                    continue
+
                 entry = {
                     "text":  text,
                     "bbox":  ln["bbox"],

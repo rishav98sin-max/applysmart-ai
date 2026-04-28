@@ -760,8 +760,9 @@ def _parse_cover_letter_structure(
     Returns (salutation, body_text, closing_line, signer_name).
     """
     text = (cover_letter or "").strip()
-    # P7 (Apr 28): default salutation simplified to "Dear Manager".
-    sal = "Dear Manager"
+    # P5-followup (Apr 28): salutation reverted to "Dear Hiring Manager"
+    # per user preference. The regex below still accepts both forms.
+    sal = "Dear Hiring Manager"
 
     # Accept both "Dear Manager" and the legacy "Dear Hiring Manager"
     # (some upstream prompts may still emit the longer form during the

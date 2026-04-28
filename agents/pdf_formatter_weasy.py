@@ -519,11 +519,11 @@ def _parse_cover_letter(cover_letter: str, candidate_name: str) -> Dict[str, Any
     text = (cover_letter or "").strip()
     lines = [ln.rstrip() for ln in text.splitlines()]
 
-    # P7 (Apr 28): default salutation simplified to "Dear Manager".
-    # If the cover-letter generator emits a different one (e.g. "Dear Sarah"
-    # when the JD includes a hiring manager name), the salutation regex
-    # below will capture and pass it through.
-    salutation = "Dear Manager"
+    # P7-followup (Apr 28): salutation reverted to "Dear Hiring Manager"
+    # per user preference. If the cover-letter generator emits a different
+    # one (e.g. "Dear Sarah" when the JD includes a hiring manager name),
+    # the salutation regex below will capture and pass it through.
+    salutation = "Dear Hiring Manager"
     signoff    = "Warm Regards"
 
     # Detect + consume salutation.

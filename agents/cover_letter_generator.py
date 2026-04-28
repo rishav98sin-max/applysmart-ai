@@ -13,123 +13,71 @@ load_dotenv()
 # ─────────────────────────────────────────────────────────────
 
 COVER_LETTER_PROMPT = """
-You are an elite cover letter writer. Your letters land interviews at top
-companies because they feel deeply personal, specific and genuinely
-motivated — never generic.
+You are an elite cover letter writer. Your letters land interviews at top companies
+because they feel deeply personal, specific and genuinely motivated — never generic.
 
 {safety_preamble}
 
-Write the BODY of a cover letter only — NO greeting, NO sign-off, NO
-candidate name, NO subject line, NO company header. The application
-adds those automatically using the layout:
-    [Company name]
-    Subject: Application for [Role] at [Company]
-    Dear Manager,
-    [your body goes here]
-    Warm Regards,
-    [Candidate name]
+Write the BODY of a cover letter only (no greeting, no sign-off, no candidate name).
+The application will add "Dear Hiring Manager" and "Warm Regards" + the candidate's name automatically.
+
+Use exactly 4 paragraphs, separated by a single blank line between paragraphs.
+
+PARAGRAPH 1 — HOOK + MOTIVATION (3-4 sentences):
+- Open with a specific, genuine reason WHY this candidate wants THIS role at THIS company
+- Reference something real and specific about the company (its product, mission, market position)
+- Show authentic passion for what this company is trying to do
+- NEVER start with "I am writing to apply..." or "I am excited to apply..." or "I would like to express my interest..."
+- NEVER use: "dynamic", "fast-paced", "passionate team player", "I believe I would be a great fit", "results-driven"
+
+PARAGRAPH 2 — VALUE + CONTRIBUTION BLOCK 1 (3-4 sentences):
+- Pick the single most relevant experience from the CV for THIS role
+- Structure: Where they worked → What problem they solved → What they did → MEASURABLE OUTCOME
+- Name the employer, the challenge, and the specific result with the actual number from the CV
+- End by explicitly connecting this to what the company needs right now
+
+PARAGRAPH 3 — VALUE + CONTRIBUTION BLOCK 2 (3-4 sentences):
+- Pick a DIFFERENT achievement that addresses a different JD requirement
+- This achievement may come from a second employer OR from a named CV project
+  (e.g. "ApplySmart AI", "VoC Insight Hub") if a project demonstrates a
+  JD-relevant capability the candidate's work history doesn't already cover
+- Show the candidate's unique angle — what they bring that others likely don't
+
+PARAGRAPH 4 — CLOSE + CALL TO ACTION (2-3 sentences):
+- Brief specific enthusiasm for what THIS role offers the candidate
+- Clear ask (meeting, introductory call, or interview)
+- Confident, warm closing — NOT "I look forward to hearing from you"
+- Do NOT add "Yours sincerely" or the candidate's name (those are added automatically)
 
 ═══════════════════════════════════════════════════════════════════════
-STRUCTURE — 3 to 5 paragraphs, separated by a single blank line each.
+STRICT RULES (each is a critical failure if broken)
 ═══════════════════════════════════════════════════════════════════════
-
-P1 — OPENING (~ 40-60 words) [REQUIRED]
-  - HOOK: a specific, genuine reason for THIS role at THIS company
-    (reference something real about the company — its product, mission,
-    customers, recent news, market position)
-  - State the role being applied for naturally
-  - One-line value proposition tying the candidate's strongest
-    relevant fact to what the company needs
-  - NEVER start with "I am writing to apply..." or "I am excited to
-    apply..." or "I would like to express my interest..."
-  - NEVER use: "dynamic", "fast-paced", "passionate team player",
-    "I believe I would be a great fit", "results-driven"
-
-P2 — KEY ACHIEVEMENTS (work experience) (~ 80-110 words) [REQUIRED]
-  - 1 to 2 specific accomplishments from the candidate's EMPLOYER
-    experience that map to the JD's biggest stated need
-  - Structure each: where they worked → what problem they solved →
-    what they did → MEASURABLE OUTCOME (with the actual number)
-  - If the JD calls out a specific area (e.g. "API products",
-    "performance testing", "stakeholder alignment") and the CV has
-    matching depth, EXPAND with detail — quote the actual employer,
-    work, result, metric. Don't summarise; show.
-  - End by explicitly connecting this experience to what the company
-    needs right now
-
-P3 — KEY ACHIEVEMENTS (projects) (~ 70-100 words) [OPTIONAL]
-  Include this paragraph ONLY when BOTH of the following are true:
-    (a) The CV has a "Personal Projects" / "Projects" / "Side Projects"
-        section with concrete, named projects (e.g. ApplySmart AI, VoC
-        Insight Hub) that demonstrate JD-relevant capability, AND
-    (b) Adding this paragraph keeps total word count ≤ 380.
-  When included:
-    - Highlight 1 project that demonstrates an ability the JD prizes
-      (e.g. shipping end-to-end, AI/ML, full ownership, multi-agent
-      systems, data platforms)
-    - Show what was built, the technical depth, and the outcome
-    - This paragraph is most valuable when the candidate's work history
-      doesn't directly cover a JD priority but their projects do
-
-  SKIP this paragraph entirely when:
-    - The CV has no projects section
-    - The projects aren't relevant to the JD
-    - Including it would push the body over 380 words
-
-P4 — WHY THIS COMPANY + HOW I SOLVE THEIR PROBLEM (~ 80-100 words)
-[REQUIRED]
-  - Specific reference to what THIS company does or is trying to do
-    right now (their stated mission, current product, recent move,
-    market reputation — pulled from the JD)
-  - Map the candidate's GTM strengths or unique angle to that mission —
-    what do THEY bring that others likely don't?
-  - Show passion grounded in evidence (not adjectives like "passionate"
-    or "deeply excited"). Concrete examples > generic enthusiasm.
-
-P5 — CALL TO ACTION (~ 35-55 words) [REQUIRED]
-  - Clear ask: a meeting, an introductory call, an interview
-  - Confident, warm closing thought
-  - Do NOT say "I look forward to hearing from you" (overused)
-  - Do NOT add a sign-off line, "Yours sincerely", or the candidate's
-    name (those are added by the renderer)
-
-═══════════════════════════════════════════════════════════════════════
-HARD CONSTRAINTS
-═══════════════════════════════════════════════════════════════════════
-- TOTAL across all paragraphs: ≤ 380 words. NEVER exceed.
-- Minimum 3 paragraphs (Opening + Achievements + CTA), maximum 5.
-- The optional Projects paragraph is added ONLY when the CV genuinely
-  supports it AND the word budget allows.
-- Plain text only — no markdown, no bullets, no headers, no asterisks.
-- NO salutation or sign-off — those are added by the renderer.
+- TOTAL word count: 280-380 words across all 4 paragraphs combined.
+- Plain text only — no markdown, no bullets, no asterisks, no headers.
+- Do NOT include "Dear Hiring Manager", "Warm Regards", or any salutation/sign-off.
+- Output the COMPLETE letter — do not stop mid-sentence.
 
 ═══════════════════════════════════════════════════════════════════════
 HARD FABRICATION BAN (ZERO TOLERANCE)
 ═══════════════════════════════════════════════════════════════════════
-You may reference ONLY tools, technologies, languages, frameworks,
-methods, certifications, projects, and employers that are LITERALLY
-written somewhere in the CANDIDATE CV block below. It is a critical
-failure to mention anything the CV does not contain.
+You may reference ONLY tools, technologies, languages, frameworks, methods,
+certifications, projects, and employers that are LITERALLY written somewhere
+in the CANDIDATE CV block below. It is a critical failure to mention anything
+the CV does not contain.
 
-Numbers preservation: every percentage, count, multiplier, or measure
-that you cite as a candidate achievement MUST appear verbatim somewhere
-in the CV. Do NOT invent metrics.
+Numbers preservation: every percentage, count, multiplier, or measure that
+you cite as a candidate achievement MUST appear verbatim in the CV. Do NOT
+invent metrics. Do NOT round numbers to nicer values.
 
 Examples of what you MUST NOT do:
   - JD mentions "Python, JMeter, Selenium, GitHub" but CV only lists
-    "Java, LoadRunner, VuGen, JIRA" → FORBIDDEN to claim Python /
-    JMeter / Selenium / GitHub experience
-  - JD says "Scrum, Kanban" + CV has no agile methodology → do NOT
-    claim agile experience
-  - JD wants "AWS" + CV doesn't mention AWS/cloud → do NOT claim cloud
+    "Java, LoadRunner, VuGen, JIRA" → FORBIDDEN to claim Python / JMeter /
+    Selenium / GitHub experience.
+  - JD says "Scrum, Kanban" + CV has no agile methodology → do NOT claim agile.
+  - JD wants "AWS" + CV doesn't mention AWS/cloud → do NOT claim cloud.
 
-If a paragraph would require JD-only terms, choose a DIFFERENT angle
-that IS grounded in the CV. The candidate's existing strengths are
-always enough.
-
-Before each sentence, silently check: "Is every noun, tool, language,
-metric, and claim in this sentence literally present in the CV above?"
-If no, rewrite the sentence using only CV facts.
+If a paragraph would require JD-only terms, choose a DIFFERENT angle that IS
+grounded in the CV. The candidate's existing strengths are always enough.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CANDIDATE : {candidate_name}
@@ -147,8 +95,9 @@ CANDIDATE CV:
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-WRITE THE LETTER BODY NOW (3-5 paragraphs, blank line between
-paragraphs, ≤ 380 words total, no salutation, no sign-off):
+WRITE THE COMPLETE LETTER BODY NOW (exactly 4 paragraphs, blank line
+between paragraphs, 280-380 words total, no salutation, no sign-off,
+no truncation):
 """
 
 
@@ -161,14 +110,15 @@ def finalize_cover_letter(body_text: str, candidate_name: str) -> str:
     Wrap the LLM's body text with a salutation and sign-off so the renderer
     receives the full cover-letter contract (sal / body / signoff / name).
 
-    P7 (Apr 28): salutation simplified from "Dear Hiring Manager" to
-    "Dear Manager" per spec. The PDF renderers append the trailing comma
-    on each side of the salutation/signoff during layout.
+    P7-followup (Apr 28): salutation reverted to "Dear Hiring Manager"
+    per user preference (the brief P9 switch to "Dear Manager" was too
+    casual). The PDF renderers append the trailing comma on each side of
+    the salutation/signoff during layout.
     """
     body = (body_text or "").strip()
     body = _strip_accidental_salutation_signoff(body, candidate_name)
     return (
-        f"Dear Manager\n\n"
+        f"Dear Hiring Manager\n\n"
         f"{body}\n\n"
         f"Warm Regards\n\n"
         f"{candidate_name.strip()}"
