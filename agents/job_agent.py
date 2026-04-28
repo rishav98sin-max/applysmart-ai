@@ -1127,11 +1127,16 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                 # Two-column / image-heavy / scanned CVs cannot be edited
                 # in-place without visible corruption — short-circuit straight
                 # to the rebuild path so we don't ship a broken replica.
+                # Using a `replica_skipped` flag (instead of raising) keeps
+                # the broader try/except block from catching the signal as
+                # an error and printing a misleading "Replica+review failed"
+                # log line.
                 replica_check = _detect_replica_compatibility(state["cv_path"])
-                if not replica_check.get("compatible", True):
+                replica_skipped = not replica_check.get("compatible", True)
+                if replica_skipped:
                     reason = replica_check.get("reason", "unknown")
                     print(
-                        f"   Skipping replica path — CV layout "
+                        f"   ℹ️  {tag} Skipping replica path — CV layout "
                         f"detected as '{reason}' (n_columns="
                         f"{replica_check.get('n_columns')}, "
                         f"image_ratio={replica_check.get('image_ratio')}). "
@@ -1148,9 +1153,18 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         ),
                         "strengths": [], "weaknesses": [],
                     }
-                    raise StopIteration  # break out to rebuild path below
 
-                for attempt in range(MAX_TAILOR_RETRIES + 1):
+                # Skip the diff/review/apply loop entirely when replica is
+                # not viable. The downstream `if best_diff and (...)` check
+                # will be False (best_diff is {}) so apply_pdf_edits is
+                # never called, and the outer code falls cleanly through
+                # to the rebuild path.
+                attempts_range = (
+                    range(0)
+                    if replica_skipped
+                    else range(MAX_TAILOR_RETRIES + 1)
+                )
+                for attempt in attempts_range:
                     attempt_label = "first attempt" if attempt == 0 else f"retry #{attempt}"
                     print(f"   Replica-tailor CV ({attempt_label})...")
                     diff = tailor_cv_diff(
