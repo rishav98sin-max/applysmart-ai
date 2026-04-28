@@ -42,12 +42,20 @@ PARAGRAPH 3 — VALUE + CONTRIBUTION BLOCK 2 (3-4 sentences):
   (e.g. "ApplySmart AI", "VoC Insight Hub") if a project demonstrates a
   JD-relevant capability the candidate's work history doesn't already cover
 - Show the candidate's unique angle — what they bring that others likely don't
+- Include ONE concrete GTM-style sentence about how this experience would
+  translate to the new role: e.g. "In my first 90 days I would prioritise X
+  because the JD signals Y" or "This is directly applicable to <specific
+  challenge from JD>". This is MANDATORY — the letter must show product
+  thinking, not just past achievements.
 
 PARAGRAPH 4 — CLOSE + CALL TO ACTION (2-3 sentences):
-- Brief specific enthusiasm for what THIS role offers the candidate
 - Clear ask (meeting, introductory call, or interview)
 - Confident, warm closing — NOT "I look forward to hearing from you"
 - Do NOT add "Yours sincerely" or the candidate's name (those are added automatically)
+- ABSOLUTELY FORBIDDEN: restating the company name, restating role enthusiasm,
+  or paraphrasing paragraph 1. The closing paragraph must add NEW information
+  (availability, willingness to relocate, specific format preference, or a
+  one-line forward-looking note) — never recap.
 
 ═══════════════════════════════════════════════════════════════════════
 STRICT RULES (each is a critical failure if broken)
@@ -56,6 +64,15 @@ STRICT RULES (each is a critical failure if broken)
 - Plain text only — no markdown, no bullets, no asterisks, no headers.
 - Do NOT include "Dear Hiring Manager", "Warm Regards", or any salutation/sign-off.
 - Output the COMPLETE letter — do not stop mid-sentence.
+- Sentence-starter cap: AT MOST 2 sentences across the entire letter may
+  begin with "I am". This forces varied openings and prevents the repetitive
+  "I am excited / I am confident / I am impressed" pile-up.
+- Ban generic company praise: do NOT call the company "innovative",
+  "industry-leading", "world-class", "trusted", "sustainable", or any
+  similar adjective UNLESS that exact word appears in the JOB DESCRIPTION
+  block below. Stick to facts the JD actually states.
+- Each paragraph must end with a different sentence pattern — do not let
+  consecutive paragraphs end with "...this role" or "...the team".
 
 ═══════════════════════════════════════════════════════════════════════
 HARD FABRICATION BAN (ZERO TOLERANCE)

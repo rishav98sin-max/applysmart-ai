@@ -131,6 +131,30 @@ def _font_can_render(buf: bytes, text: str) -> bool:
         try:
             if not font.has_glyph(cp):
                 return False
+            # Apr 28 follow-up: bullets-as-`?` bug.
+            #
+            # Subsetted embedded fonts (extremely common in CVs exported from
+            # Word / Google Docs / "Print to PDF") frequently keep a cmap
+            # entry for a non-ASCII codepoint while STRIPPING the glyph
+            # outline + advance-width data for it. `has_glyph` then returns
+            # True (cmap-only check) but PyMuPDF's `insert_textbox` ends up
+            # drawing `.notdef`, which renders as `?` in most readers.
+            #
+            # The bullet character (U+2022 •) is the canonical victim of
+            # this: every CV in the wild has cmap support for it, but only
+            # ~30% of subsetted fonts retain real glyph data after the PDF
+            # producer's font-subsetter strips "unused" glyphs.
+            #
+            # Catch this by verifying `glyph_advance > 0` for any non-ASCII
+            # char — ASCII letters/digits always survive subsetting (they're
+            # used in body text), so we only spend cycles on the suspect
+            # range. Failing this check here forces the caller to fall
+            # through to the Base14 path, which renders U+2022 reliably
+            # via WinAnsi 0x95.
+            if cp >= 0x80:
+                adv = font.glyph_advance(cp)
+                if not adv or adv <= 0:
+                    return False
         except Exception:
             return False
     return True
@@ -1151,11 +1175,28 @@ def _insert_fitted(
     base_size = float(ref_span.get("size", 10))
     color     = _int_color_to_rgb(int(ref_span.get("color", 0)))
 
-    # Keep overflow margin tight so `insert_textbox` returns rc<0 (and we
-    # shrink fontsize) the moment text would spill into the NEXT section
-    # below. A fat overflow margin causes visible overlap with adjacent
-    # content — the exact bug we're avoiding.
-    work_rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1 + max(2.0, base_size * 0.4))
+    # Apr 28 follow-up: STRICT rect (no spill).
+    #
+    # Previous logic extended y1 by `max(2.0, base_size * 0.4)` (= +3.6pt at
+    # 9pt body, +4pt at 10pt body) on the theory that PyMuPDF's textbox
+    # measurement is conservative and benefits from slack. In practice this
+    # spill is the cause of two visible bugs observed across all 3 CVs in
+    # the Apr 28 22:11 run:
+    #
+    #   1. Bullet-block bottom row clips into the next role header
+    #      ("Replaced" overprinted on previous bullet in Ryanair CV) — the
+    #      bullet rect's y1 was already pinned to `next_y0 - 2pt` by the
+    #      caller; adding 3.6pt of spill pushed text into the next role.
+    #
+    #   2. Personal Projects heading sits flush against the rewritten
+    #      Summary text, eating the natural 6-8pt gap. Same mechanism.
+    #
+    # Fix: `work_rect = rect` exactly. If text doesn't fit, `insert_textbox`
+    # returns rc<0 and the shrinkage ladder below will progressively reduce
+    # fontsize until it does. This guarantees zero spill into adjacent
+    # content while still giving us 10 attempts of 0.5pt-per-step shrink
+    # to land the text within the original block's natural footprint.
+    work_rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1)
 
     # More aggressive shrinkage ladder (floor of 6pt enforced below).
     sizes = [base_size - 0.5 * i for i in range(10)]

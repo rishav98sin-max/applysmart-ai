@@ -344,7 +344,16 @@ RULES (strict):
    - Move JD-relevant keywords to the front of the bullet.
    - Keep the factual core (numbers, tech, outcomes) identical.
    - Prefer concrete over abstract: "authored 12 PRDs" not "produced many documents".
-   - Length: target 90-120% of the original bullet's length to avoid PDF overflow.
+   - Length: STRICT 90-120% of the original bullet's character length.
+     Count characters before submitting. The post-processor REJECTS any
+     rewrite outside 50%-200% of the original — but the visible-quality
+     band is much tighter at 90-120%. Going above 130% means your rewrite
+     either added filler words or invented a new fact (both are failures).
+     EXAMPLE: original is 180 chars → your rewrite must be 162-216 chars.
+     EXAMPLE: original is 95 chars → your rewrite must be 85-114 chars.
+     If you cannot land within 120% while keeping every number and proper
+     noun verbatim, return text=null (revert) instead of submitting an
+     overlong rewrite that will be rejected anyway.
 
 3. skills_order:
    Do NOT reorder, add to, or reword the skills list. Always return an
