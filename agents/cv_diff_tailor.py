@@ -385,26 +385,56 @@ Return the JSON now:"""
 # ─────────────────────────────────────────────────────────────
 
 def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
-    # C1: removed 3-retry exception loop. Both chat_gemini and chat_quality
-    # rotate keys internally; module-level retries on top multiply token waste
-    # on real exhaustion (worst case: 3 outer × 3 client-internal × N keys =
-    # ~9-30 calls for one logical tailor op, all hitting the same exhausted
-    # pool). Single attempt with empty-response Groq fallback (real signal:
-    # Gemini SAFETY block returns empty without raising). Exceptions
-    # propagate to the per-job try/except in job_agent._do_cv_tailor where
-    # the rebuild fallback path picks them up cleanly.
+    """
+    Strategy B (Apr 28 follow-up): single Gemini attempt with INSTANT Groq
+    fallback on parse-failure / empty / unactionable output.
+
+    Why no Gemini retries:
+      Gemini Flash on free tier truncates JSON output mid-string ~80% of
+      the time. The truncated text passes the "non-empty" check but fails
+      json.loads. Retrying Gemini doesn't help — the truncation is a
+      server-side behaviour we can't prompt-engineer around. Each retry
+      just burns 5-12s of cooldown quota with no improvement.
+
+      The durable pattern: give Gemini ONE shot. If the response is
+      parseable AND contains actionable keys (summary/bullets/
+      skills_order), keep it. Otherwise fall through to Groq immediately.
+
+    Result: Gemini still gets to produce the diff when it works
+    (~20-30% of attempts) — your stated preference of "Gemini for the
+    first try" is honoured. When it fails, Groq picks up with a clean
+    JSON output that drives the REPLICA path (preserving the user's
+    original CV layout), instead of triggering rebuild.
+    """
     from agents.runtime    import track_llm_call
-    from agents.llm_client import chat_gemini, chat_quality, last_llm_source  # noqa: F401
+    from agents.llm_client import chat_gemini, chat_quality
 
     track_llm_call(agent="cv_diff_tailor")
-    # Prefer Gemini; it handles long JSON + many roles/bullets better.
-    result = chat_gemini(prompt, max_tokens=max_tokens, temperature=0.2)
-    if result:
-        return result
-    # Empty response from Gemini = real signal (SAFETY filter, not an error).
-    # Try Groq once before giving up — chat_gemini's internal Groq fallback
-    # only fires on exception, not on empty.
-    print("   ⚠️  cv_diff_tailor: Gemini returned empty — trying Groq once")
+
+    # Try Gemini first.
+    gemini_result = chat_gemini(prompt, max_tokens=max_tokens, temperature=0.2)
+
+    if gemini_result:
+        # Validate: must parse AND contain at least one actionable key.
+        # An empty {"summary": "", "bullets": {}, "skills_order": []} is
+        # equivalent to "no edits" and should trigger Groq fallback —
+        # otherwise downstream logic ships an effective no-op as a tailor.
+        parsed = _extract_json(gemini_result)
+        is_actionable = bool(parsed) and bool(
+            parsed.get("summary")
+            or parsed.get("bullets")
+            or parsed.get("skills_order")
+        )
+        if is_actionable:
+            return gemini_result
+        print(
+            f"   ↪️  cv_diff_tailor: Gemini output unusable "
+            f"(len={len(gemini_result)}, parsed={bool(parsed)}, "
+            f"actionable={is_actionable}) — instant Groq fallback"
+        )
+    else:
+        print("   ↪️  cv_diff_tailor: Gemini returned empty — instant Groq fallback")
+
     return chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
 
 

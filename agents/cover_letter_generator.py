@@ -246,7 +246,7 @@ def generate_cover_letter(
 ) -> str:
     from agents.runtime       import track_llm_call, handle_rate_limit, BudgetExceeded
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
-    from agents.llm_client    import chat_gemini, last_llm_source
+    from agents.llm_client    import chat_gemini, chat_quality, last_llm_source
 
     jd_wrapped = wrap_untrusted_block(job_description, label="JOB_DESCRIPTION")
     cv_wrapped = wrap_untrusted_block(cv_text,         label="CANDIDATE_CV")
@@ -268,7 +268,25 @@ def generate_cover_letter(
             track_llm_call(agent="cover_letter")
 
             budget = token_budgets[min(attempt, len(token_budgets) - 1)]
-            raw = chat_gemini(prompt, max_tokens=budget, temperature=0.4)
+
+            # Strategy B (Apr 28 follow-up): single Gemini attempt with
+            # INSTANT Groq fallback on truncation/empty. Subsequent retries
+            # use Groq directly — no point burning Gemini quota on a model
+            # that has already demonstrated it's truncating prose mid-stream
+            # for this run's free-tier window.
+            if attempt == 0:
+                raw = chat_gemini(prompt, max_tokens=budget, temperature=0.4)
+                if not raw or not _cover_letter_is_complete(raw):
+                    fail_len = len(raw or "")
+                    print(
+                        f"   ↪️  Cover letter: Gemini truncated/empty on attempt 1 "
+                        f"(len={fail_len}) — instant Groq fallback"
+                    )
+                    raw = chat_quality(prompt, max_tokens=budget, temperature=0.4)
+            else:
+                # Retries always go to Groq (Gemini quota is precious + we
+                # already know it's failing for this artifact this run).
+                raw = chat_quality(prompt, max_tokens=budget, temperature=0.4)
 
             if not raw:
                 print(f"   ⚠️  Cover letter empty on attempt {attempt + 1} — retrying...")

@@ -1454,10 +1454,19 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         best_review["_rebuild_mode"] = True
             return cv_pdf, tcv_text, best_review, rmode
 
-        # ── Fork: run cover-letter ‖ CV-tailor concurrently ──────────
-        # Both paths are fully independent (shared read-only state only).
-        # Expected ~40% wall-time cut per job since Gemma calls dominate.
-        print(f"\n   {tag} parallel: cover-letter ‖ CV-tailor")
+        # ── Sequential execution: cover-letter THEN CV-tailor ────────
+        # Apr 28 follow-up (Strategy B + sequential): the previous parallel
+        # implementation fired both Gemini calls simultaneously, busting
+        # the 5 RPM-per-key free-tier ceiling and triggering cooldown
+        # cascades across all 3 keys within the first job. With Gemini's
+        # global gap rate-limiter set to 7s, sequential execution costs
+        # ~10-15s of extra wall-clock per job but lets each Gemini call
+        # land in its own RPM window — first key gets the cover letter,
+        # second key (or first after cooldown) gets the CV tailor.
+        # Combined with Strategy B's instant-Groq fallback on Gemini
+        # failure, this maximises Gemini hit-rate while preventing
+        # quota-burn spirals.
+        print(f"\n   {tag} sequential: cover-letter → CV-tailor")
         cover_letter_text: str = ""
         cl_pdf_path: Optional[str] = None
         cl_review: Optional[Dict[str, Any]] = None
@@ -1467,18 +1476,21 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
         render_mode: str = "failed"
 
         try:
-            with ThreadPoolExecutor(max_workers=2,
-                                    thread_name_prefix=f"job-{company[:10]}") as ex:
-                cl_fut = ex.submit(_do_cover_letter)
-                cv_fut = ex.submit(_do_cv_tailor)
-                try:
-                    cover_letter_text, cl_pdf_path, cl_review = cl_fut.result()
-                except Exception as cle:
-                    print(f"   ❌ {tag} cover-letter path failed: {cle}")
-                try:
-                    cv_pdf_path, tailored_cv_text, best_review, render_mode = cv_fut.result()
-                except Exception as cve:
-                    print(f"   ❌ {tag} CV-tailor path failed: {cve}")
+            # Cover letter first — Gemini gets first shot, instant Groq
+            # fallback on truncation. Typically 5-15s.
+            try:
+                cover_letter_text, cl_pdf_path, cl_review = _do_cover_letter()
+            except Exception as cle:
+                print(f"   ❌ {tag} cover-letter path failed: {cle}")
+
+            # CV tailor second — by now the Gemini key used for cover
+            # letter has had 5-15s of cooldown progress, so this call
+            # lands in a fresh RPM window. Strategy B fallback applies
+            # the same way: Gemini once, Groq instant on failure.
+            try:
+                cv_pdf_path, tailored_cv_text, best_review, render_mode = _do_cv_tailor()
+            except Exception as cve:
+                print(f"   ❌ {tag} CV-tailor path failed: {cve}")
 
             if cv_pdf_path:
                 print(f"   ✅ {tag} Done: {os.path.basename(cv_pdf_path)}")
