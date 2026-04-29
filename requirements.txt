@@ -26,3 +26,8 @@ sentence-transformers>=2.2
 # load (e.g. missing libpango on Windows dev machines).
 weasyprint>=60
 jinja2>=3
+
+# ── Diagnostics layer (optional; activated via DIAGNOSTICS_ENABLED=1) ──
+# Per-call LLM telemetry. JSONL works without this dep; Langfuse adds the
+# pretty UI + remote persistence. See diagnostics/README.md.
+langfuse>=4.0,<5

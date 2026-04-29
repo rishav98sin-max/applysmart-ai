@@ -155,6 +155,42 @@ def _font_can_render(buf: bytes, text: str) -> bool:
                 adv = font.glyph_advance(cp)
                 if not adv or adv <= 0:
                     return False
+                # Apr 29 follow-up: advance-only check is INSUFFICIENT.
+                # Some fonts retain the cmap entry AND the advance-width
+                # metric for a codepoint while stripping the actual glyph
+                # outline data (.notdef). The advance check passes but
+                # PyMuPDF still draws .notdef at render time → renders
+                # as `?` in readers. Observed concretely on Calibri-
+                # subsetted Word→PDF exports for U+2022 (•): the bullet
+                # character has positive advance metrics but zero-area
+                # outline, because Word's PDF exporter never asked the
+                # subsetter to retain it (the original document used
+                # Symbol-font \uf0b7 for bullets, not U+2022).
+                #
+                # Verify the glyph has a non-empty bbox as a second-line
+                # defence. Real glyphs have a positive-area bbox; .notdef
+                # / outline-stripped glyphs have a zero-area bbox even
+                # when the advance is set.
+                #
+                # Wrapped in try/except because `glyph_bbox` is not in
+                # all PyMuPDF versions; on older builds we fall through
+                # to the existing advance-only check rather than break.
+                try:
+                    bbox = font.glyph_bbox(cp)
+                    if bbox is None:
+                        return False
+                    if hasattr(bbox, "x0"):
+                        w = float(bbox.x1) - float(bbox.x0)
+                        h = float(bbox.y1) - float(bbox.y0)
+                    else:
+                        w = float(bbox[2]) - float(bbox[0])
+                        h = float(bbox[3]) - float(bbox[1])
+                    if w <= 0 or h <= 0:
+                        return False
+                except AttributeError:
+                    pass  # PyMuPDF too old for glyph_bbox — keep advance-only check
+                except Exception:
+                    return False
         except Exception:
             return False
     return True

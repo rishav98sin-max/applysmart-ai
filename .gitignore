@@ -48,3 +48,6 @@ test_pdf_fix_*.pdf
 # Debug/error screenshots (not part of source)
 Error SS/
 *.debug.png
+
+# Diagnostic run artefacts (per-call LLM telemetry — see diagnostics/README.md)
+diagnostics/runs/

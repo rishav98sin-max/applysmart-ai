@@ -742,3 +742,49 @@ def last_llm_source() -> str:
     successful call has happened yet (e.g. before the first call).
     """
     return _LAST_LLM_SOURCE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Diagnostics hook (deletable; no-op when disabled)
+# ─────────────────────────────────────────────────────────────────────────────
+# When DIAGNOSTICS_ENABLED=1 is set in the environment, the diagnostics
+# package monkey-patches _call_groq, _call_gemini, and track_llm_call to
+# emit per-call telemetry to JSONL (always) and Langfuse (when configured).
+#
+# When the env var is not set, this block does nothing — diagnostics is
+# never imported and has zero runtime cost.
+#
+# To remove diagnostics entirely later:
+#   1. rm -rf diagnostics/
+#   2. Delete this entire block.
+#   3. Remove `langfuse` from requirements.txt.
+#   4. Remove DIAGNOSTICS_* / LANGFUSE_* env vars from .env.
+def _diagnostics_enabled() -> bool:
+    """Check DIAGNOSTICS_ENABLED in env first, then Streamlit secrets."""
+    val = os.environ.get("DIAGNOSTICS_ENABLED")
+    if val is not None:
+        return val == "1"
+    try:
+        import streamlit as st  # local import — non-Streamlit callers don't pay
+        if hasattr(st, "secrets") and "DIAGNOSTICS_ENABLED" in st.secrets:  # type: ignore[attr-defined]
+            return str(st.secrets["DIAGNOSTICS_ENABLED"]) == "1"            # type: ignore[index]
+    except Exception:
+        pass
+    return False
+
+
+if _diagnostics_enabled():
+    try:
+        from diagnostics.instrumentation import patch as _diagnostics_patch
+        _diagnostics_patch()
+    except ImportError as _diag_imp_err:
+        print(
+            f"   diagnostics: package not importable ({_diag_imp_err}); "
+            f"continuing without instrumentation."
+        )
+    except Exception as _diag_err:
+        print(
+            f"   ⚠️  diagnostics: patch failed "
+            f"({type(_diag_err).__name__}: {_diag_err}); "
+            f"continuing without instrumentation."
+        )
