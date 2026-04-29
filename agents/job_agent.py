@@ -53,6 +53,31 @@ LLM_SUPERVISOR_SKIP_SINGLE = os.getenv("LLM_SUPERVISOR_SKIP_SINGLE", "1").strip(
 
 MAX_TAILOR_RETRIES = int(os.getenv("MAX_TAILOR_RETRIES", "1"))
 
+# Apr 29 — pace match_jobs LLM calls to stay under Groq TPM (tokens/min).
+#
+# Free-tier llama-3.3-70b-versatile rate limits:
+#   - 12,000 TPM per key   (3 keys -> 36K TPM aggregate)
+#   - 100,000 TPD per key  (3 keys -> 300K TPD aggregate)
+#
+# A typical match call is ~3K tokens (1.4K CV + 0.5-1.5K JD + 0.5K system
+# prompt + 0.2K response). Firing 15 calls back-to-back in ~60s pushes
+# ~45K tokens/min — that's ~25% over the 36K aggregate TPM ceiling and
+# trips 429s on all 3 keys simultaneously. Symptoms in the Apr 28 23:34
+# run: "All 3 Groq key(s) exhausted" mid-match-loop, then 60s sleeps
+# cascading through cover-letter and CV-tailor phases.
+#
+# Sleeping ~6s between calls caps throughput at:
+#     60s / 6s = 10 calls/min × 3K tokens = 30K tokens/min total
+# which is comfortably under the 36K aggregate TPM with ~17% headroom
+# for a slightly larger-than-average call. Trade-off: 15-job match loop
+# adds (15-1)*6s = 84s. Worth it to never see "exhausted" mid-run.
+#
+# Override via env. Set to "0" to disable (e.g. paid Groq tier with
+# higher TPM, or single-job runs where pacing is unnecessary).
+MATCH_LOOP_INTER_CALL_SLEEP_S = float(
+    os.getenv("APPLYSMART_MATCH_LOOP_SLEEP_S", "6.0")
+)
+
 HARD_TERMINAL_STATUSES = frozenset({
     "validation_failed",
     "parse_failed",
@@ -921,7 +946,14 @@ def match_jobs_node(state: AgentState) -> AgentState:
             print(f"   ⚠️  CV indexing skipped ({type(e).__name__}: {e})")
             cv_collection = ""
 
-    for job in new_jobs:
+    for i, job in enumerate(new_jobs):
+        # Pace LLM calls to stay under Groq TPM. See the
+        # MATCH_LOOP_INTER_CALL_SLEEP_S definition near the top of this
+        # file for the rate-limit math. Skipped before the first call
+        # (no need to wait if the loop hasn't burned any tokens yet)
+        # and skipped entirely when the throttle is disabled (=0).
+        if i > 0 and MATCH_LOOP_INTER_CALL_SLEEP_S > 0:
+            time.sleep(MATCH_LOOP_INTER_CALL_SLEEP_S)
         try:
             result = match_cv_to_job(
                 cv_text          = state["cv_text"],
@@ -929,7 +961,7 @@ def match_jobs_node(state: AgentState) -> AgentState:
                 job_title        = job.get("title",       ""),
                 company          = job.get("company",     ""),
                 cv_collection    = cv_collection,
-                experience_level = state.get("experience_level", ""),  # ✅ NEW
+                experience_level = state.get("experience_level", ""),  # NEW
             )
 
             score = result.get("match_score", 0)
