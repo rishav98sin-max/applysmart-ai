@@ -497,15 +497,15 @@ def supervisor_node(state: AgentState) -> AgentState:
         if 0 <= rd < len(bundles):
             patched["current_bundle"] = bundles[rd]
         patched["status"]      = "dispatching_scrape"
-        # Apr 28 follow-up: do NOT reset jobs_found on supervisor dispatch.
-        # Previous `patched["jobs_found"] = []` wiped the accumulator every
-        # time the supervisor chose `scrape_jobs`, so multi-round runs only
-        # retained the FINAL round's results. Apr 28 23:34 symptom: rounds
-        # 1-4 returned 12 valid PM jobs, all wiped; round 5's first-word
-        # fallback "Digital" surfaced 3 marketing jobs as the only pool
-        # for match_jobs → 0 matches above 60% threshold.
-        # `scrape_jobs_node` (~lines 801-809) already merges new jobs into
-        # existing state with URL-based dedup — accumulation is safe.
+        # Apr 29 — RESTORED jobs_found wipe (was wrongly removed in a5c0e34).
+        # `jobs_found` is the CURRENT round's working buffer; cross-round
+        # persistence happens via matched_jobs/skipped_jobs in
+        # match_jobs_node, which accumulates prev_matched/prev_skipped.
+        # Removing this caused the supervisor to scrape all bundles before
+        # scoring, ballooning num_jobs=3 -> 12 tailored and triggering
+        # Gemini RPM + Groq TPM cascade. Do NOT remove again unless the
+        # supervisor is changed to interleave match_jobs between rounds.
+        patched["jobs_found"] = []
 
     entry = {
         "from":           "supervisor",
