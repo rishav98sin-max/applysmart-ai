@@ -472,7 +472,15 @@ def supervisor_node(state: AgentState) -> AgentState:
         if 0 <= rd < len(bundles):
             patched["current_bundle"] = bundles[rd]
         patched["status"]      = "dispatching_scrape"
-        patched["jobs_found"]  = []
+        # Apr 28 follow-up: do NOT reset jobs_found on supervisor dispatch.
+        # Previous `patched["jobs_found"] = []` wiped the accumulator every
+        # time the supervisor chose `scrape_jobs`, so multi-round runs only
+        # retained the FINAL round's results. Apr 28 23:34 symptom: rounds
+        # 1-4 returned 12 valid PM jobs, all wiped; round 5's first-word
+        # fallback "Digital" surfaced 3 marketing jobs as the only pool
+        # for match_jobs → 0 matches above 60% threshold.
+        # `scrape_jobs_node` (~lines 801-809) already merges new jobs into
+        # existing state with URL-based dedup — accumulation is safe.
 
     entry = {
         "from":           "supervisor",
@@ -701,13 +709,18 @@ def _scrape_one_board_with_broadening(
     num_jobs: int,
     board: str,
 ) -> list:
+    # Apr 28 follow-up: first-word fallback REMOVED.
+    # Splitting "Digital Product Manager" -> "Digital" pulled marketing
+    # / visual-merch jobs and poisoned match_jobs in the Apr 28 23:34
+    # run. The first word in ~80% of multi-word titles is a seniority
+    # or category MODIFIER (Digital/Senior/Junior/Lead/Associate/...),
+    # not a job-noun. Query broadening is the planner's job, not the
+    # scraper's. The no-location retry below is fine — narrow location
+    # is not semantically destructive the way a generic first word is.
     search_title = full_job_title.split(",")[0].strip()
     jobs = scrape_jobs(search_title, location, num_jobs, board)
-    if not jobs and search_title.split():
-        print(f"   ⚠️  No jobs on {board} — retrying first word only...")
-        jobs = scrape_jobs(search_title.split()[0], location, num_jobs, board)
     if not jobs:
-        print(f"   ⚠️  Still none on {board} — retrying without location...")
+        print(f"   ⚠️  No jobs on {board} for {search_title!r} — retrying without location...")
         jobs = scrape_jobs(search_title, "", num_jobs, board)
     return jobs
 
