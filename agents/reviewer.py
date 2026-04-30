@@ -76,6 +76,11 @@ def _render_diff_for_review(
 
     for role in outline.get("roles", []):
         header = role["header"]
+        # Apr 30: surface section type ("projects" vs "experience" etc.) so
+        # the reviewer prompt's Personal-Projects fabrication rule has the
+        # context it needs to fire. Defaults to "experience" when missing
+        # to preserve backwards compat with older outline producers.
+        section = (role.get("section") or "experience").strip().lower()
         originals = role.get("bullets", [])
         order = bullets_diff.get(header)
         rendered: List[str] = []
@@ -109,7 +114,7 @@ def _render_diff_for_review(
             # No edits for this role — show originals as-is.
             for b in originals:
                 rendered.append(f"  - {_btext(b)}")
-        parts.append(f"ROLE: {header}")
+        parts.append(f"ROLE: {header}  [section={section}]")
         parts.extend(rendered)
         parts.append("")
 
@@ -164,6 +169,33 @@ STRICT RULES
     platforms, tools, certifications, outcomes, team sizes, years — that do
     NOT appear in the original, flag it as a weakness and cap the score
     at 55. Reframing the same facts is fine; inventing new ones is not.
+
+- PERSONAL-PROJECT FABRICATIONS = HARD CAP AT 50.
+  * Each ROLE block is tagged with [section=...]. Roles with section=projects
+    are SOLO work by default — no team, no stakeholders, no organisation,
+    no cross-functional partners — UNLESS the original bullet already
+    states otherwise (e.g. "co-built with X", "team of three").
+  * If a [REWRITTEN] bullet under a section=projects role introduces ANY
+    of the following framings that the original lacks, this is FABRICATION
+    and you MUST cap the score at 50 and list the offending phrase as the
+    #1 weakness:
+      - "team", "teams", "cross-functional", "cross-team"
+      - "stakeholders", "stakeholder alignment", "primary liaison"
+      - "the organisation", "across the org", "company-wide"
+      - "managed escalations", "managed expectations of …"
+      - "platform teams", "engineering teams", "business teams"
+      - "partnered with engineering / design / product / business"
+  * A solo personal-project bullet rewritten as "Acted as bridge between
+    business stakeholders and deep technical teams" is FABRICATION even
+    if it doesn't add a number — it invents collaborators. Flag it.
+
+- CREDENTIAL PRESERVATION (summary).
+  * If the original summary contains a degree grade ("(2.1)", "First
+    Class", "Distinction", "Cum Laude"), a years-of-experience claim
+    ("4+ years", "5 years' experience"), or a numeric outcome, the
+    rewritten summary MUST preserve every one verbatim. If any are
+    missing, list "credential lost: <token>" as a weakness and cap the
+    score at 65.
 - PENALISE SUMMARY-ONLY TAILORING.
   * Count the [REWRITTEN] markers in the bullets. If ZERO bullets are
     rewritten across the whole CV AND the JD lists specific responsibilities

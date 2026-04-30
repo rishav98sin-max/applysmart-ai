@@ -125,19 +125,24 @@ def _extract_json(text: str) -> dict:
 
 
 def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
+    """
+    Compact outline rendering for the cv_diff_tailor prompt.
+
+    Apr 30 trim: dropped the verbose ROLES preamble (the rules are already
+    stated extensively in the prompt template that follows) and the
+    `(section=...)` per-role tag (used by the reviewer's render path, not
+    by the tailor). Net: ~250-400 chars saved per call without losing any
+    bullet content.
+    """
     parts: List[str] = []
     cur_summary   = (outline.get("summary") or "").strip()
     cur_word_count = len(cur_summary.split()) if cur_summary else 0
     parts.append(f"CURRENT SUMMARY ({cur_word_count} words):")
     parts.append(cur_summary or "(none)")
     parts.append("")
-    parts.append(
-        "ROLES (each with 0-indexed bullets — you may REORDER, REWRITE, or DROP "
-        "per the RULES below; the index 'i' is how the PDF editor locates "
-        "the bullet on the page):"
-    )
+    parts.append("ROLES (0-indexed bullets — index 'i' is how the editor locates each bullet):")
     for r in outline.get("roles", []):
-        parts.append(f'Role "{r["header"]}" (section={r["section"]}):')
+        parts.append(f'Role "{r["header"]}":')
         for i, b in enumerate(r["bullets"]):
             # Bullets from build_outline are dicts {"text": str, "length": int};
             # tolerate legacy str entries too.
@@ -146,10 +151,8 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
         parts.append("")
     skills = outline.get("skills") or []
     if skills:
-        parts.append("SKILLS (comma-separated; you may reorder):")
+        parts.append("SKILLS (do NOT reorder):")
         parts.append(", ".join(skills))
-    else:
-        parts.append("SKILLS: (categorised layout — do NOT reorder)")
     return "\n".join(parts)
 
 
@@ -238,6 +241,24 @@ RULES (strict):
      the ORIGINAL summary verbatim (set summary to the exact original).
    - Re-ordering existing CV skills/phrases is encouraged. Inventing new
      ones is a critical failure.
+
+   MUST-PRESERVE CREDENTIALS (applies to the SUMMARY specifically):
+   The original summary contains specific credentials a recruiter scans for.
+   Your rewrite MUST keep every one of these intact, verbatim:
+     • Degree grades / classifications (e.g. "(2.1)", "First Class",
+       "Distinction", "GPA 3.8", "Magna Cum Laude").
+     • University and company names — exactly as written in the original.
+     • Years of experience claims (e.g. "4+ years", "5 years' experience").
+     • Numeric outcomes already quoted in the summary
+       (percentages, scale, headcount, revenue).
+     • Job-title language identifying the candidate's specialism
+       (e.g. "Technical Product Specialist", "QA & Performance Testing
+       specialist").
+   If your rewrite would drop ANY of the above to make room for JD
+   keywords, DO NOT submit the rewrite — keep the original summary
+   verbatim instead. A summary without the candidate's grade or YoE
+   loses the recruiter immediately; a slightly less JD-aligned summary
+   is far better than a credential-stripped one.
 
    Tone: confident, specific, no buzzwords ("dynamic", "passionate",
    "results-driven", etc.).
@@ -452,6 +473,90 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
 # ─────────────────────────────────────────────────────────────
 
 _NUMBER_RX = re.compile(r"\d[\d.,]*\s*%?|\d+K\+?|\d+M\+?|\d+\+", re.I)
+
+
+# ─────────────────────────────────────────────────────────────
+# Credential-preservation guard (Apr 30)
+# ─────────────────────────────────────────────────────────────
+# Detects whether the rewritten summary dropped specific credentials that
+# were present in the original. Drives a hard revert (keep original) when
+# the rewrite would lose one of these recruiter-scan signals.
+#
+# Conservative by design: only flags tokens the regex is confident about
+# (degree-grade patterns, X+ years claims). Numeric values are checked
+# via _NUMBER_RX (already in use). Free-form names (universities, employers)
+# are NOT auto-checked here — those are guarded by the existing
+# "fabrication" + "foreign-term" logic.
+
+# Degree grades / classifications. Examples that should match:
+#   "(2.1)", "(2:1)", "First Class", "First-Class", "Distinction",
+#   "GPA 3.8", "Magna Cum Laude", "Summa Cum Laude", "Cum Laude", "Honours".
+_GRADE_PATTERNS = [
+    re.compile(r"\(\s*[1-4][\.:][12]\s*\)"),                     # (2.1) / (2:1)
+    re.compile(r"\bfirst[\s\-]class\b", re.I),
+    re.compile(r"\bdistinction\b", re.I),
+    re.compile(r"\b(?:summa|magna)\s+cum\s+laude\b", re.I),
+    re.compile(r"\bcum\s+laude\b", re.I),
+    re.compile(r"\bhonou?rs\b", re.I),
+    re.compile(r"\bgpa\s*[:=]?\s*\d(?:\.\d+)?\b", re.I),
+    re.compile(r"\b\d(?:\.\d+)?\s*/\s*\d(?:\.\d+)?\s*gpa\b", re.I),
+]
+
+# Years-of-experience patterns. Examples:
+#   "4+ years", "5 years experience", "3 years' experience"
+_YOE_RX = re.compile(r"\b\d+\+?\s*years?(?:['’]?\s+experience)?\b", re.I)
+
+
+def _extract_credentials(summary: str) -> Dict[str, List[str]]:
+    """
+    Pull out the credential tokens present in `summary`. Used to compare
+    original-vs-rewrite and revert the rewrite when something was dropped.
+    """
+    if not summary:
+        return {"grades": [], "yoe": [], "numbers": []}
+    grades: List[str] = []
+    for rx in _GRADE_PATTERNS:
+        for m in rx.finditer(summary):
+            grades.append(m.group(0).strip().lower())
+    yoe = [m.group(0).strip().lower() for m in _YOE_RX.finditer(summary)]
+    numbers = [m.group(0).strip().lower() for m in _NUMBER_RX.finditer(summary)]
+    # De-duplicate while preserving order.
+    def _dedupe(items: List[str]) -> List[str]:
+        seen: set = set()
+        out: List[str] = []
+        for it in items:
+            if it not in seen:
+                seen.add(it)
+                out.append(it)
+        return out
+    return {
+        "grades":  _dedupe(grades),
+        "yoe":     _dedupe(yoe),
+        "numbers": _dedupe(numbers),
+    }
+
+
+def _check_credentials_preserved(
+    orig_summary: str,
+    new_summary:  str,
+) -> Optional[Dict[str, List[str]]]:
+    """
+    Returns None when no credentials are missing from the rewrite. Returns a
+    dict of {kind: [missing_tokens]} when at least one credential was dropped.
+    The caller should revert to the original summary on a non-None return.
+    """
+    if not orig_summary or not new_summary:
+        return None
+    orig = _extract_credentials(orig_summary)
+    new  = _extract_credentials(new_summary.lower())
+    # `new` is built from the lowercased rewrite for membership checks.
+    new_text_lower = new_summary.lower()
+    missing: Dict[str, List[str]] = {}
+    for kind in ("grades", "yoe", "numbers"):
+        gone = [tok for tok in orig[kind] if tok not in new_text_lower]
+        if gone:
+            missing[kind] = gone
+    return missing or None
 
 # Capitalized / acronym term pattern used by the summary-fabrication guard.
 # Matches multi-word proper nouns ("US GAAP", "International Financial"),
@@ -854,10 +959,52 @@ def _sanitise_diff(raw: Dict[str, Any], outline: Dict[str, Any]) -> Dict[str, An
 # Feedback addendum (unchanged)
 # ─────────────────────────────────────────────────────────────
 
+def _summarise_previous_diff(previous_diff: Dict[str, Any]) -> str:
+    """
+    Compact one-line-per-role summary of the previous diff, used in the
+    retry addendum instead of the full pretty-printed JSON dump (~1,400
+    chars). Lets the LLM see WHAT it changed last time without re-reading
+    every rewritten string. Net: ~350 chars vs ~1,400 (~80% smaller).
+    """
+    if not previous_diff:
+        return ""
+    lines: List[str] = []
+    sm = (previous_diff.get("summary") or "").strip()
+    if sm:
+        lines.append(f"prev_summary_len={len(sm)} chars")
+    bullets = previous_diff.get("bullets") or {}
+    if isinstance(bullets, dict):
+        for role, entries in bullets.items():
+            if not isinstance(entries, list):
+                continue
+            n_total    = len(entries)
+            n_rewrites = sum(
+                1 for e in entries
+                if isinstance(e, dict) and e.get("text")
+            )
+            order = ",".join(
+                str(e.get("i") if isinstance(e, dict) else e)
+                for e in entries
+            )
+            lines.append(
+                f"{role[:50]}: order=[{order}] rewritten={n_rewrites}/{n_total}"
+            )
+    return "\n".join(lines)
+
+
 def _build_feedback_addendum(
     feedback:      str,
     previous_diff: Optional[Dict[str, Any]],
 ) -> str:
+    """
+    Retry-only addendum appended to the prompt when the reviewer rejected the
+    previous attempt.
+
+    Apr 30 trim: replaced the full `json.dumps(previous_diff, indent=2)[:1400]`
+    dump with `_summarise_previous_diff()` — saves ~1,000 chars per retry
+    call without losing what the LLM actually needs (it never reads the
+    full diff JSON; it just needs to know what it tried last time).
+    """
     if not feedback and not previous_diff:
         return ""
     parts: List[str] = [
@@ -865,11 +1012,10 @@ def _build_feedback_addendum(
         "REVIEWER FEEDBACK ON YOUR PREVIOUS ATTEMPT (incorporate this):",
     ]
     if previous_diff:
-        parts.append("Your previous diff was:")
-        try:
-            parts.append(json.dumps(previous_diff, indent=2)[:1400])
-        except Exception:
-            pass
+        summary_line = _summarise_previous_diff(previous_diff)
+        if summary_line:
+            parts.append("Previous attempt (compact):")
+            parts.append(summary_line)
     if feedback:
         parts.append("")
         parts.append("Reviewer said:")
@@ -984,6 +1130,28 @@ def tailor_cv_diff(
                     "terms":  foreign[:8],
                 })
                 diff["summary"] = orig_summary
+            else:
+                # Apr 30: credential-preservation guard. If the rewrite
+                # dropped a degree grade ("(2.1)"), YoE claim ("4+ years"),
+                # or numeric outcome present in the original summary,
+                # revert. Recruiters scan for these signals in the 6-second
+                # first pass — losing one is a CV-quality regression even
+                # if the JD-alignment improved.
+                missing_creds = _check_credentials_preserved(orig_summary, new_sum)
+                if missing_creds:
+                    flat = ", ".join(
+                        f"{k}={v}" for k, v in missing_creds.items()
+                    )
+                    print(
+                        f"   ⚠️  summary dropped credential tokens ({flat}) — "
+                        f"reverting to original summary to preserve "
+                        f"recruiter-scan signals."
+                    )
+                    diff["_debug"]["summary_reverts"].append({
+                        "reason":  "credentials_dropped",
+                        "missing": missing_creds,
+                    })
+                    diff["summary"] = orig_summary
 
     # ── Length-enforcement retry ─────────────────────────────────────
     # Triggers when the new summary is below 85% of the original word count.

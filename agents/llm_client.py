@@ -727,8 +727,43 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
     return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
 
 
+# ── Gemini bypass switch (Apr 30) ───────────────────────────────────────────
+# Default behaviour: route all `chat_gemini()` calls straight to Groq.
+#
+# Why bypass-on by default:
+#   Gemini 2.5 Flash on the free tier was producing truncated JSON (~200-400
+#   chars) on cv_diff_tailor and cover_letter calls — every attempt failed
+#   parse-validation and forced a Groq fallback anyway. Each failed attempt
+#   wasted 9-11s. Run-2 telemetry (Apr 30 13:01) showed 0 successful Gemini
+#   structured outputs across 4 CVs. Bypassing removes that dead-time.
+#
+# To re-enable Gemini at runtime: set GEMINI_BYPASS=0 in env / Streamlit
+# secrets. The original Gemini path (with key rotation, cooldowns, etc.)
+# is preserved verbatim in `_call_gemini()` — only the public wrapper is
+# rewired. Flip the env var, redeploy, no code change needed.
+def _gemini_bypass_enabled() -> bool:
+    val = os.environ.get("GEMINI_BYPASS")
+    if val is not None:
+        return val != "0"
+    try:
+        import streamlit as st  # local import — non-Streamlit callers don't pay
+        if hasattr(st, "secrets") and "GEMINI_BYPASS" in st.secrets:  # type: ignore[attr-defined]
+            return str(st.secrets["GEMINI_BYPASS"]) != "0"            # type: ignore[index]
+    except Exception:
+        pass
+    return True  # default: bypass ON
+
+
 def chat_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
-    """Use Gemini 2.5 Flash for writing tasks (CV tailoring, cover letters)."""
+    """
+    Public entry point for "writing" calls (CV tailoring, cover letters).
+
+    With GEMINI_BYPASS=1 (default since Apr 30): routes directly to Groq.
+    With GEMINI_BYPASS=0: original Gemini-first / Groq-fallback behaviour.
+    """
+    if _gemini_bypass_enabled():
+        print(f"   🤖 [GROQ / WRITING — gemini bypassed] requesting {max_tokens} tokens...")
+        return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
     print(f"   🤖 [GEMINI / WRITING] requesting {max_tokens} tokens...")
     return _call_gemini(prompt, max_tokens=max_tokens, temperature=temperature)
 

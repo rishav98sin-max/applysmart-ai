@@ -1281,13 +1281,32 @@ def _insert_fitted(
     for src, dst in _UNICODE_FALLBACK.items():
         if src in safe_text:
             safe_text = safe_text.replace(src, dst)
-    # Any remaining bullet glyphs → middle dot. U+2022 (•) is intentionally
-    # kept because Base14 Latin-1 maps it at WinAnsi 0x95; downgrading it
-    # caused visible inconsistency when some sections used the embedded-font
-    # path (kept •) and others fell through here (became ·).
+    # Bullet-glyph normalisation in the Base14 fallback path.
+    #
+    # Apr 30 (Run-2 evidence): the previous policy ("keep U+2022 because
+    # Base14 helv maps it at WinAnsi 0x95") proved unreliable on the
+    # PyMuPDF build we ship — every tailored CV across two test runs
+    # rendered • as `?` in the bullet column. Some Base14 builds don't
+    # honour the WinAnsi 0x95 mapping for U+2022; PyMuPDF then draws
+    # .notdef, which most readers display as `?`.
+    #
+    # PyMuPDF's `insert_textbox` returns rc>=0 for "the text fit" — it
+    # does NOT tell us whether any glyph was substituted with .notdef. So
+    # we cannot detect-and-retry; we must downgrade pre-emptively.
+    #
+    # New policy: in the Base14 fallback path, ALWAYS downgrade U+2022
+    # to U+00B7 (·, middle dot). U+00B7 is at WinAnsi 0xB7 which is the
+    # standard Latin-1 position and IS reliably mapped on every Base14
+    # build we've tested. Visual cost: a slightly smaller dot than the
+    # original • for bullets in REWRITTEN sections only — original bullets
+    # in untouched sections remain • (they are never re-rendered, just
+    # left in the PDF's original text layer). This is strictly better
+    # than the current `?` outcome.
     for ch in _BULLET_CHARS:
-        if ch in ("-", "*", "\u00b7", "\u2022"):
+        if ch in ("-", "*"):
             continue
+        # Map every bullet-shape char (including U+2022) to · in this
+        # fallback path.
         safe_text = safe_text.replace(ch, "\u00b7")
     for sz in sizes:
         if sz < 6:
