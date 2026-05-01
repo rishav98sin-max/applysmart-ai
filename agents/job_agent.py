@@ -1057,6 +1057,37 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
         jd      = job.get("description", "")
         tag     = f"[{title[:20]}@{company[:15]}]"
 
+        # ── Strategist call (May 1, single Groq call per job) ────────
+        # Run the strategist once between the matcher and the tailor/
+        # cover-letter so both downstream artifacts share ONE narrative
+        # angle, ONE per-bullet plan, and ONE do_not_inject list. Falls
+        # back to an empty strategy on any error so the legacy paths
+        # still work end-to-end.
+        job_strategy: Dict[str, Any] = {}
+        try:
+            from agents.tailor_strategist import build_tailor_strategy
+            strategist_outline = shared_outline
+            if strategist_outline is None:
+                # Lazy build if the shared one wasn't pre-computed.
+                try:
+                    strategist_outline = _build_outline(state["cv_path"])
+                except Exception:
+                    strategist_outline = None
+            if strategist_outline:
+                job_strategy = build_tailor_strategy(
+                    outline         = strategist_outline,
+                    job_description = jd,
+                    job_title       = title,
+                    company         = company,
+                )
+        except Exception as strat_err:
+            print(
+                f"   ⚠️  {tag} strategist call failed "
+                f"({type(strat_err).__name__}: {strat_err}) — "
+                f"falling back to no-strategy mode"
+            )
+            job_strategy = {}
+
         # ── Closure 1: cover-letter path (Gemma → review → PDF) ───────
         def _do_cover_letter():
             cl_review_local: Optional[Dict[str, Any]] = None
@@ -1067,6 +1098,7 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                 job_title       = title,
                 company         = company,
                 candidate_name  = state["candidate_name"],
+                strategy        = job_strategy,
             )
             try:
                 from agents.cover_letter_reviewer import review_cover_letter
@@ -1117,6 +1149,7 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         job_title       = title,
                         company         = company,
                         candidate_name  = state["candidate_name"],
+                        strategy        = job_strategy,
                     )
                     cl_review_2 = review_cover_letter(
                         cv_text         = state["cv_text"],
@@ -1220,6 +1253,7 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         feedback        = feedback_in,
                         previous_diff   = prev_diff,
                         outline         = outline_cache,
+                        strategy        = job_strategy,
                     )
                     if not (diff.get("summary") or diff.get("bullets") or diff.get("skills_order")):
                         # B1: Empty diff is NOT a 100/100 success. It means

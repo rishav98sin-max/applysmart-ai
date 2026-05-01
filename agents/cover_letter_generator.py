@@ -3,6 +3,8 @@
 import os
 import re
 import time
+from typing import Any, Dict, List, Optional
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -61,16 +63,49 @@ STRUCTURE — EXACTLY 4 PARAGRAPHS, BLANK LINE BETWEEN EACH
 ═══════════════════════════════════════════════════════════════════════
 
 PARAGRAPH 1 — HOOK (3-4 sentences):
-- Open with a bold, specific statement that immediately signals fit. Lead
-  with ONE of three patterns:
-    1. A sharp, concrete achievement from the CV with its real metric.
-    2. A forward-looking value claim about what this role really needs.
-    3. A direct insight into the role's core challenge that the JD signals.
-- Reference something real and specific about the company (its product,
-  market position, mission, or a fact stated in the JD itself).
-- Make it sound like a confident human, not a template.
-- BANNED openers: "I am writing to apply...", "I am excited to apply...",
-  "I would like to express my interest...", "I have always dreamed of...".
+The first sentence MUST NOT begin with "I" or "My" or the candidate's
+name. The hiring manager should be 1-2 sentences in before they realise
+this is a cover letter. Use ONE of these THREE opening patterns:
+
+  PATTERN A — INDUSTRY / DOMAIN OBSERVATION (preferred default):
+    Open with a one-sentence observation about the company's
+    industry, market, or problem-space — the kind of opinion a
+    practitioner would have. Sentence 2 transitions to the
+    candidate's CV experience as the lived solution.
+    Example shape:
+      "The most effective AI platforms aren't defined by their
+       model sophistication — they're defined by how tightly product
+       strategy, engineering capability, and business value are
+       woven together. Getting that alignment right, consistently,
+       at pace, is where most platform initiatives stall. It's
+       also precisely where I've spent the last four years."
+
+  PATTERN B — ROLE-INSIGHT OPENER:
+    Open with a sharp insight into what THIS role actually needs to
+    succeed (drawn from the JD), then land the candidate as the fit.
+    Useful when the JD signals an unusual or hard-to-fill blend.
+
+  PATTERN C — CONCRETE ACHIEVEMENT OPENER:
+    Lead with ONE specific CV achievement that maps directly to the
+    JD's #1 requirement. Use the real metric verbatim. Use this
+    pattern only when there is a single overwhelmingly strong match.
+    Avoid if the strongest match needs context to land.
+
+Whichever pattern you pick:
+- Make sentence 1 substantive — never generic ("I have always been
+  passionate about technology" is BANNED).
+- Reference one real, specific thing about the company (product,
+  market position, mission, or a fact literally stated in the JD).
+- Sound like a confident human writing at 10pm because they actually
+  want THIS job — not a template that could be sent anywhere.
+- BANNED openers (any one is an instant fail):
+  "I am writing to apply...", "I am excited to apply...",
+  "I would like to express my interest...", "I have always dreamed
+  of...", "With X years of experience...", "As a [title]..."
+
+If a STRATEGY block was provided below, its `cover_letter_hook`
+section names the preferred pattern and gives an opening_topic.
+Use that pattern. Do NOT improvise a different one.
 
 PARAGRAPH 2 — EXPERIENCE & PROOF (4-5 sentences):
 - Lead with the single most relevant work experience for THIS role. Name
@@ -256,6 +291,10 @@ CANDIDATE CV:
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+{strategy_block}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 WRITE THE COMPLETE LETTER BODY NOW (exactly 4 paragraphs, blank line
 between paragraphs, 310-380 words total, no salutation, no sign-off,
 no truncation):
@@ -387,6 +426,198 @@ def _banned_phrases_in_letter(body: str) -> list:
     return [p for p in _BANNED_COVER_LETTER_PHRASES if p in body_l]
 
 
+# ─────────────────────────────────────────────────────────────
+# May 1: deterministic banned-phrase stripper.
+#
+# Run 3 + Harvey-Nash test showed the LLM swapping one banned phrase
+# for another on every retry: attempt 1 had "I'm confident", attempt 2
+# fixed that but added "In my first 90 days", attempt 3 fixed that but
+# brought back "fast-paced" and "I'm excited about". Three retries, no
+# convergence, +3,500 wasted tokens per letter.
+#
+# Better fix: strip these phrases deterministically AFTER the LLM is
+# done. They're all corporate filler — when removed, the surrounding
+# sentence either stands on its own ("I can make a meaningful
+# contribution" instead of "I'm confident that I can make a meaningful
+# contribution") or the entire sentence is filler-only and can be
+# dropped. The replacements below are tuned so the resulting prose
+# stays readable; sentences that would degenerate to nonsense get
+# dropped wholesale by `_drop_orphan_sentences`.
+#
+# Rule: this strip runs AFTER the foreign-terms guard and AFTER the
+# LLM retry loop. It's the last stop before shipping the letter.
+# ─────────────────────────────────────────────────────────────
+
+# (lowercase pattern, replacement). Pattern matches case-insensitively.
+# Replacements are spliced verbatim — preserve their casing.
+_BANNED_PHRASE_REPLACEMENTS: tuple = (
+    # "I'm confident that I can…" → "I can…"
+    (r"\bi['\u2019]?m\s+confident\s+that\s+", ""),
+    (r"\bi\s+am\s+confident\s+that\s+", ""),
+    # "I'm excited about the prospect of Ving X" — the tail is a gerund
+    # phrase ("Ving X"), so replace with "I am drawn to" + gerund to keep
+    # grammar intact without the awkward "contribute by contributing".
+    (r"\bi['\u2019]?m\s+excited\s+about\s+the\s+prospect\s+of\s+",
+     "I am drawn to the chance of "),
+    (r"\bi\s+am\s+excited\s+about\s+the\s+prospect\s+of\s+",
+     "I am drawn to the chance of "),
+    # "I'm excited about the opportunity to V X" — the tail is an
+    # infinitive ("to V X"), so replace with "I would welcome the chance to"
+    # which slots in ahead of "to V" naturally.
+    (r"\bi['\u2019]?m\s+excited\s+about\s+the\s+opportunity\s+to\s+",
+     "I would welcome the chance to "),
+    (r"\bi\s+am\s+excited\s+about\s+the\s+opportunity\s+to\s+",
+     "I would welcome the chance to "),
+    # Generic fallback "I'm excited about X" / "I am excited about X"
+    # — drop the hedge, keep the substance. Safe when the preceding
+    # "the prospect of / the opportunity to" variants didn't match.
+    (r"\bi['\u2019]?m\s+excited\s+about\s+", ""),
+    (r"\bi\s+am\s+excited\s+about\s+", ""),
+    (r"\bi\s+am\s+thrilled\s+(?:to|about|by)\s+", ""),
+    # "fast-paced," / "fast-paced " — drop the adjective, keep the noun.
+    (r"\bfast[-\s]paced[,]?\s+", ""),
+    # "make a meaningful impact / contribution / difference" — drop, the
+    # surrounding sentence usually stands on its own.
+    (r"\bmake\s+a\s+meaningful\s+(impact|contribution|difference)\b", r"contribute"),
+    (r"\bmake\s+a\s+real\s+difference\b", "contribute"),
+    # "my passion for X" → "my interest in X" — keep the preposition
+    # chain readable (dropping to empty leaves awkward "aligns with
+    # building scalable AI…" constructions).
+    (r"\bshares?\s+my\s+passion\s+for\s+", "values "),
+    (r"\bmy\s+passion\s+for\s+", "my interest in "),
+    # "In my first 90 days" → "In my first weeks" (less templated)
+    (r"\bin\s+(?:my|the)\s+first\s+90\s+days\b", "In my first weeks"),
+    # Closing-paragraph filler.
+    (r"\bi\s+look\s+forward\s+to\s+(?:hearing\s+from\s+you|discussing|exploring)\b",
+     "I would welcome a conversation"),
+    # Generic "available to start immediately" — drop (the sender's
+    # availability is signalled by the application itself).
+    (r"\bavailable\s+to\s+start\s+immediately\b", "available immediately"),
+    (r"\bi['\u2019]?m\s+available\s+to\s+start\b", "I am available"),
+    # "deliver high-impact" / "deliver measurable value" — drop hedge.
+    (r"\bdeliver\s+high[-\s]impact\s+", "deliver "),
+    (r"\bdeliver\s+measurable\s+value\b", "deliver outcomes"),
+    # "drive business value" / "drive real impact" — drop hedge.
+    (r"\bdrive\s+business\s+value\b", "drive outcomes"),
+    (r"\bdrive\s+real\s+impact\b", "drive outcomes"),
+    # "valuable asset to your team" — generic filler, drop.
+    (r"\bvaluable\s+asset\s+to\s+your\s+team\b", "useful contributor"),
+    # "make(s) me a strong fit for this role" — replace the full predicate
+    # so we don't leave an orphan "make me." fragment behind.
+    (r"\bmake(?:s)?\s+(?:me|him|her)\s+(?:a\s+)?strong\s+fit\s+for\s+this\s+role\b",
+     "match this role well"),
+    # Bare "strong fit for this role" — drop the tail; nearby grammar
+    # usually carries it (". A strong fit..." → ".").
+    (r"[,]?\s*(?:a\s+)?strong\s+fit\s+for\s+this\s+role\b", ""),
+    # "I believe I would be a great fit" — drop entirely.
+    (r"\bi\s+believe\s+i\s+would\s+be\s+(?:a\s+)?great\s+fit\b", ""),
+    # "passionate team player" — drop.
+    (r"\bpassionate\s+team\s+player\b", "team contributor"),
+    # "results-driven" — drop hyphenated adjective.
+    (r"\bresults[-\s]driven[,]?\s+", ""),
+    # "synergy" — drop (no good fix; the surrounding sentence usually
+    # works without it).
+    (r"\bsynergy\b", "alignment"),
+    # "I have always dreamed of" — drop the whole hedge.
+    (r"\bi\s+have\s+always\s+dreamed\s+of\s+", ""),
+)
+
+
+def _strip_banned_phrases(body: str) -> tuple:
+    """
+    Deterministic post-pass. Returns (cleaned_body, list_of_phrases_stripped).
+    Empty list = no changes made.
+    """
+    if not body:
+        return body, []
+
+    out = body
+    stripped: List[str] = []
+    for pattern_str, replacement in _BANNED_PHRASE_REPLACEMENTS:
+        rx = re.compile(pattern_str, re.IGNORECASE)
+        new_out, n = rx.subn(replacement, out)
+        if n > 0:
+            stripped.append(pattern_str)
+            out = new_out
+
+    # Cleanup: collapse double spaces and orphan punctuation introduced
+    # by the deletions.
+    out = re.sub(r"  +", " ", out)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)
+    out = re.sub(r"\(\s+", "(", out)
+    out = re.sub(r"\s+\)", ")", out)
+    # Capitalise the first letter of each sentence (some replacements
+    # leave a lowercase word at the start of a sentence).
+    def _cap(m):
+        return m.group(1) + m.group(2).upper()
+    out = re.sub(r"(^|[.!?]\s+)([a-z])", _cap, out)
+
+    return out.strip(), stripped
+
+
+# ─────────────────────────────────────────────────────────────
+# May 1: render strategist output for the cover letter prompt.
+#
+# The cover letter consumes a tight subset of the strategist's JSON:
+#   • narrative_angle            — must reinforce in the letter's framing
+#   • cover_letter_hook.pattern  — one of industry_observation /
+#                                   role_insight / concrete_achievement
+#   • cover_letter_hook.opening_topic — first-sentence framing (no
+#                                   candidate self-reference)
+#   • do_not_inject              — JD-only terms the CV doesn't have
+#                                   (microservices, cloud, etc.); the
+#                                   letter MUST NOT mention these.
+#
+# The render is plain text injected before the JD/CV blocks so the
+# directives sit close to the structural rules (paragraph layout,
+# banned phrases). Returns "" when there's no strategy so legacy
+# callers see the unchanged prompt.
+# ─────────────────────────────────────────────────────────────
+
+def _render_strategy_for_cover_letter(strategy: Dict[str, Any]) -> str:
+    if not strategy or strategy.get("_source") == "empty":
+        return ""
+
+    lines: List[str] = []
+    lines.append("═══════════════════════════════════════════════════════════════════════")
+    lines.append("STRATEGY (BINDING — the CV tailoring used this same strategy):")
+    lines.append("═══════════════════════════════════════════════════════════════════════")
+
+    angle = (strategy.get("narrative_angle") or "").strip()
+    if angle:
+        lines.append(f"\nNARRATIVE ANGLE: {angle}")
+        lines.append(
+            "The cover letter must reinforce this same angle — same story,"
+            " told in prose. The CV bullets and the letter must agree."
+        )
+
+    hook = strategy.get("cover_letter_hook") or {}
+    pattern = (hook.get("pattern") or "").strip().lower()
+    topic   = (hook.get("opening_topic") or "").strip()
+    if pattern:
+        pattern_label = {
+            "industry_observation":  "PATTERN A — INDUSTRY OBSERVATION",
+            "role_insight":          "PATTERN B — ROLE INSIGHT",
+            "concrete_achievement":  "PATTERN C — CONCRETE ACHIEVEMENT",
+        }.get(pattern, f"PATTERN: {pattern}")
+        lines.append(f"\nHOOK PATTERN: {pattern_label}")
+        if topic:
+            lines.append(f'OPENING TOPIC for sentence 1: "{topic}"')
+        lines.append(
+            "Use this exact pattern. Do NOT improvise a different opening."
+        )
+
+    dni = strategy.get("do_not_inject") or []
+    if dni:
+        lines.append("\nDO NOT MENTION (JD terms not in the CV — fabrication):")
+        lines.append(f"  {dni}")
+        lines.append(
+            "The letter is rejected if any of these terms appear in it."
+        )
+
+    return "\n".join(lines)
+
+
 def _foreign_terms_in_letter(body: str, cv_text: str, company: str, job_title: str) -> list:
     """
     Find capitalized/acronym tokens in `body` that are NOT present in the CV
@@ -468,7 +699,16 @@ def generate_cover_letter(
     company:         str = "",
     candidate_name:  str = "",
     retries:         int = 3,
+    strategy:        Optional[Dict[str, Any]] = None,
 ) -> str:
+    """
+    `strategy` is the optional output of agents.tailor_strategist (same dict
+    shape used by cv_diff_tailor). When provided, the narrative_angle and
+    cover_letter_hook fields are rendered into the prompt as binding
+    guidance — the letter must use the strategy's hook pattern and reinforce
+    the same angle as the tailored CV. When omitted, the letter falls back
+    to deciding its own opening and angle (legacy behaviour).
+    """
     from agents.runtime       import track_llm_call, handle_rate_limit, BudgetExceeded
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
     from agents.llm_client    import chat_gemini, chat_quality, last_llm_source
@@ -477,6 +717,11 @@ def generate_cover_letter(
     cv_wrapped = wrap_untrusted_block(cv_text,         label="CANDIDATE_CV")
     preamble   = untrusted_block_preamble(["JOB_DESCRIPTION", "CANDIDATE_CV"])
 
+    # Render the strategist's narrative_angle + hook directives into a
+    # short directive block. Empty string when no strategy was supplied
+    # so legacy behaviour is preserved.
+    strategy_block = _render_strategy_for_cover_letter(strategy or {})
+
     prompt = COVER_LETTER_PROMPT.format(
         cv_text         = cv_wrapped,
         job_description = jd_wrapped,
@@ -484,6 +729,7 @@ def generate_cover_letter(
         company         = company,
         candidate_name  = candidate_name,
         safety_preamble = preamble,
+        strategy_block  = strategy_block,
     )
 
     token_budgets = [900, 1200, 1500]
@@ -550,42 +796,33 @@ def generate_cover_letter(
                 # Last attempt still fabricated — fall through to placeholder.
                 break
 
-            # ── Banned-phrase guard ───────────────────────────
-            # May 1: deterministic check for templated tells the LLM
-            # ignores in the prompt rules ("I'm confident", "I'm excited",
-            # "In my first 90 days", "look forward to discussing", etc.).
-            # See _BANNED_COVER_LETTER_PHRASES for the list. We only
-            # trigger ONE retry on this — running multiple retries would
-            # explode the cover-letter token cost without much extra
-            # quality. If the retry still has filler, ship it (the
-            # alternative is a placeholder, which is worse).
-            banned = _banned_phrases_in_letter(raw)
-            if banned and attempt < retries - 1:
+            # ── Deterministic banned-phrase strip ─────────────
+            # May 1: replaced the previous "retry loop on banned phrases"
+            # with a deterministic post-pass. The retry loop was burning
+            # ~3,500 tokens per letter swapping one templated tell for
+            # another (Run 3 + Harvey-Nash test both showed this). The
+            # strip removes the hedges/filler in-place and leaves the
+            # surrounding sentence intact — same readable letter, no
+            # extra LLM calls.
+            cleaned_raw, stripped_phrases = _strip_banned_phrases(raw)
+            if stripped_phrases:
                 print(
-                    f"   ⚠️  Cover letter used banned filler phrases "
-                    f"{banned[:5]!r} on attempt {attempt + 1} — retrying "
-                    f"with stricter directive"
+                    f"   🧹 Cover letter: stripped {len(stripped_phrases)} "
+                    f"banned filler pattern(s) deterministically "
+                    f"(no extra LLM call)."
                 )
-                prompt = (
-                    prompt
-                    + f"\n\nRETRY NOTE — DO NOT REPEAT THIS MISTAKE: "
-                      f"Your previous draft contained the templated tells "
-                      f"{', '.join(repr(p) for p in banned)}. Rewrite the "
-                      f"letter without ANY of those phrases. Replace each "
-                      f"with a CONCRETE statement grounded in either the "
-                      f"CV or the JD. The reader can tell when a letter is "
-                      f"templated — these are the exact tells that give it "
-                      f"away. Returning a draft that still contains any "
-                      f"of these phrases will be rejected."
-                )
-                time.sleep(2)
-                continue
-            elif banned:
-                # Last attempt still has filler — log and ship rather than
-                # discard the letter (placeholder fallback is worse).
+                raw = cleaned_raw
+
+            # Re-check after the strip — rare, but a phrase from the
+            # banned list might not be covered by the replacement table.
+            # Log and ship; the letter is still better than the LLM's
+            # raw output.
+            residual_banned = _banned_phrases_in_letter(raw)
+            if residual_banned:
                 print(
-                    f"   ⚠️  Cover letter shipping with banned filler "
-                    f"{banned[:3]!r} (retries exhausted)"
+                    f"   ⚠️  Cover letter has residual banned phrases "
+                    f"{residual_banned[:3]!r} not in the replacement table — "
+                    f"shipping anyway (these are minor)."
                 )
 
             # Apr 28 follow-up: log which LLM produced the kept output.

@@ -160,28 +160,40 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
 # Prompt template (unchanged)
 # ─────────────────────────────────────────────────────────────
 
-_PROMPT_TEMPLATE = """You are a CV editor preparing a tailored application for a SPECIFIC role.
+_PROMPT_TEMPLATE = """You are an EXECUTOR. A senior career strategist has already analysed
+the CV and the JD and produced a binding STRATEGY (below). Your job is
+to faithfully execute that strategy as a CV diff. You do NOT improvise
+a different strategy.
 
 You must output a JSON object (no prose, no markdown) that describes edits.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 YOUR THINKING PROCESS (critical — do this BEFORE writing JSON):
 
-1. READ the job description. Identify 3-5 concrete skills, tools, or
-   responsibilities the JD emphasises most.
-2. SCAN the candidate's CV. For each role, mentally mark every bullet as
-   HIGHLY / PARTIALLY / TANGENTIALLY relevant to those JD emphases.
-3. DECIDE your rewrite plan: which bullets will you rewrite, and what
-   JD-language angle will each take? You should be planning to rewrite
-   ~50-70% of HIGHLY relevant roles' bullets, ~30% of PARTIALLY, and at
-   least one from each TANGENTIAL role.
-4. DRAFT each rewrite in your head, leading with a JD verb, keeping
-   every number/proper-noun from the original intact.
-5. ONLY NOW, format your rewrite plan into the JSON schema at the bottom.
+1. READ the STRATEGY block. Note the narrative angle, the per-bullet
+   action plan, and the do_not_inject list.
+2. For the SUMMARY: open with the title the strategy says to lead with;
+   weave in the must_include_phrases (which are already in the CV);
+   keep every credential (grade, YoE, employer, university) intact.
+3. For each bullet listed in the STRATEGY:
+     • action=rewrite_verb_led → open with the target_verb_phrase the
+       strategy gave you. Move the strategy's target_keywords to the
+       front of the sentence. Keep every number and proper noun from
+       the original verbatim. Do NOT just append the keywords — reshape
+       the bullet so JD vocabulary leads.
+     • action=promote → keep the original text (text=null) but place
+       this bullet earlier in the role's array.
+     • action=deprioritise → keep verbatim (text=null), place last.
+4. For bullets NOT in the strategy: keep verbatim (text=null) in their
+   original order. Do NOT improvise extra rewrites.
+5. CHECK every rewrite against the do_not_inject list. If a rewrite
+   contains any of those terms, scrub them — those terms are not in
+   the CV and a guard will REJECT the rewrite if they appear.
+6. ONLY NOW, format your rewrite plan into the JSON schema at the bottom.
 
-If you skip straight to JSON without doing steps 1-4 mentally, you will
-produce a diff with 0-2 rewrites and fail the user. The JSON schema is
-the LAST thing you think about, not the first.
+If you skip straight to JSON or invent rewrites the strategy did not
+authorise, the deterministic guards will revert your output to the
+original and the user gets an un-tailored CV.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {safety_preamble}
@@ -197,6 +209,10 @@ COMPANY    : {company}
 
 CV CONTENT (structured):
 {outline}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{strategy_block}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -326,20 +342,18 @@ RULES (strict):
    ║            ↑ 600K+ and 30% both verbatim → ACCEPTED                ║
    ╚════════════════════════════════════════════════════════════════════╝
 
-   Mandatory rewrite targets (per role):
-     • HIGHLY RELEVANT role (job title, domain, or core tech match): rewrite
-       **at least 50% of bullets, ideally 60-70%**. Lead every rewrite with
-       JD keywords and verbs.
-     • PARTIALLY RELEVANT role (adjacent domain, transferable skills):
-       rewrite **at least 30% of bullets** — focus on the bullets whose
-       underlying skill matches the JD.
-     • TANGENTIAL role (different domain/industry, but same seniority or
-       soft skills): rewrite **at least 1 bullet** to reframe the
-       transferable skill using JD language.
+   Rewrite plan source of truth:
+     • If the STRATEGY block above provides a per-bullet action plan,
+       follow it EXACTLY. Each bullet listed there is your only target.
+       Do NOT add rewrites the strategy did not authorise.
+     • If the STRATEGY block is empty (fallback mode), use the legacy
+       floors below:
+         - HIGHLY RELEVANT role: rewrite at least 50% of bullets.
+         - PARTIALLY RELEVANT role: rewrite at least 30% of bullets.
+         - TANGENTIAL role: rewrite at least 1 bullet.
 
-   You may REORDER freely — place the most job-relevant bullets first.
-   You may REWRITE more than the minimums above; more is almost always
-   better, provided the MUST NOT rules below are respected.
+   You may REORDER freely — place the most job-relevant bullets first
+   (the strategy's promote / deprioritise actions tell you the order).
 
    You MUST NOT:
    - DROP / OMIT any bullet. Every original bullet MUST appear in your output exactly once.
@@ -942,6 +956,102 @@ def _check_cross_role_contamination(
     return None
 
 
+# ─────────────────────────────────────────────────────────────
+# May 1: do_not_inject guard.
+#
+# Sourced from the strategist's `do_not_inject` list (JD-only terms that
+# do NOT appear in the CV). The strategist explicitly classifies these
+# during gap analysis. If a bullet rewrite mentions any of them, the
+# rewrite is fabricating a skill/tool/domain the candidate doesn't have.
+#
+# Match policy: case-insensitive whole-word substring. We test the
+# rewrite against the term (e.g. "microservices", "UAT", "decisioning")
+# and reject if the term appears in the rewrite but did NOT appear in
+# the original bullet (a term legitimately in the original is not a
+# new injection — it's pre-existing CV content).
+# ─────────────────────────────────────────────────────────────
+def _check_do_not_inject(
+    rewrite:      str,
+    original:     str,
+    do_not_inject: List[str],
+) -> Optional[str]:
+    """Returns the offending term, or None when the rewrite is clean."""
+    if not rewrite or not do_not_inject:
+        return None
+    new_l  = " " + (rewrite or "").lower() + " "
+    orig_l = " " + (original or "").lower() + " "
+    for raw_term in do_not_inject:
+        term = (raw_term or "").strip().lower()
+        if not term or len(term) < 3:
+            continue
+        # Whole-word-ish match: pad with spaces / punctuation boundaries.
+        # The simple substring is acceptable here — these terms are
+        # multi-character technical phrases, not common substrings.
+        if term in new_l and term not in orig_l:
+            return raw_term
+    return None
+
+
+# ─────────────────────────────────────────────────────────────
+# May 1: banned filler-suffix guard for CV bullets.
+#
+# Run 3 showed the LLM repeatedly suffixing CV bullets with corporate-
+# filler phrases ("ensuring transparency and managing risks", "and
+# driving business value delivery", "while championing innovation and
+# exploring emerging technologies"). These add zero information and
+# are tells of templated writing. They appear in the JD vocabulary but
+# tacking them onto bullets that don't have these as outcomes is
+# meaningless padding.
+#
+# Rule: a bullet rewrite that ENDS with one of these phrases AND the
+# original did not contain it gets reverted to the original. This
+# stops the suffix-graft pattern at the source.
+# ─────────────────────────────────────────────────────────────
+_CV_BULLET_BANNED_SUFFIXES: tuple = (
+    "ensuring transparency and managing risks",
+    "ensuring transparency",
+    "managing risks",
+    "and driving business value delivery",
+    "drive business value delivery",
+    "driving business value",
+    "drive business value",
+    "while championing innovation",
+    "championing innovation",
+    "exploring emerging technologies and strategic opportunities",
+    "and strategic opportunities",
+    "with a strong analytical skillset",
+    "and attention to detail",
+    "driving ambiguity to outcomes",
+    "drive ambiguity to outcomes",
+    "driving business outcomes through data-driven insights",
+    "and driving business outcomes",
+    "drive business outcomes",
+    "ensuring high-quality product delivery",
+    "and improving delivery efficiency",
+    "and informing product strategy",
+)
+
+
+def _check_banned_suffix_in_bullet(
+    rewrite:  str,
+    original: str,
+) -> Optional[str]:
+    """
+    Returns the offending banned suffix if the rewrite contains corporate
+    filler that the original did not. Returns None when the rewrite is
+    clean. Match is case-insensitive substring (these are long phrases,
+    so substring is reliable).
+    """
+    if not rewrite:
+        return None
+    new_l  = (rewrite or "").lower()
+    orig_l = (original or "").lower()
+    for phrase in _CV_BULLET_BANNED_SUFFIXES:
+        if phrase in new_l and phrase not in orig_l:
+            return phrase
+    return None
+
+
 def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int] = None) -> tuple:
     """
     Guardrail: reject rewrites that look like fabrications or truncations.
@@ -975,10 +1085,11 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
 
 
 def _normalise_bullet_list(
-    order_raw:   Any,
-    n_bullets:   int,
-    orig_texts:  List[Any],
-    section:     str = "experience",
+    order_raw:     Any,
+    n_bullets:     int,
+    orig_texts:    List[Any],
+    section:       str = "experience",
+    do_not_inject: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Accept either:
@@ -1078,6 +1189,36 @@ def _normalise_bullet_list(
                             "rewrite_preview": text[:120],
                         })
                         text = None
+                    else:
+                        # do_not_inject — strategist-classified JD-only terms.
+                        dni = _check_do_not_inject(text, orig_text, do_not_inject or [])
+                        if dni:
+                            print(
+                                f"   ⚠️  rewrite rejected (bullet {idx}, "
+                                f"do_not_inject term {dni!r} — JD-only, "
+                                f"not in CV): {text[:80]!r} — reverting"
+                            )
+                            _LAST_BULLET_REVERTS.append({
+                                "bullet_index": idx,
+                                "reason": f"do_not_inject:{dni}",
+                                "rewrite_preview": text[:120],
+                            })
+                            text = None
+                        else:
+                            # Banned filler-suffix guard.
+                            bs = _check_banned_suffix_in_bullet(text, orig_text)
+                            if bs:
+                                print(
+                                    f"   ⚠️  rewrite rejected (bullet {idx}, "
+                                    f"banned filler suffix {bs!r}): "
+                                    f"{text[:80]!r} — reverting"
+                                )
+                                _LAST_BULLET_REVERTS.append({
+                                    "bullet_index": idx,
+                                    "reason": f"banned_suffix:{bs}",
+                                    "rewrite_preview": text[:120],
+                                })
+                                text = None
         normalised.append({"i": idx, "text": text})
         seen.add(idx)
 
@@ -1091,7 +1232,11 @@ def _normalise_bullet_list(
     return normalised
 
 
-def _sanitise_diff(raw: Dict[str, Any], outline: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitise_diff(
+    raw:           Dict[str, Any],
+    outline:       Dict[str, Any],
+    do_not_inject: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """
     Validate and repair the LLM output against the real outline.
     - bullets dict keys matched tolerantly against real role headers.
@@ -1129,7 +1274,11 @@ def _sanitise_diff(raw: Dict[str, Any], outline: Dict[str, Any]) -> Dict[str, An
             orig_texts = role.get("bullets") or []
             n = len(orig_texts)
             section = (role.get("section") or "experience").strip().lower()
-            normalised = _normalise_bullet_list(order, n, orig_texts, section=section)
+            normalised = _normalise_bullet_list(
+                order, n, orig_texts,
+                section=section,
+                do_not_inject=do_not_inject,
+            )
             if not normalised:
                 continue
             # Suppress trivial "same order, no rewrites" outputs.
@@ -1246,6 +1395,7 @@ def tailor_cv_diff(
     feedback:        str = "",
     previous_diff:   Optional[Dict[str, Any]] = None,
     outline:         Optional[Dict[str, Any]] = None,
+    strategy:        Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Produce a validated structured diff for the CV at `cv_pdf_path` targeting
@@ -1255,6 +1405,11 @@ def tailor_cv_diff(
       feedback      : reviewer's short actionable feedback string
       previous_diff : the diff the tailor produced on the previous attempt
       outline       : precomputed outline (to avoid re-parsing the PDF on retry)
+      strategy      : optional strategist output (see agents.tailor_strategist).
+                      When provided, the tailor executes its per-bullet action
+                      plan instead of inventing one. When omitted, the tailor
+                      falls back to the legacy "rewrite N% of relevant bullets"
+                      heuristic.
     """
     if outline is None:
         outline = build_outline(cv_pdf_path)
@@ -1264,6 +1419,16 @@ def tailor_cv_diff(
 
     orig_summary = (outline.get("summary") or "").strip()
     orig_words   = len(orig_summary.split()) if orig_summary else 0
+
+    # Render the strategy block once (empty string when no strategy was
+    # provided OR the strategist returned an empty payload). The tailor
+    # prompt template requires a {strategy_block} substitution either way.
+    try:
+        from agents.tailor_strategist import render_strategy_for_tailor
+        strategy_block_str = render_strategy_for_tailor(strategy or {})
+    except Exception as e:
+        print(f"   ⚠️  cv_diff_tailor: strategy render failed ({e}) — falling back to no-strategy mode")
+        strategy_block_str = ""
 
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
 
@@ -1278,15 +1443,21 @@ def tailor_cv_diff(
             company               = company   or "(unspecified)",
             job_description_block = jd_block,
             outline               = _format_outline_for_prompt(outline),
+            strategy_block        = strategy_block_str or "(no strategy provided — use the legacy fallback floors in the RULES section below)",
         )
         p += "\n\n" + _build_feedback_addendum(feedback, previous_diff)
         if extra:
             p += "\n\n" + extra
         return p
 
+    # Surface the strategist's do_not_inject list so every bullet rewrite
+    # gets checked against JD-only terms (microservices / cloud / UAT etc.
+    # when those words don't appear in the CV).
+    strategy_dni: List[str] = list((strategy or {}).get("do_not_inject") or [])
+
     raw_text = _call_llm(_render_prompt())
     raw_json = _extract_json(raw_text)
-    diff     = _sanitise_diff(raw_json, outline)
+    diff     = _sanitise_diff(raw_json, outline, do_not_inject=strategy_dni)
 
     # ── Summary fabrication guard ────────────────────────────────────
     # Reject summaries that introduce proper nouns / skill terms absent
@@ -1379,7 +1550,7 @@ def tailor_cv_diff(
         )
         raw_text2 = _call_llm(_render_prompt(extra=enforce))
         raw_json2 = _extract_json(raw_text2)
-        diff2     = _sanitise_diff(raw_json2, outline)
+        diff2     = _sanitise_diff(raw_json2, outline, do_not_inject=strategy_dni)
         new_sum2  = (diff2.get("summary") or "").strip()
         if new_sum2 and len(new_sum2.split()) >= int(orig_words * _SUMMARY_MIN_RATIO):
             # May 1 fix: re-run the credential-preservation guard on the
@@ -1473,7 +1644,7 @@ def tailor_cv_diff(
             )
             raw_text_rr = _call_llm(_render_prompt(extra=enforce_rewrites))
             raw_json_rr = _extract_json(raw_text_rr)
-            diff_rr     = _sanitise_diff(raw_json_rr, outline)
+            diff_rr     = _sanitise_diff(raw_json_rr, outline, do_not_inject=strategy_dni)
             n_rewrites_rr, n_dropped_rr = _count_diff_edits(diff_rr)
             if n_rewrites_rr > 0:
                 # Preserve the BETTER summary — we forced this retry to fix
