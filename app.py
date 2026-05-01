@@ -1447,7 +1447,8 @@ def _render_match_card(job: Dict[str, Any]) -> None:
 
         cv_pdf = job.get("cv_pdf_path")
         cl_pdf = job.get("cover_letter_path")
-        safe_id = f"{company}_{title}".replace(" ", "_").replace("/", "-")[:60]
+        url_j = job.get("url") or job.get("title", "")
+        safe_id = f"{company}_{title}_{abs(hash(url_j)) % (10**6)}".replace(" ", "_").replace("/", "-")[:80]
 
         if cv_pdf and os.path.exists(cv_pdf):
             with open(cv_pdf, "rb") as f:
