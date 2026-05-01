@@ -185,7 +185,7 @@ First run downloads the MiniLM-L6 embedder (~80 MB) into
 
 | Variable | Purpose |
 |---|---|
-| `GROQ_API_KEY` | Fast LLM tasks (matcher, planner, reviewers, supervisor). Optional companions `GROQ_API_KEY_2`, `GROQ_API_KEY_3` enable auto-rotation |
+| `GROQ_API_KEY` | Fast LLM tasks (matcher, planner, reviewers, supervisor). Optional companions `GROQ_API_KEY_2`, `GROQ_API_KEY_3`, `GROQ_API_KEY_4` enable auto-rotation |
 | `GEMINI_API_KEY` | Writing tasks (CV tailoring, cover letters) — get one at https://aistudio.google.com/app/apikey. Optional companions `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3` enable auto-rotation |
 | `EMAIL_ADDRESS` | Gmail account used as sender for SMTP delivery |
 | `EMAIL_APP_PASSWORD` | Gmail App Password (16-char; generate at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), requires 2FA) |

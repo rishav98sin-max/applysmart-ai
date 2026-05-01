@@ -173,7 +173,7 @@ def _load_groq_keys() -> list:
     """Load all available Groq keys from env at startup."""
     from agents.runtime import secret_or_env
     keys = []
-    for var in ("GROQ_API_KEY", "GROQ_API_KEY_2", "GROQ_API_KEY_3"):
+    for var in ("GROQ_API_KEY", "GROQ_API_KEY_2", "GROQ_API_KEY_3", "GROQ_API_KEY_4"):
         k = secret_or_env(var)
         if k and k.startswith("gsk_") and k not in keys:
             keys.append(k)
