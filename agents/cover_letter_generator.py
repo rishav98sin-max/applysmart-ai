@@ -186,9 +186,28 @@ STRICT RULES (each is a critical failure if broken)
   "innovative", "industry-leading", "world-class", "trusted", "sustainable",
   "cutting-edge", or "dynamic" UNLESS that exact word appears in the JOB
   DESCRIPTION block below. Stick to facts the JD actually states.
-- Banned phrases anywhere: "passionate team player", "I believe I would
-  be a great fit", "results-driven", "synergy", "I have always dreamed
-  of", "fast-paced", "I look forward to hearing from you".
+- Banned phrases anywhere (these are templated tells — do NOT use them
+  in any sentence, opening or closing):
+    "passionate team player", "I believe I would be a great fit",
+    "results-driven", "synergy", "I have always dreamed of",
+    "fast-paced", "I look forward to hearing from you",
+    "I look forward to discussing", "I look forward to exploring",
+    "I'm confident that", "I am confident that",
+    "I'm excited about", "I am excited about", "I am thrilled",
+    "In my first 90 days", "In the first 90 days",
+    "available to start immediately", "I'm available to start",
+    "make a meaningful impact", "make a real difference",
+    "my passion for", "shares my passion",
+    "deliver high-impact", "deliver measurable value",
+    "drive business value", "drive real impact",
+    "valuable asset to your team", "strong fit for this role".
+  These phrases add zero information and read as filler. Replace any
+  intent behind them with a CONCRETE statement: instead of "I am
+  excited about the opportunity to work with X" write "X's [specific
+  thing from JD] is the most direct fit for my [specific CV fact]".
+  Instead of "In my first 90 days I would prioritise..." write "The
+  first useful thing I could do here is..." referencing one real fact
+  from the JD or CV.
 
 ═══════════════════════════════════════════════════════════════════════
 HARD FABRICATION BAN (ZERO TOLERANCE)
@@ -302,6 +321,70 @@ _CL_STOPWORDS = {
     "Dear", "Hiring", "Manager", "Regards", "Sincerely",
     "MSc", "BSc", "MBA", "PhD", "BA", "MA",
 }
+
+
+# ─────────────────────────────────────────────────────────────
+# May 1: deterministic banned-phrase post-validator.
+#
+# Background: yesterday's run (LangFuseLogsRun2) showed all 3 cover
+# letters using "I'm confident", "I'm excited", "In my first 90 days",
+# "I look forward to discussing" — every one of these is in the prompt's
+# banned list, but the LLM ignored them. The prompt's "do not say X"
+# instructions are ~70% effective; deterministic post-checks plug the
+# remaining 30%.
+#
+# Rule: if the produced letter contains any of the templated tells
+# below (case-insensitive substring match), trigger one retry with a
+# directive listing the SPECIFIC phrases the LLM used. After the retry,
+# ship whatever we have (don't loop indefinitely — total cover-letter
+# token budget is bounded).
+#
+# NOTE: "willing to relocate" is INTENTIONALLY OMITTED per user's
+# instruction (May 1) — they may legitimately want to express relocation
+# willingness when applying to non-Ireland roles. Only the corporate-
+# filler tells get blocked.
+# ─────────────────────────────────────────────────────────────
+_BANNED_COVER_LETTER_PHRASES: tuple = (
+    "passionate team player",
+    "i believe i would be a great fit",
+    "results-driven",
+    "synergy",
+    "i have always dreamed",
+    "fast-paced",
+    "i look forward to hearing from you",
+    "i look forward to discussing",
+    "i look forward to exploring",
+    "i'm confident that",
+    "i am confident that",
+    "i'm excited about",
+    "i am excited about",
+    "i am thrilled",
+    "in my first 90 days",
+    "in the first 90 days",
+    "available to start immediately",
+    "i'm available to start",
+    "make a meaningful impact",
+    "make a real difference",
+    "my passion for",
+    "shares my passion",
+    "deliver high-impact",
+    "deliver measurable value",
+    "drive business value",
+    "drive real impact",
+    "valuable asset to your team",
+    "strong fit for this role",
+)
+
+
+def _banned_phrases_in_letter(body: str) -> list:
+    """
+    Returns the list of templated tells found in the cover letter body
+    (case-insensitive). Empty list = clean letter.
+    """
+    if not body:
+        return []
+    body_l = body.lower()
+    return [p for p in _BANNED_COVER_LETTER_PHRASES if p in body_l]
 
 
 def _foreign_terms_in_letter(body: str, cv_text: str, company: str, job_title: str) -> list:
@@ -466,6 +549,44 @@ def generate_cover_letter(
                     continue
                 # Last attempt still fabricated — fall through to placeholder.
                 break
+
+            # ── Banned-phrase guard ───────────────────────────
+            # May 1: deterministic check for templated tells the LLM
+            # ignores in the prompt rules ("I'm confident", "I'm excited",
+            # "In my first 90 days", "look forward to discussing", etc.).
+            # See _BANNED_COVER_LETTER_PHRASES for the list. We only
+            # trigger ONE retry on this — running multiple retries would
+            # explode the cover-letter token cost without much extra
+            # quality. If the retry still has filler, ship it (the
+            # alternative is a placeholder, which is worse).
+            banned = _banned_phrases_in_letter(raw)
+            if banned and attempt < retries - 1:
+                print(
+                    f"   ⚠️  Cover letter used banned filler phrases "
+                    f"{banned[:5]!r} on attempt {attempt + 1} — retrying "
+                    f"with stricter directive"
+                )
+                prompt = (
+                    prompt
+                    + f"\n\nRETRY NOTE — DO NOT REPEAT THIS MISTAKE: "
+                      f"Your previous draft contained the templated tells "
+                      f"{', '.join(repr(p) for p in banned)}. Rewrite the "
+                      f"letter without ANY of those phrases. Replace each "
+                      f"with a CONCRETE statement grounded in either the "
+                      f"CV or the JD. The reader can tell when a letter is "
+                      f"templated — these are the exact tells that give it "
+                      f"away. Returning a draft that still contains any "
+                      f"of these phrases will be rejected."
+                )
+                time.sleep(2)
+                continue
+            elif banned:
+                # Last attempt still has filler — log and ship rather than
+                # discard the letter (placeholder fallback is worse).
+                print(
+                    f"   ⚠️  Cover letter shipping with banned filler "
+                    f"{banned[:3]!r} (retries exhausted)"
+                )
 
             # Apr 28 follow-up: log which LLM produced the kept output.
             # Helps diagnose "is Gemini ever actually used?" without combing

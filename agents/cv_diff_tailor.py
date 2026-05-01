@@ -781,6 +781,167 @@ class _BulletRevertsProxy:
 _LAST_BULLET_REVERTS = _BulletRevertsProxy()
 
 
+# ─────────────────────────────────────────────────────────────
+# May 1: deterministic Personal-Projects fabrication guard.
+#
+# Background: yesterday I added an "PERSONAL-PROJECT FABRICATIONS = HARD
+# CAP AT 50" rule to the reviewer prompt. Production showed the LLM
+# ignoring it (Harvey Nash CV had `Partnered with engineering teams` on a
+# solo project, reviewer scored 85/accept). LLM-judged enforcement of
+# hard rules is unreliable; switching to a deterministic post-check.
+#
+# Trigger condition (all must hold):
+#   - The role's section is "projects"
+#   - The phrase appears in the REWRITE
+#   - The phrase does NOT appear in the ORIGINAL bullet
+#
+# A solo personal-project bullet that introduces "team", "stakeholders",
+# "the organisation", "platform teams", "partnered with engineering",
+# "primary liaison", "managed escalations", etc. is FABRICATING
+# collaborators that don't exist. Revert the rewrite to original.
+#
+# Phrases that CAN legitimately appear in a project bullet (and so are
+# NOT banned) include "team" inside "team of three" patterns where the
+# original already established it. The conditional check (original
+# already has it) handles this correctly.
+# ─────────────────────────────────────────────────────────────
+_PROJECT_FABRICATION_PHRASES: tuple = (
+    "partnered with engineering",
+    "partnered with design",
+    "partnered with product",
+    "partnered with business",
+    "partnered with the",
+    "engineering teams",
+    "business teams",
+    "platform teams",
+    "design teams",
+    "product teams",
+    "cross-functional teams",
+    "cross-functional team",
+    "cross functional teams",
+    "across teams",
+    "across the org",
+    "across the organisation",
+    "across the organization",
+    "the organisation",
+    "the organization",
+    "company-wide",
+    "company wide",
+    "primary liaison",
+    "managed escalations",
+    "managed expectations of",
+    "stakeholder alignment",
+    "stakeholder management",
+    "drove alignment across",
+    "aligned stakeholders",
+    "managing stakeholders",
+)
+
+
+def _check_solo_project_fabrication(
+    original: str,
+    rewrite:  str,
+    section:  str,
+) -> Optional[str]:
+    """
+    Returns the offending phrase if a solo-project rewrite introduces a
+    team/stakeholder/organisation framing that the original lacks.
+    Returns None when the rewrite is clean.
+
+    Only fires when section == "projects" — the same phrases on an
+    Experience role are legitimate (you DO partner with engineering teams
+    at IBM). The original-bullet check ensures we don't revert if the
+    candidate's own project description already mentions collaborators.
+    """
+    sec = (section or "").strip().lower()
+    if sec != "projects":
+        return None
+    orig_l = (original or "").lower()
+    new_l  = (rewrite or "").lower()
+    for phrase in _PROJECT_FABRICATION_PHRASES:
+        if phrase in new_l and phrase not in orig_l:
+            return phrase
+    return None
+
+
+# ─────────────────────────────────────────────────────────────
+# May 1: cross-bullet contamination guard.
+#
+# The LLM occasionally rewrites bullet A's content using facts (numbers,
+# specific platforms) that live in bullet B's original. The number-token
+# guard (_rewrite_is_safe) only checks "does this rewrite preserve the
+# numbers in THIS bullet's original?" — it has no view of OTHER bullets
+# in the same role, so contamination passes.
+#
+# Run-2 example (Harvey Nash IBM section):
+#   Original bullet 0: "Drove 5% user growth and 15% retention... 5-7%"
+#   Original bullet 1: "Authored... 600K+ user platform... 30% latency"
+#   Rewrite of bullet 0: "...5% user growth and 15%... 5-7%, AND
+#                         authored product artifacts for a 600K+ user
+#                         platform, reducing system latency by 30%"
+# The rewrite passes _rewrite_is_safe (5%, 15%, 5-7% all preserved) but
+# duplicates bullet 1's facts. Recruiters see "30% latency reduction"
+# twice in adjacent bullets → looks sloppy.
+#
+# Detection: numeric tokens that appear in the rewrite, are NOT in this
+# bullet's original, but ARE in some OTHER bullet's original. Allowlist
+# years (1900-2099) and small ints (1-9) to avoid false positives on
+# generic counts.
+# ─────────────────────────────────────────────────────────────
+def _is_common_number_token(tok: str) -> bool:
+    """
+    Allowlist for tokens that don't constitute contamination evidence.
+    Years (1900-2099), single digits, and bare 1-2 character integers
+    are too common to attribute to a specific bullet.
+    """
+    t = tok.strip().rstrip("%+").rstrip("k").rstrip("K").rstrip("M")
+    if not t:
+        return True
+    try:
+        n = float(t.replace(",", ""))
+        if 1900 <= n <= 2099:
+            return True
+        if n < 10 and "%" not in tok and "+" not in tok and "K" not in tok.upper() and "M" not in tok.upper():
+            return True
+    except ValueError:
+        pass
+    return False
+
+
+def _check_cross_role_contamination(
+    rewrite:        str,
+    this_original:  str,
+    all_originals:  List[str],
+    this_index:     int,
+) -> Optional[str]:
+    """
+    Returns the offending token if the rewrite contains a numeric token
+    that doesn't appear in this bullet's original but appears in another
+    bullet's original within the same role. Returns None when clean.
+    """
+    rewrite_l = (rewrite or "").lower()
+    this_orig_l = (this_original or "").lower()
+    rewrite_nums = {m.group(0).strip().lower() for m in _NUMBER_RX.finditer(rewrite_l)}
+    this_orig_nums = {m.group(0).strip().lower() for m in _NUMBER_RX.finditer(this_orig_l)}
+    new_nums = rewrite_nums - this_orig_nums
+    if not new_nums:
+        return None
+    # Build set of numeric tokens present in OTHER bullets' originals.
+    other_nums: set = set()
+    for j, other in enumerate(all_originals):
+        if j == this_index:
+            continue
+        other_text = other.get("text") if isinstance(other, dict) else (other or "")
+        for m in _NUMBER_RX.finditer((other_text or "").lower()):
+            other_nums.add(m.group(0).strip().lower())
+    for tok in new_nums:
+        if _is_common_number_token(tok):
+            continue
+        if tok in other_nums:
+            return tok
+    return None
+
+
 def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int] = None) -> tuple:
     """
     Guardrail: reject rewrites that look like fabrications or truncations.
@@ -817,6 +978,7 @@ def _normalise_bullet_list(
     order_raw:   Any,
     n_bullets:   int,
     orig_texts:  List[Any],
+    section:     str = "experience",
 ) -> List[Dict[str, Any]]:
     """
     Accept either:
@@ -884,6 +1046,38 @@ def _normalise_bullet_list(
                     "rewrite_preview": text[:120],
                 })
                 text = None   # fall back to original wording
+            else:
+                # May 1 deterministic guards (run only when length+number
+                # checks already passed; revert wins over rewrite).
+                pf = _check_solo_project_fabrication(orig_text, text, section)
+                if pf:
+                    print(
+                        f"   ⚠️  rewrite rejected (bullet {idx}, "
+                        f"solo-project fabrication '{pf}'): "
+                        f"{text[:80]!r} — reverting to original"
+                    )
+                    _LAST_BULLET_REVERTS.append({
+                        "bullet_index": idx,
+                        "reason": f"solo_project_fabrication:{pf}",
+                        "rewrite_preview": text[:120],
+                    })
+                    text = None
+                else:
+                    cc = _check_cross_role_contamination(
+                        text, orig_text, orig_texts, idx,
+                    )
+                    if cc:
+                        print(
+                            f"   ⚠️  rewrite rejected (bullet {idx}, "
+                            f"cross-bullet contamination token {cc!r}): "
+                            f"{text[:80]!r} — reverting to original"
+                        )
+                        _LAST_BULLET_REVERTS.append({
+                            "bullet_index": idx,
+                            "reason": f"cross_contamination:{cc}",
+                            "rewrite_preview": text[:120],
+                        })
+                        text = None
         normalised.append({"i": idx, "text": text})
         seen.add(idx)
 
@@ -934,7 +1128,8 @@ def _sanitise_diff(raw: Dict[str, Any], outline: Dict[str, Any]) -> Dict[str, An
             role = next(r for r in outline["roles"] if r["header"] == match_key)
             orig_texts = role.get("bullets") or []
             n = len(orig_texts)
-            normalised = _normalise_bullet_list(order, n, orig_texts)
+            section = (role.get("section") or "experience").strip().lower()
+            normalised = _normalise_bullet_list(order, n, orig_texts, section=section)
             if not normalised:
                 continue
             # Suppress trivial "same order, no rewrites" outputs.
@@ -1187,8 +1382,31 @@ def tailor_cv_diff(
         diff2     = _sanitise_diff(raw_json2, outline)
         new_sum2  = (diff2.get("summary") or "").strip()
         if new_sum2 and len(new_sum2.split()) >= int(orig_words * _SUMMARY_MIN_RATIO):
-            diff["summary"] = new_sum2
-            new_words = len(new_sum2.split())
+            # May 1 fix: re-run the credential-preservation guard on the
+            # length-retry summary. Yesterday's run produced a length-retry
+            # rewrite that dropped "(2.1)" because this branch never
+            # consulted _check_credentials_preserved. We now treat a
+            # credential-dropped retry the same as a too-short retry: fall
+            # back to the original summary verbatim. Length floor is a
+            # quality goal; credential preservation is a non-negotiable.
+            missing_creds_retry = _check_credentials_preserved(orig_summary, new_sum2)
+            if missing_creds_retry:
+                flat = ", ".join(
+                    f"{k}={v}" for k, v in missing_creds_retry.items()
+                )
+                print(
+                    f"   ↺  length-retry rewrite dropped credential tokens "
+                    f"({flat}) — reverting to original summary."
+                )
+                diff["_debug"]["summary_reverts"].append({
+                    "reason":  "credentials_dropped_on_retry",
+                    "missing": missing_creds_retry,
+                })
+                diff["summary"] = orig_summary
+                new_words = orig_words
+            else:
+                diff["summary"] = new_sum2
+                new_words = len(new_sum2.split())
         elif orig_summary:
             # Retry still short — revert to original rather than ship a
             # noticeably shortened summary.
