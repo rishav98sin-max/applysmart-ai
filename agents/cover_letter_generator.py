@@ -72,13 +72,17 @@ this is a cover letter. Use ONE of these THREE opening patterns:
     industry, market, or problem-space — the kind of opinion a
     practitioner would have. Sentence 2 transitions to the
     candidate's CV experience as the lived solution.
-    Example shape:
-      "The most effective AI platforms aren't defined by their
-       model sophistication — they're defined by how tightly product
-       strategy, engineering capability, and business value are
-       woven together. Getting that alignment right, consistently,
-       at pace, is where most platform initiatives stall. It's
-       also precisely where I've spent the last four years."
+    Example SHAPE ONLY (adapt to the actual industry — do NOT copy
+    vocabulary from this example if the CV is not in tech):
+      "[One-sentence opinion about this industry's defining tension,
+       drawn from the JD or the sector itself — not a generic platitude.]
+       [Second sentence that sharpens the tension or names where it
+       usually goes wrong.] [Third short sentence landing the
+       candidate's years/specialism as the lived solution.]"
+    The example demonstrates the STRUCTURE (observation → sharpening →
+    candidate-as-solution). A nurse writing to a clinic, a lawyer to
+    a chambers, and a marketer to a brand should all follow the same
+    structure but use their own domain's vocabulary and tensions.
 
   PATTERN B — ROLE-INSIGHT OPENER:
     Open with a sharp insight into what THIS role actually needs to

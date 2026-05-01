@@ -398,18 +398,21 @@ RULES (strict):
 
 4. Output ONLY a JSON object with keys: summary, bullets, skills_order.
 
-EXAMPLE OUTPUT FORMAT:
+EXAMPLE OUTPUT FORMAT (the role headers and text below are placeholders
+to illustrate shape only — the real output must use the EXACT role
+headers from the CV outline above, and every rewrite must preserve the
+numbers / proper nouns from that specific bullet's original):
 {{
   "summary": "…",
   "bullets": {{
-    "IBM India Pvt. Ltd., Technical Product Specialist": [
-      {{"i": 2, "text": "Led 3+ enterprise-scale product initiatives managing stakeholder alignment across engineering, design, and business teams to improve delivery efficiency by 20%"}},
-      {{"i": 0, "text": "Drove 25% user growth and 15% retention improvement through data-driven product recommendations for a 600K+ user platform"}},
+    "<Employer Name>, <Job Title>": [
+      {{"i": 2, "text": "<rewrite starting with a JD verb, preserving every number and proper noun from the original bullet 2>"}},
+      {{"i": 0, "text": "<rewrite leading with JD keywords, preserving every number and proper noun from the original bullet 0>"}},
       {{"i": 1}}
     ],
-    "Accenture Solutions Pvt. Ltd., Performance Engineering Analyst": [
+    "<Another Employer Name>, <Job Title>": [
       {{"i": 0}},
-      {{"i": 3, "text": "Owned end-to-end delivery of 3+ applications from ideation through launch, resolving 150+ user-impacting issues within SLA"}},
+      {{"i": 3, "text": "<rewrite preserving the original's numbers and scope>"}},
       {{"i": 1}}
     ]
   }},

@@ -96,12 +96,20 @@ YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
                           to invent it. Add it to `do_not_inject` instead.
 3. DECIDE the candidate's narrative angle for THIS role only — the
    single one-line story that reframes their existing experience as
-   the fit for this JD. Examples:
-     "Hands-on AI builder bringing enterprise PM delivery to AI Decisioning"
-     "Risk-domain analyst transitioning to product, with regulated-environment fluency"
-     "Full-stack engineer pivoting to platform PM via internal-tools ownership"
+   the fit for this JD. Cross-industry example shapes (adapt to
+   whatever sector the CV + JD are actually in):
+     Tech:        "<specialism> practitioner bringing <domain> depth to <JD focus>"
+     Finance:     "<asset-class> analyst with <regulatory> fluency moving into <JD role>"
+     Healthcare:  "<clinical setting> practitioner with <outcome area> track record for <JD focus>"
+     Marketing:   "<channel/brand> operator bringing <audience> fluency to <JD focus>"
+     Education:   "<subject/level> educator with <methodology> experience for <JD setting>"
+     Sales/Ops:   "<segment> operator with <metric> track record into <JD focus>"
+     Legal:       "<practice area> lawyer with <jurisdiction/matter> exposure for <JD focus>"
+     HR/People:   "<function> specialist with <scale/programme> experience into <JD focus>"
    This angle must be defensible from the CV. Do NOT invent transitions
-   the candidate isn't already on.
+   the candidate isn't already on. If the CV and JD are in the same
+   field, the angle is often just "<specialism from CV> with <JD
+   emphasis> focus" — no transition wording needed.
 4. DRAFT per-bullet actions. For each bullet in each role, choose:
      • "promote"            — bullet already matches JD strongly; lift it earlier
      • "rewrite_verb_led"   — bullet is relevant but needs a JD-vocabulary verb
@@ -111,10 +119,16 @@ YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
 5. CONSIDER synthesising AT MOST ONE new bullet per role IF it would
    land 2+ JD keywords AND every claim is grounded in OTHER existing
    bullets of the SAME role. If you cannot ground it, omit.
-6. CONSIDER reframing project labels. Example: "ApplySmart AI |
-   Agentic AI Product" can become "AI Decisioning Platform" IF the
-   project's bullets actually describe a decisioning platform (scoring,
-   ranking, automated decisions). Provide the grounding evidence.
+6. CONSIDER reframing project / role labels. The current subtitle
+   may use terminology that undersells the work for THIS JD — e.g. a
+   generic "Analytics Tool" can become a "Customer Insights Platform"
+   if the project's bullets actually describe a platform (ingestion,
+   segmentation, stakeholder-facing dashboards). Similarly a
+   "Marketing Assistant" role can surface as "Brand Campaign
+   Coordinator" if the bullets describe campaign ownership. The new
+   label MUST be defensible from the EXISTING bullets of that
+   project/role. Provide 1-line grounding_evidence pointing to which
+   bullets justify the new framing.
 7. DO NOT touch the Skills section or the Education section. The
    candidate has decided these stay verbatim across every tailoring.
    No reordering, no additions, no rewording. Skip these entirely.
@@ -145,9 +159,9 @@ OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
   "narrative_angle": "<one sentence — the strategic story for this role>",
 
   "summary_strategy": {{
-    "title_to_lead_with": "<role-aligned title from CV or JD that the candidate has earned (e.g. 'Technical Product Manager' if CV says 'Technical Product Specialist')>",
-    "must_include_phrases": ["<phrase 1 from CV>", "<phrase 2 from CV>", "<phrase 3 from CV>"],
-    "practical_signals_to_surface": ["<signal from CV header e.g. 'Stamp 1G', 'Dublin-based', 'available immediately' — only if literally in CV>"],
+    "title_to_lead_with": "<role-aligned title the candidate has ACTUALLY earned from their CV (may be exactly the CV title, or a close JD-side synonym IF the CV work supports it — NEVER a JD title the candidate hasn't earned)>",
+    "must_include_phrases": ["<phrase 1 drawn literally from CV>", "<phrase 2 from CV>", "<phrase 3 from CV>"],
+    "practical_signals_to_surface": ["<ONLY signals literally present in the CV header or body — e.g. work-visa / residency status, years of experience, location, language fluency, security clearance, notice period, remote-OK. Omit this array entirely if the CV contains no such signals.>"],
     "drop_or_demote": ["<phrase currently in summary that is irrelevant for this JD>"]
   }},
 
