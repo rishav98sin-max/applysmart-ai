@@ -304,26 +304,94 @@ def _normalise_section_keys(d: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
-    """Tolerant JSON extraction — fenced or bare object."""
+    """
+    Tolerant JSON extraction. Order of attempts:
+
+      1. Direct json.loads on the raw string.
+      2. Strip markdown ```json fences and re-try.
+      3. Slice from first '{' to last '}' and parse (handles trailing
+         commentary).
+      4. Walk the candidate slice with a brace-balance state-machine to
+         find the LARGEST valid JSON object (handles cases where the LLM
+         appended prose after the object — `s.rfind('}')` overshoots into
+         the prose if it contains a stray '}').
+      5. Try json.loads with strict=False (allows raw control chars
+         inside strings — common when the LLM emits multi-line bullet
+         text without escaping newlines).
+
+    Returns None only if every attempt fails. We log a 200-char sample
+    on failure so debugging future regressions doesn't require dumping
+    the full 3KB response.
+    """
     if not raw:
         return None
     s = raw.strip()
+    # Strip leading BOM / zero-width chars sometimes emitted by NIM.
+    if s and s[0] in ("\ufeff", "\u200b"):
+        s = s.lstrip("\ufeff\u200b").strip()
     # Strip markdown fences if present.
-    s = re.sub(r"^```(?:json)?\s*", "", s)
-    s = re.sub(r"\s*```$", "", s)
-    # Try direct parse first.
+    s = re.sub(r"^```(?:json|JSON)?\s*", "", s)
+    s = re.sub(r"\s*```\s*$", "", s)
+
+    # Attempt 1: direct parse.
     try:
         return json.loads(s)
     except Exception:
         pass
-    # Find first { ... last } and try.
+
+    # Attempt 2: first '{' to last '}' slice.
     first = s.find("{")
     last  = s.rfind("}")
     if first != -1 and last != -1 and last > first:
+        candidate = s[first : last + 1]
         try:
-            return json.loads(s[first : last + 1])
+            return json.loads(candidate)
         except Exception:
-            return None
+            pass
+
+        # Attempt 3: balanced-braces walk. Find the largest balanced
+        # {...} substring starting at `first`. This handles trailing
+        # commentary after the object that contains stray braces.
+        depth = 0
+        in_str = False
+        esc = False
+        end_idx = -1
+        for i, ch in enumerate(candidate):
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end_idx = i
+                    break
+        if end_idx > 0:
+            balanced = candidate[: end_idx + 1]
+            try:
+                return json.loads(balanced)
+            except Exception:
+                # Attempt 4: strict=False permits unescaped control chars.
+                try:
+                    return json.loads(balanced, strict=False)
+                except Exception:
+                    pass
+
+    # All parses failed — log a small sample for diagnosis.
+    head = s[:200].replace("\n", "\\n")
+    tail = s[-200:].replace("\n", "\\n") if len(s) > 200 else ""
+    print(f"   ⚠️  strategist: JSON parse sample head={head!r}")
+    if tail:
+        print(f"   ⚠️  strategist: JSON parse sample tail={tail!r}")
     return None
 
 

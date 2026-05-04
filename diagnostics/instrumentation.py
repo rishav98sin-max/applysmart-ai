@@ -50,6 +50,7 @@ def patch() -> None:
     _patch_track_llm_call()
     _patch_groq_caller()
     _patch_gemini_caller()
+    _patch_deepseek_caller()
     _PATCHED = True
     print(
         "   ✅ diagnostics: instrumentation active "
@@ -248,6 +249,126 @@ def _patch_gemini_caller() -> None:
                 )
 
     _lc._call_gemini = wrapped  # type: ignore[assignment]
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. _call_deepseek → measure + record (EXACT token counts)
+# ─────────────────────────────────────────────────────────────
+# Unlike the Groq/Gemini wrappers which read deltas off the shared session
+# token counter (and lose the prompt/completion split), the DeepSeek API
+# returns OpenAI-compatible `usage: {prompt_tokens, completion_tokens,
+# total_tokens}` on every response. `_call_deepseek` stashes that triple
+# in `agents.llm_client._LAST_DEEPSEEK_USAGE` after every successful call.
+# We read it here and emit the exact numbers DeepSeek charged for — no
+# 4-chars-per-token estimates anywhere in the cost trail.
+
+def _patch_deepseek_caller() -> None:
+    try:
+        from agents import llm_client as _lc
+    except ImportError:
+        print(
+            "   ⚠️  diagnostics: agents.llm_client not importable — "
+            "DeepSeek instrumentation disabled.",
+            file=sys.stderr,
+        )
+        return
+
+    if not hasattr(_lc, "_call_deepseek"):
+        # DeepSeek path not present in this build — skip silently.
+        return
+
+    original = _lc._call_deepseek
+
+    def _read_deepseek_model() -> str:
+        # Resolve the active provider config so the recorded model matches
+        # what was actually called (direct DeepSeek vs NVIDIA NIM).
+        try:
+            cfg = _lc._resolve_deepseek_provider()
+            if cfg:
+                return str(cfg.get("model") or "deepseek-chat")
+        except Exception:
+            pass
+        return getattr(_lc, "DEEPSEEK_MODEL", "deepseek-chat")
+
+    def _read_deepseek_provider_label() -> str:
+        try:
+            cfg = _lc._resolve_deepseek_provider()
+            if cfg:
+                # Lower-cased provider tag for consistent JSONL filtering.
+                lbl = str(cfg.get("label") or "").lower()
+                if "nvidia" in lbl:
+                    return "nvidia_nim"
+                return "deepseek"
+        except Exception:
+            pass
+        return "deepseek"
+
+    def wrapped(
+        prompt: str,
+        max_tokens: int = 2000,
+        temperature: float = 0.2,
+        json_mode: bool = False,
+    ) -> Any:
+        agent = _t.current_agent.get() or "unknown"
+        job_id = _t.current_job_id.get()
+        # Reset the usage stash before the call so a failed call doesn't
+        # leave stale numbers attached to the next observation.
+        try:
+            _lc._LAST_DEEPSEEK_USAGE = {}  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        t0 = time.perf_counter()
+        error: Optional[str] = None
+        response: Any = ""
+        try:
+            response = original(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                json_mode=json_mode,
+            )
+            return response
+        except Exception as e:
+            error = f"{type(e).__name__}: {str(e)[:300]}"
+            raise
+        finally:
+            duration_ms = (time.perf_counter() - t0) * 1000.0
+            response_str = response if isinstance(response, str) else (response or "")
+            usage = getattr(_lc, "_LAST_DEEPSEEK_USAGE", {}) or {}
+            pt = int(usage.get("prompt_tokens", 0) or 0)
+            ct = int(usage.get("completion_tokens", 0) or 0)
+            total = int(usage.get("total_tokens", 0) or (pt + ct))
+            truncated = _looks_truncated(response_str, max_tokens)
+            try:
+                _t.record_llm_call(
+                    agent=agent,
+                    provider=_read_deepseek_provider_label(),
+                    model=_read_deepseek_model(),
+                    prompt=prompt,
+                    response=response_str,
+                    prompt_tokens=pt,
+                    completion_tokens=ct,
+                    total_tokens=total,
+                    duration_ms=duration_ms,
+                    truncated=truncated,
+                    error=error,
+                    job_id=job_id,
+                    metadata={
+                        "max_tokens_requested": max_tokens,
+                        "temperature": temperature,
+                        "json_mode": bool(json_mode),
+                        "last_llm_source": getattr(_lc, "_LAST_LLM_SOURCE", "?"),
+                    },
+                )
+            except Exception as log_err:
+                print(
+                    f"   ⚠️  diagnostics: record_llm_call failed for deepseek: "
+                    f"{log_err}",
+                    file=sys.stderr,
+                )
+
+    _lc._call_deepseek = wrapped  # type: ignore[assignment]
 
 
 # ─────────────────────────────────────────────────────────────

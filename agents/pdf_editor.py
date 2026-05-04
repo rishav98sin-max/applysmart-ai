@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -1547,31 +1548,38 @@ def apply_edits(
                     )
                     if ref is None:
                         continue
-                    # Bullet glyph hard-substitution (May 2026 fix #1):
-                    # Use U+00B7 (·, middle dot) for ALL re-rendered bullets,
-                    # regardless of font path. Why:
+                    # Bullet glyph selection (May 2026 fix #2 — Option A):
                     #
-                    #   - U+2022 (•) is the natural bullet glyph but lives at
-                    #     WinAnsi 0x95 in Latin-1. Many subsetted embedded
-                    #     fonts (Calibri-subsetted Word→PDF exports, designer
-                    #     templates) keep cmap entries + advance widths for
-                    #     U+2022 while STRIPPING the actual glyph outline.
-                    #     PyMuPDF's `_font_can_render` does 3-layer detection
-                    #     (cmap + advance + bbox) but rare residual cases
-                    #     still draw .notdef → renders as `?` in readers.
+                    # Default to U+2022 (•) so re-rendered bullets visually
+                    # match the original CV's bullets. The downstream call
+                    # chain handles the safety case automatically:
                     #
-                    #   - U+00B7 (·) sits at WinAnsi 0xB7, the standard Latin-1
-                    #     position. Every embedded font we've seen retains it
-                    #     (it's used in product names, scientific notation,
-                    #     etc.) and every Base14 font renders it reliably.
+                    #   1. _insert_fitted → _install_original_font calls
+                    #      _font_can_render(buf, text) which now performs a
+                    #      THREE-layer check (cmap presence + positive
+                    #      advance-width + non-empty glyph bbox). The bbox
+                    #      check (Apr 29) catches the .notdef-stripped case
+                    #      that the older advance-only check missed and
+                    #      caused the Run-2 "?" bullets bug. If • does not
+                    #      survive subsetting, the embedded-font path
+                    #      returns None and we fall through to Base14.
                     #
-                    # Visual cost: bullets in REWRITTEN sections render as a
-                    # slightly smaller dot than the original CV's •. Untouched
-                    # sections are not redrawn so their original • bullets are
-                    # preserved — we only ship · for bullets we re-rendered.
-                    # Net: zero `?` bullets, ever; minor visual diff in
-                    # rewritten sections only.
-                    bullet_char = "\u00b7"
+                    #   2. The Base14 fallback in _insert_fitted maps every
+                    #      bullet-shape codepoint (incl. U+2022) to U+00B7
+                    #      (·) which renders reliably on every Base14 build.
+                    #
+                    # Net behaviour:
+                    #   • Embedded font with real • glyph    → ships •  (matches original)
+                    #   • Embedded font with stripped glyph  → falls to Base14, ships ·
+                    #   • No embedded font available         → Base14, ships ·
+                    #
+                    # Override: set APPLYSMART_FORCE_BULLET_DOT=1 to force ·
+                    # everywhere if a future font edge-case regresses. Safe
+                    # escape valve without code change.
+                    if os.getenv("APPLYSMART_FORCE_BULLET_DOT") == "1":
+                        bullet_char = "\u00b7"
+                    else:
+                        bullet_char = "\u2022"
 
                     # Build new bullet block, using rewrite text when provided.
                     lines_out: List[str] = []

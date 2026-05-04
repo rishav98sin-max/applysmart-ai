@@ -715,6 +715,20 @@ def _increment_deepseek_tokens(delta: int) -> None:
         pass
 
 
+# Last DeepSeek call's token usage breakdown. Populated inside
+# `_call_deepseek` from the OpenAI-compatible `usage` field on the
+# response. Read by the diagnostics instrumentation patch
+# (diagnostics/instrumentation.py::_patch_deepseek_caller) to emit
+# EXACT token counts to LangFuse — no estimates.
+#
+# Schema (when populated):
+#   {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
+#
+# Reset to {} between calls; remains last-call-only since DeepSeek calls
+# do not run in parallel within this agent.
+_LAST_DEEPSEEK_USAGE: Dict[str, int] = {}
+
+
 def _call_deepseek(
     prompt: str,
     max_tokens: int = 2000,
@@ -774,14 +788,25 @@ def _call_deepseek(
             or ""
         ).strip()
         # Token accounting (both providers mirror OpenAI's usage shape).
+        # We capture the FULL split into `_LAST_DEEPSEEK_USAGE` so the
+        # diagnostics instrumentation can emit prompt/completion/total
+        # tokens to LangFuse with the exact numbers DeepSeek charged for
+        # — no chars-per-token estimates anywhere in the cost trail.
+        global _LAST_DEEPSEEK_USAGE, _LAST_LLM_SOURCE
         try:
             usage = data.get("usage") or {}
-            total = int(usage.get("total_tokens", 0) or 0)
+            pt = int(usage.get("prompt_tokens", 0) or 0)
+            ct = int(usage.get("completion_tokens", 0) or 0)
+            total = int(usage.get("total_tokens", 0) or (pt + ct))
+            _LAST_DEEPSEEK_USAGE = {
+                "prompt_tokens":     pt,
+                "completion_tokens": ct,
+                "total_tokens":      total,
+            }
             if total > 0:
                 _increment_deepseek_tokens(total)
         except Exception:
             pass
-        global _LAST_LLM_SOURCE
         _LAST_LLM_SOURCE = cfg["label"]
         return content
     except Exception as e:

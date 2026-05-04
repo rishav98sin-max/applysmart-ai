@@ -9,6 +9,16 @@ import hashlib
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+# Suppress the HuggingFace Hub anonymous-rate-limit warning + the noisy
+# posthog telemetry crash from sentence-transformers' ClientStartEvent
+# (Run 8 logs: "capture() takes 1 positional argument but 3 were given").
+# These don't affect functionality; we silence them at import time so they
+# don't pollute every run's stdout. Set HF_HUB_DISABLE_TELEMETRY before
+# any sentence-transformers / huggingface_hub import does its module-level
+# init.
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+
 # ─────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────
@@ -100,7 +110,22 @@ def _chunks_from_outline(outline: Dict[str, Any]) -> List[Dict[str, Any]]:
     # one chunk per bullet. This prevents tiny 50-char chunks.
     for role_idx, role in enumerate(outline.get("roles", []) or []):
         header  = (role.get("header") or "").strip()
-        bullets = [b.strip() for b in (role.get("bullets", []) or []) if b.strip()]
+        # Bullets may arrive as either str (legacy parser) or dict
+        # ({"text": "...", ...}, post-Run-3 parser refactor). Coerce to
+        # text first so .strip() works regardless of representation. Run 8
+        # logged "AttributeError: 'dict' object has no attribute 'strip'"
+        # here when the parser handed back dict bullets.
+        raw_bullets = role.get("bullets", []) or []
+        bullets: List[str] = []
+        for b in raw_bullets:
+            if isinstance(b, dict):
+                txt = str(b.get("text") or "").strip()
+            elif isinstance(b, str):
+                txt = b.strip()
+            else:
+                txt = str(b or "").strip()
+            if txt:
+                bullets.append(txt)
 
         if not bullets and not header:
             continue

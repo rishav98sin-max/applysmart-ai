@@ -111,26 +111,36 @@ If a STRATEGY block was provided below, its `cover_letter_hook`
 section names the preferred pattern and gives an opening_topic.
 Use that pattern. Do NOT improvise a different one.
 
-PARAGRAPH 2 — EXPERIENCE & PROOF (4-5 sentences):
+PARAGRAPH 2 — EXPERIENCE & PROOF (4-6 sentences):
 - Lead with the single most relevant work experience for THIS role. Name
   the employer, the challenge, what was done, and the measurable outcome
   (with the actual number from the CV — verbatim).
 - PROJECTS HANDLING (decide from the CV — do not invent):
     A) If the CV has a Projects / Personal Projects / Side Projects section
-       AND at least one project is directly relevant to the JD:
-       → After the work-experience proof, add 2-3 sentences on that project.
-         Format: what it is, how it was built/executed, one concrete outcome.
-         Treat it as a "bonus proof layer" showing initiative beyond the
-         day job.
-    B) If the CV has projects but none are JD-relevant:
+       with TWO OR MORE shipped projects:
+       → You MUST mention BOTH projects. Give each ONE focused sentence:
+         project name + what it does + the single sharpest concrete signal
+         (a metric, scale, or outcome) drawn verbatim from the CV. Pick
+         the angle on each project that maps best to a different aspect
+         of the JD — do not duplicate the same framing twice. Place these
+         two sentences AFTER the work-experience proof, treating them as
+         two distinct "bonus proof layers" demonstrating shipping range
+         beyond the day job.
+    B) If the CV has exactly ONE project and it is directly JD-relevant:
+       → After the work-experience proof, give that project 2 focused
+         sentences (what + how + one outcome). Treat it as a single
+         "bonus proof layer" showing initiative beyond the day job.
+    C) If the CV has projects but none are JD-relevant:
        → Do NOT mention projects. Use the saved space to deepen the work
          proof with a second concrete achievement.
-    C) If the CV has no projects section at all:
+    D) If the CV has no projects section at all:
        → Do NOT reference projects in any paragraph. Do not invent or imply.
 - AWARDS HANDLING: if the CV lists awards, recognitions, scholarships, or
   named honours AND one is JD-relevant, weave it naturally into this
   paragraph as a credibility signal — never force it.
 - Do not name the same metric you used in the Hook.
+- Each project sentence must surface a NEW fact (different metric / different
+  capability) from any work-experience sentence in the same paragraph.
 
 PARAGRAPH 3 — VALUE + FIT (4-5 sentences):
 - Connect the proof above to what THIS company specifically needs. Frame
@@ -200,9 +210,12 @@ PARAGRAPH 4 — CTA + CLOSE (2-3 sentences):
 ═══════════════════════════════════════════════════════════════════════
 STRICT RULES (each is a critical failure if broken)
 ═══════════════════════════════════════════════════════════════════════
-- TOTAL word count: 310-380 words across all 4 paragraphs combined.
-  Below 310 the letter feels thin and skips required content; above 380
-  it loses the recruiter's 8-second skim window.
+- TOTAL word count: 360-400 words across all 4 paragraphs combined.
+  Below 360 the letter feels thin and skips required project / motivation
+  content; above 400 it loses the recruiter's 8-second skim window.
+  Target paragraph balance: P1 ≈ 70-90w, P2 ≈ 110-140w (longest — must
+  carry the work-proof + both projects when present), P3 ≈ 90-120w,
+  P4 ≈ 30-50w.
 - Plain text only — no markdown, no bullets, no asterisks, no headers.
 - Do NOT include "Dear Hiring Manager", "Warm Regards", or any
   salutation/sign-off.
@@ -214,7 +227,13 @@ STRICT RULES (each is a critical failure if broken)
   ones (18-25 words). Do NOT let three consecutive sentences sit in the
   same length band — uniform sentence length is the #1 tell of templated
   writing.
-- Em-dash limit: at most ONE em-dash (—) in the entire letter.
+- ZERO em-dashes (—) and ZERO en-dashes (–) anywhere in the letter.
+  Em-dashes are the #1 stylistic tell of LLM-written prose. Use commas,
+  semicolons, colons, parentheses, or full stops instead. If you find
+  yourself reaching for an em-dash, restructure the sentence. This rule
+  has NO exceptions — not even one. Hyphens (-) inside compound words
+  like "data-driven" or "end-to-end" are fine; standalone dashes between
+  clauses are not.
 - No metric repetition: each percentage, count, revenue figure, user
   number, time saved, cases handled, students taught, or other measurable
   outcome may be cited at most ONCE across the whole letter.
@@ -300,7 +319,7 @@ CANDIDATE CV:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 WRITE THE COMPLETE LETTER BODY NOW (exactly 4 paragraphs, blank line
-between paragraphs, 310-380 words total, no salutation, no sign-off,
+between paragraphs, 360-400 words total, no salutation, no sign-off,
 no truncation):
 """
 
@@ -321,12 +340,47 @@ def finalize_cover_letter(body_text: str, candidate_name: str) -> str:
     """
     body = (body_text or "").strip()
     body = _strip_accidental_salutation_signoff(body, candidate_name)
+    body = _strip_em_en_dashes(body)
     return (
         f"Dear Hiring Manager\n\n"
         f"{body}\n\n"
         f"Warm Regards\n\n"
         f"{candidate_name.strip()}"
     )
+
+
+def _strip_em_en_dashes(body: str) -> str:
+    """
+    Deterministic post-pass: replace every em-dash (—) and en-dash (–)
+    with a contextually-appropriate ASCII alternative. The cover-letter
+    prompt bans em-dashes outright (they are the #1 stylistic tell of
+    LLM-written prose) but Run 8 evidence shows DeepSeek and Llama both
+    ignore that instruction roughly 80% of the time.
+
+    Replacement rules:
+      "  —  " / "— "  →  ", "    (clause separator)
+      " — "           →  ", "
+      "—" mid-word    →  "-"     (rare; preserves compounds)
+      Same logic for en-dash (–).
+
+    Why not delete: deleting collapses sentence rhythm. A comma keeps
+    the reader's pause-cadence close to what the LLM intended while
+    erasing the dash signature.
+    """
+    if not body:
+        return body
+    t = body
+    # Normalise spacing around long-dashes first so the replacement
+    # produces clean punctuation. The negative-lookbehind / negative-
+    # lookahead anchors preserve numeric ranges like "5–7%", "2–3 minutes"
+    # (those are meaningful range punctuation, not the LLM-tell variety).
+    t = re.sub(r"(?<!\d)\s*[\u2014\u2013]\s*(?!\d)", ", ", t)
+    # Collapse any double-comma artefacts the substitution could create
+    # (e.g. when the LLM already had "X, — Y").
+    t = re.sub(r",\s*,", ",", t)
+    # Tidy ", ." or ", !" patterns at sentence end.
+    t = re.sub(r",\s*([.!?])", r"\1", t)
+    return t
 
 
 def _strip_accidental_salutation_signoff(body: str, candidate_name: str) -> str:

@@ -403,6 +403,15 @@ RULES (strict):
      noun verbatim, return text=null (revert) instead of submitting an
      overlong rewrite that will be rejected anyway.
 
+2b. STYLE BAN — ZERO em-dashes (—) and ZERO en-dashes (–) in any rewrite
+    (summary OR bullets). They are the #1 stylistic tell of LLM-written
+    prose. Use commas, semicolons, colons, parentheses, or full stops
+    instead. Hyphens (-) inside compound words (data-driven, end-to-end,
+    cross-functional) are fine; standalone dashes between clauses are not.
+    A post-processor strips any dashes you emit, but a sentence built
+    around a dash will read awkwardly after stripping — write without
+    them from the start.
+
 3. skills_order:
    Do NOT reorder, add to, or reword the skills list. Always return an
    empty list []. The candidate's skills section must stay exactly as
@@ -498,7 +507,68 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
 # Sanitise diff (unchanged)
 # ─────────────────────────────────────────────────────────────
 
-_NUMBER_RX = re.compile(r"\d[\d.,]*\s*%?|\d+K\+?|\d+M\+?|\d+\+", re.I)
+# Numeric-token guard regex.
+#
+# May 2026 (Run 8 fix): the previous pattern `\d[\d.,]*\s*%?|\d+K\+?|...`
+# also matched bare integers ("15", "9", "2024"). Combined with the
+# verbatim-preservation rule in `_rewrite_is_safe`, this caused legitimate
+# rewrites to be reverted whenever the LLM compressed descriptive context
+# like "takes ~15 minutes of CV tweaking" → "manual job-application work".
+# Run 8 lost bullet 0 on 2/3 CVs to exactly this case.
+#
+# New pattern enforces ONLY tokens carrying an explicit outcome / scale /
+# magnitude marker:
+#
+#   * percentages           5%, 15%, 30.5%
+#   * currency              $50K, $5M, $300
+#   * unit-suffixed scale   600K, 5M, 1B, 150K+ (also "K+", "M+")
+#   * count-with-plus       3+, 150+ (3+ years, 150+ tickets)
+#
+# Bare integers are NOT enforced. The LLM may freely drop or rephrase
+# "9 guardrails", "~15 minutes", "2024" — these are descriptive, not
+# outcome metrics. Outcome metrics carry suffixes by convention.
+_NUMBER_RX = re.compile(
+    r"\d[\d.,]*%"            # percentages
+    r"|\$\d[\d.,]*[KMB]?"    # currency (optionally suffixed)
+    r"|\d+[KMB]\+?"          # scale: 600K, 5M, 1B, 150K+
+    r"|\d{1,4}\+",           # count-with-plus: 3+, 150+
+    re.I,
+)
+
+
+# Em-dash / en-dash normaliser for LLM-produced rewrites.
+#
+# May 2026: Run 8 evidence — DeepSeek and Llama both ignore the prompt-
+# level "no em-dash" rule about 80% of the time. Em-dashes (—) and
+# en-dashes (–) are the #1 stylistic tell of LLM-written prose; ATS
+# tools and human readers both pattern-match on them. We strip them
+# deterministically from every accepted rewrite (summary + bullets) so
+# the shipped CV reads like a human wrote it.
+#
+# Replacement: dash → ", " (comma + space). Preserves sentence rhythm
+# while erasing the dash signature. Hyphens (-) inside compound words
+# like "data-driven" are untouched — only U+2014 (em-dash) and U+2013
+# (en-dash) are matched.
+#
+# IMPORTANT: dashes BETWEEN two digits (numeric ranges like "5–7%",
+# "2–3 minutes", "0–100 score") are preserved. Those are meaningful
+# range punctuation, not the LLM-tell variety. The negative-lookbehind
+# / negative-lookahead anchors handle the discrimination.
+_DASH_RX = re.compile(r"(?<!\d)\s*[\u2014\u2013]\s*(?!\d)")
+
+
+def _strip_em_en_dashes_text(s: str) -> str:
+    """
+    Replace every em-dash / en-dash in `s` with ", " and tidy any
+    artefacts (",, ", ", ."). Returns the cleaned string. Empty input
+    is returned unchanged.
+    """
+    if not s:
+        return s
+    t = _DASH_RX.sub(", ", s)
+    t = re.sub(r",\s*,", ",", t)
+    t = re.sub(r",\s*([.!?])", r"\1", t)
+    return t
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1164,7 +1234,12 @@ def _normalise_bullet_list(
                 continue
             t = item.get("text")
             if isinstance(t, str):
-                t_clean = t.strip()
+                # Strip em-dashes / en-dashes BEFORE the safety guards so
+                # the length / number-token checks see the same string we
+                # will eventually ship. Otherwise the guard runs on the
+                # dash-containing version and the post-strip version
+                # could end up shorter than the 50% length floor.
+                t_clean = _strip_em_en_dashes_text(t.strip())
                 if t_clean:
                     text = t_clean
         else:
@@ -1288,7 +1363,10 @@ def _sanitise_diff(
     # Summary
     s = raw.get("summary")
     if isinstance(s, str):
-        out["summary"] = s.strip()
+        # Strip em/en-dashes here so the credential + length guards
+        # downstream evaluate the dash-free version we will actually
+        # ship to the PDF editor.
+        out["summary"] = _strip_em_en_dashes_text(s.strip())
 
     # Bullets
     real_roles = {r["header"].strip().lower(): r for r in outline.get("roles", [])}
