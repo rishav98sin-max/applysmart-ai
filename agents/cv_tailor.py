@@ -182,7 +182,7 @@ def tailor_cv(
 ) -> str:
     from agents.runtime       import track_llm_call, handle_rate_limit
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
-    from agents.llm_client    import chat_gemini
+    from agents.llm_client    import chat_deepseek, chat_gemini
 
     jd_wrapped = wrap_untrusted_block(job_description, label="JOB_DESCRIPTION")
     preamble   = untrusted_block_preamble(["JOB_DESCRIPTION"])
@@ -207,7 +207,16 @@ def tailor_cv(
             track_llm_call(agent="cv_tailor")
             budget = budgets[min(attempt, len(budgets) - 1)]
 
-            tailored = chat_gemini(prompt, max_tokens=budget, temperature=0.2)
+            # Provider chain (May 2026): DeepSeek → Gemini → Groq.
+            # The rebuild-fallback path runs when in-place editing failed,
+            # so the LLM has to reproduce the entire CV in plain text. DeepSeek
+            # handles long structured outputs more reliably than Llama. Falls
+            # through to the existing Gemini-bypass→Groq path on any failure.
+            tailored = chat_deepseek(
+                prompt, max_tokens=budget, temperature=0.2
+            )
+            if not tailored:
+                tailored = chat_gemini(prompt, max_tokens=budget, temperature=0.2)
 
             if not tailored:
                 print(f"   ⚠️  Tailor returned empty on attempt {attempt + 1} — retrying...")

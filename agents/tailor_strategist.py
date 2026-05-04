@@ -319,7 +319,7 @@ def build_tailor_strategy(
         return dict(EMPTY_STRATEGY)
 
     from agents.runtime        import track_llm_call
-    from agents.llm_client     import chat_quality
+    from agents.llm_client     import chat_deepseek, chat_quality
     from agents.prompt_safety  import wrap_untrusted_block, untrusted_block_preamble
 
     track_llm_call(agent="tailor_strategist")
@@ -337,11 +337,20 @@ def build_tailor_strategy(
         cv_outline            = _format_outline_for_strategist(outline),
     )
 
-    try:
-        raw = chat_quality(prompt, max_tokens=900, temperature=0.2)
-    except Exception as e:
-        print(f"   ⚠️  strategist: LLM call failed ({type(e).__name__}: {e}) — empty strategy")
-        return dict(EMPTY_STRATEGY)
+    # Strategy chain (May 2026): DeepSeek → Groq.
+    # The strategy is a small structured JSON output (~500 tokens). DeepSeek's
+    # better instruction-following produces sharper bullet_actions and tighter
+    # do_not_inject lists, which in turn drive better tailor + cover letter
+    # outputs. Falls through to Groq when key is missing or call fails.
+    raw = chat_deepseek(
+        prompt, max_tokens=900, temperature=0.2, json_mode=True
+    )
+    if not raw:
+        try:
+            raw = chat_quality(prompt, max_tokens=900, temperature=0.2)
+        except Exception as e:
+            print(f"   ⚠️  strategist: LLM call failed ({type(e).__name__}: {e}) — empty strategy")
+            return dict(EMPTY_STRATEGY)
 
     parsed = _extract_json(raw or "")
     if not parsed:
