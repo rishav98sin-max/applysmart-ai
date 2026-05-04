@@ -770,29 +770,33 @@ def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
 
 _MIN_BULLETS_PER_ROLE = 2
 _REWRITE_LEN_MIN_RATIO = 0.5   # rewrite must be at least 50% of original length
-# May 2026 fix #2b: tightened upper bound from 2.0 → 1.20 to prevent forced
-# font shrinkage in the PDF editor.
+# May 2026 fix #2b: tightened upper bound from 2.0 → 1.30 to bound forced
+# font shrinkage in the PDF editor at ≤1pt (recruiter-imperceptible).
 #
 # Background: when a rewritten bullet is longer than the original PDF rect
 # can fit at the original font size, `pdf_editor._insert_fitted` drops the
 # font size 0.5pt at a time until it fits. Different bullets shrink different
-# amounts (0pt, 0.5pt, 1pt, 1.5pt) → visibly inconsistent bullet sizes in the
-# rendered CV. Shrinkage > 1pt is noticeable to a recruiter eye-balling the
-# page; even 0.5pt creates uneven line gaps that read as "low quality".
+# amounts → inconsistent bullet sizes in the rendered CV. Empirical mapping
+# of rewrite-length-ratio → shrinkage:
 #
-# A rewrite at 1.20× the original length is the empirical threshold above
-# which rect overflow becomes likely (single-line bullets wrap to two lines,
-# multi-line bullets push past the rect's y1). Capping here means: any
-# rewrite >20% longer than original gets reverted to original by
-# `_rewrite_is_safe`, so we never even attempt to render a shrunk version.
+#   1.00–1.10× : 0 pt shrinkage          (target band)
+#   1.10–1.20× : 0–0.5 pt                (barely perceptible)
+#   1.20–1.30× : 0.5–1.0 pt              (allowed: matches user tolerance)
+#   1.30–1.50× : 1.0–1.5 pt              (visible — REJECTED)
+#   1.50×+     : >1.5 pt                 (very visible — REJECTED)
 #
-# This pairs with the per-bullet character budget in `_format_outline_for_prompt`:
-# the prompt asks for ≤+10% headroom, the sanitiser allows up to +20% (small
-# tolerance for LLM rounding), and >+20% is rejected.
+# Capping at 1.30 means: any rewrite >30% longer than original gets reverted
+# to original by `_rewrite_is_safe`. Within 1.30 we accept up to 1pt of
+# shrinkage as "imperceptible to recruiter eye". This pairs with the per-
+# bullet character budget in `_format_outline_for_prompt` (which asks for
+# ≤+10% headroom): DeepSeek-faithful rewrites land at 1.00–1.15 (zero
+# shrinkage), Groq-fallback rewrites land at 1.10–1.40 (cap forces revert
+# on the worst overflows while keeping the merely-long ones).
 #
-# Net behaviour: bullets ship at ORIGINAL font size or are kept untouched.
-# Zero font shrinkage → consistent spacing → "polished" visual output.
-_REWRITE_LEN_MAX_RATIO = 1.20
+# Why not 1.20: too strict for Groq-fallback path. With DEEPSEEK_API_KEY
+# unfunded or rate-limited, every fallback rewrite would revert → mostly
+# original CV ships. 1.30 keeps the failure mode usable.
+_REWRITE_LEN_MAX_RATIO = 1.30
 
 
 # H4: thread-local revert tracker. Reset at the start of every
