@@ -458,12 +458,20 @@ def build_tailor_strategy(
     # better instruction-following produces sharper bullet_actions and tighter
     # do_not_inject lists, which in turn drive better tailor + cover letter
     # outputs. Falls through to Groq when key is missing or call fails.
+    # May 2026 fix: bumped from 900 → 2500. The strategist legitimately
+    # produces 800-1000 tokens of structured JSON (summary_strategy +
+    # bullet_actions for 12-18 bullets + project_reframings + do_not_inject).
+    # At max_tokens=900 the JSON was truncated mid-string in Run 8 + Run 9
+    # (observed 3,522 and 3,758 char outputs ≈ 880-940 tokens, right at
+    # the ceiling). Truncated JSON → empty strategy → tailor improvises
+    # without guidance → both jobs get identical fallback diff. Cost
+    # impact at 2500: ≈ +1,600 tokens × 3 jobs/run × $0.27/1M = $0.0013/run.
     raw = chat_deepseek(
-        prompt, max_tokens=900, temperature=0.2, json_mode=True
+        prompt, max_tokens=2500, temperature=0.2, json_mode=True
     )
     if not raw:
         try:
-            raw = chat_quality(prompt, max_tokens=900, temperature=0.2)
+            raw = chat_quality(prompt, max_tokens=2500, temperature=0.2)
         except Exception as e:
             print(f"   ⚠️  strategist: LLM call failed ({type(e).__name__}: {e}) — empty strategy")
             return dict(EMPTY_STRATEGY)
