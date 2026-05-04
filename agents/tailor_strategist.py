@@ -255,6 +255,54 @@ def _format_outline_for_strategist(outline: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _normalise_section_keys(d: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Collapse verbose section keys to their leading title segment.
+
+    The strategist sometimes returns role headers as full echoed lines:
+        "VoC Insight Hub  Tech Stack: Python | LLMs | Streamlit"
+    The tailor matches against clean labels ("VoC Insight Hub"), so the
+    full-line keys silently fail to match → bullet actions are dropped.
+
+    We split on the first occurrence of any of:
+        - double-space ("  ")
+        - " | "
+        - " - "
+        - " — "
+        - "  Tech Stack" / " Tech Stack" / similar boilerplate trailers
+        - first colon (":") when a colon-prefixed metadata block follows
+    and keep only the leading text. Trailing whitespace/punctuation stripped.
+
+    Idempotent: clean keys (already short) pass through untouched. Returns
+    a new dict; never mutates the input. Collisions (two long keys that
+    collapse to the same short key) are resolved last-write-wins, which
+    is acceptable since they refer to the same role anyway.
+    """
+    if not isinstance(d, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    # Patterns that mark "end of role title, start of metadata noise"
+    SPLIT_PATTERNS = re.compile(
+        r"\s\s+|"                # double space
+        r"\s\|\s|"               # " | "
+        r"\s[-—]\s|"             # " - " or " — "
+        r"\s+(?:Tech\s+Stack|Stack|Skills|Tools|Tech)\s*:|"  # metadata trailers
+        r":\s",                  # any "Foo: bar" pattern
+        flags=re.IGNORECASE,
+    )
+    for raw_key, value in d.items():
+        if not isinstance(raw_key, str):
+            out[raw_key] = value
+            continue
+        # Take only up to the first match; if no match, keep the whole key.
+        clean = SPLIT_PATTERNS.split(raw_key, maxsplit=1)[0]
+        clean = clean.strip(" \t\r\n.,:;")
+        if not clean:
+            clean = raw_key.strip()
+        out[clean] = value
+    return out
+
+
 def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
     """Tolerant JSON extraction — fenced or bare object."""
     if not raw:
@@ -373,6 +421,21 @@ def build_tailor_strategy(
         if key in parsed:
             normalised[key] = parsed[key]
     normalised["_source"] = "llm"
+
+    # Section-key normalisation (May 2026 fix #4):
+    # The strategist sometimes echoes back full role-header lines as
+    # bullet_strategy keys, e.g. "VoC Insight Hub  Tech Stack: Python | ...".
+    # The tailor matches against clean role labels ("VoC Insight Hub"), so
+    # bullet actions get dropped silently when keys don't match. We collapse
+    # each key to its leading "title segment" — text up to the first
+    # double-space, " | ", "  Tech Stack", or " - " — so downstream lookup
+    # works regardless of how verbose the strategist was.
+    normalised["bullet_strategy"] = _normalise_section_keys(
+        normalised.get("bullet_strategy") or {}
+    )
+    normalised["synthesised_bullets"] = _normalise_section_keys(
+        normalised.get("synthesised_bullets") or {}
+    )
 
     angle = (normalised.get("narrative_angle") or "").strip()
     bullet_count = sum(

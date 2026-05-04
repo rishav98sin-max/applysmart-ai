@@ -141,13 +141,26 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
     parts.append(cur_summary or "(none)")
     parts.append("")
     parts.append("ROLES (0-indexed bullets — index 'i' is how the editor locates each bullet):")
+    parts.append(
+        "Each bullet has a [max=N chars] budget — your rewrite MUST stay "
+        "at or below N. Rewrites longer than the budget WILL be rejected "
+        "by the editor and the original bullet kept in place. Aim for "
+        "roughly the same length as the original (the budget is +10% "
+        "headroom, not a target)."
+    )
     for r in outline.get("roles", []):
         parts.append(f'Role "{r["header"]}":')
         for i, b in enumerate(r["bullets"]):
             # Bullets from build_outline are dicts {"text": str, "length": int};
             # tolerate legacy str entries too.
             btext = b["text"] if isinstance(b, dict) else str(b)
-            parts.append(f"  [{i}] {btext}")
+            # Length budget = original length + 10%, floor 80 chars so very
+            # short bullets aren't impossible to rewrite. Capped at 350 to
+            # avoid runaway over-budget on dense paragraphs that already
+            # use the full PDF rect.
+            orig_len = len(btext.strip())
+            budget = max(80, min(350, int(orig_len * 1.10)))
+            parts.append(f"  [{i}] [max={budget} chars] {btext}")
         parts.append("")
     skills = outline.get("skills") or []
     if skills:
@@ -433,13 +446,13 @@ Return the JSON now:"""
 
 def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
     """
-    Provider chain (May 2026): DeepSeek V4-Flash → Gemini → Groq.
+    Provider chain (May 2026): DeepSeek V4-Flash → Groq.
 
-    DeepSeek V4 ships stronger instruction-following and native JSON mode
-    at ~$0.001 per call (essentially free for our volume). When a key is
-    configured (DEEPSEEK_API_KEY), we try DeepSeek first; on missing key /
-    network failure / unusable output we fall through to the existing
-    Gemini→Groq chain unchanged.
+    Gemini was removed from the chain because GEMINI_BYPASS=1 has been the
+    default since Apr 30 — `chat_gemini()` was just calling Groq under the
+    hood, meaning a DeepSeek-fail used to trigger TWO Groq calls (~7K
+    wasted tokens + ~3s wasted latency per failed attempt). Now we go
+    DeepSeek → Groq directly.
 
     Why DeepSeek first:
       Llama 3.3 70B leans on canned suffixes ("...by analyzing market
@@ -450,11 +463,11 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
 
     Backward compatibility:
       With DEEPSEEK_API_KEY unset, chat_deepseek() returns None and the
-      existing Gemini-first / Groq-fallback path runs unchanged. Free-tier
-      deployments on Streamlit Cloud are unaffected.
+      call falls straight through to Groq. Free-tier deployments on
+      Streamlit Cloud are unaffected.
     """
     from agents.runtime    import track_llm_call
-    from agents.llm_client import chat_deepseek, chat_gemini, chat_quality
+    from agents.llm_client import chat_deepseek, chat_quality
 
     track_llm_call(agent="cv_diff_tailor")
 
@@ -474,29 +487,10 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
         print(
             f"   ↪️  cv_diff_tailor: DeepSeek output unusable "
             f"(len={len(deepseek_result)}, parsed={bool(parsed)}, "
-            f"actionable={is_actionable}) — falling back to Gemini/Groq"
+            f"actionable={is_actionable}) — falling back to Groq"
         )
 
-    # 2) Gemini (existing path, unchanged)
-    gemini_result = chat_gemini(prompt, max_tokens=max_tokens, temperature=0.2)
-    if gemini_result:
-        parsed = _extract_json(gemini_result)
-        is_actionable = bool(parsed) and bool(
-            parsed.get("summary")
-            or parsed.get("bullets")
-            or parsed.get("skills_order")
-        )
-        if is_actionable:
-            return gemini_result
-        print(
-            f"   ↪️  cv_diff_tailor: Gemini output unusable "
-            f"(len={len(gemini_result)}, parsed={bool(parsed)}, "
-            f"actionable={is_actionable}) — instant Groq fallback"
-        )
-    else:
-        print("   ↪️  cv_diff_tailor: Gemini returned empty — instant Groq fallback")
-
-    # 3) Groq (final fallback)
+    # 2) Groq (final fallback)
     return chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
 
 
@@ -776,7 +770,29 @@ def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
 
 _MIN_BULLETS_PER_ROLE = 2
 _REWRITE_LEN_MIN_RATIO = 0.5   # rewrite must be at least 50% of original length
-_REWRITE_LEN_MAX_RATIO = 2.0   # and at most 200% — longer usually means fabrication
+# May 2026 fix #2b: tightened upper bound from 2.0 → 1.20 to prevent forced
+# font shrinkage in the PDF editor.
+#
+# Background: when a rewritten bullet is longer than the original PDF rect
+# can fit at the original font size, `pdf_editor._insert_fitted` drops the
+# font size 0.5pt at a time until it fits. Different bullets shrink different
+# amounts (0pt, 0.5pt, 1pt, 1.5pt) → visibly inconsistent bullet sizes in the
+# rendered CV. Shrinkage > 1pt is noticeable to a recruiter eye-balling the
+# page; even 0.5pt creates uneven line gaps that read as "low quality".
+#
+# A rewrite at 1.20× the original length is the empirical threshold above
+# which rect overflow becomes likely (single-line bullets wrap to two lines,
+# multi-line bullets push past the rect's y1). Capping here means: any
+# rewrite >20% longer than original gets reverted to original by
+# `_rewrite_is_safe`, so we never even attempt to render a shrunk version.
+#
+# This pairs with the per-bullet character budget in `_format_outline_for_prompt`:
+# the prompt asks for ≤+10% headroom, the sanitiser allows up to +20% (small
+# tolerance for LLM rounding), and >+20% is rejected.
+#
+# Net behaviour: bullets ship at ORIGINAL font size or are kept untouched.
+# Zero font shrinkage → consistent spacing → "polished" visual output.
+_REWRITE_LEN_MAX_RATIO = 1.20
 
 
 # H4: thread-local revert tracker. Reset at the start of every

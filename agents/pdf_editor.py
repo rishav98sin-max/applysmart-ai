@@ -1547,9 +1547,31 @@ def apply_edits(
                     )
                     if ref is None:
                         continue
-                    # Always use standard bullet character (•) for consistent rendering
-                    # This prevents "?" artifacts from special symbol fonts that don't embed properly
-                    bullet_char = "\u2022"
+                    # Bullet glyph hard-substitution (May 2026 fix #1):
+                    # Use U+00B7 (·, middle dot) for ALL re-rendered bullets,
+                    # regardless of font path. Why:
+                    #
+                    #   - U+2022 (•) is the natural bullet glyph but lives at
+                    #     WinAnsi 0x95 in Latin-1. Many subsetted embedded
+                    #     fonts (Calibri-subsetted Word→PDF exports, designer
+                    #     templates) keep cmap entries + advance widths for
+                    #     U+2022 while STRIPPING the actual glyph outline.
+                    #     PyMuPDF's `_font_can_render` does 3-layer detection
+                    #     (cmap + advance + bbox) but rare residual cases
+                    #     still draw .notdef → renders as `?` in readers.
+                    #
+                    #   - U+00B7 (·) sits at WinAnsi 0xB7, the standard Latin-1
+                    #     position. Every embedded font we've seen retains it
+                    #     (it's used in product names, scientific notation,
+                    #     etc.) and every Base14 font renders it reliably.
+                    #
+                    # Visual cost: bullets in REWRITTEN sections render as a
+                    # slightly smaller dot than the original CV's •. Untouched
+                    # sections are not redrawn so their original • bullets are
+                    # preserved — we only ship · for bullets we re-rendered.
+                    # Net: zero `?` bullets, ever; minor visual diff in
+                    # rewritten sections only.
+                    bullet_char = "\u00b7"
 
                     # Build new bullet block, using rewrite text when provided.
                     lines_out: List[str] = []
