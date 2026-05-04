@@ -433,39 +433,53 @@ Return the JSON now:"""
 
 def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
     """
-    Strategy B (Apr 28 follow-up): single Gemini attempt with INSTANT Groq
-    fallback on parse-failure / empty / unactionable output.
+    Provider chain (May 2026): DeepSeek V4-Flash → Gemini → Groq.
 
-    Why no Gemini retries:
-      Gemini Flash on free tier truncates JSON output mid-string ~80% of
-      the time. The truncated text passes the "non-empty" check but fails
-      json.loads. Retrying Gemini doesn't help — the truncation is a
-      server-side behaviour we can't prompt-engineer around. Each retry
-      just burns 5-12s of cooldown quota with no improvement.
+    DeepSeek V4 ships stronger instruction-following and native JSON mode
+    at ~$0.001 per call (essentially free for our volume). When a key is
+    configured (DEEPSEEK_API_KEY), we try DeepSeek first; on missing key /
+    network failure / unusable output we fall through to the existing
+    Gemini→Groq chain unchanged.
 
-      The durable pattern: give Gemini ONE shot. If the response is
-      parseable AND contains actionable keys (summary/bullets/
-      skills_order), keep it. Otherwise fall through to Groq immediately.
+    Why DeepSeek first:
+      Llama 3.3 70B leans on canned suffixes ("...by analyzing market
+      conditions and prioritizing market segment opportunities") to fake
+      JD alignment when it can't find specific edits. DeepSeek V4 doesn't
+      do that — it either makes a substantive edit or leaves the bullet
+      alone. That's the exact behaviour we want for "polish, don't gut".
 
-    Result: Gemini still gets to produce the diff when it works
-    (~20-30% of attempts) — your stated preference of "Gemini for the
-    first try" is honoured. When it fails, Groq picks up with a clean
-    JSON output that drives the REPLICA path (preserving the user's
-    original CV layout), instead of triggering rebuild.
+    Backward compatibility:
+      With DEEPSEEK_API_KEY unset, chat_deepseek() returns None and the
+      existing Gemini-first / Groq-fallback path runs unchanged. Free-tier
+      deployments on Streamlit Cloud are unaffected.
     """
     from agents.runtime    import track_llm_call
-    from agents.llm_client import chat_gemini, chat_quality
+    from agents.llm_client import chat_deepseek, chat_gemini, chat_quality
 
     track_llm_call(agent="cv_diff_tailor")
 
-    # Try Gemini first.
-    gemini_result = chat_gemini(prompt, max_tokens=max_tokens, temperature=0.2)
+    # 1) DeepSeek (only if DEEPSEEK_API_KEY is configured)
+    deepseek_result = chat_deepseek(
+        prompt, max_tokens=max_tokens, temperature=0.2, json_mode=True
+    )
+    if deepseek_result:
+        parsed = _extract_json(deepseek_result)
+        is_actionable = bool(parsed) and bool(
+            parsed.get("summary")
+            or parsed.get("bullets")
+            or parsed.get("skills_order")
+        )
+        if is_actionable:
+            return deepseek_result
+        print(
+            f"   ↪️  cv_diff_tailor: DeepSeek output unusable "
+            f"(len={len(deepseek_result)}, parsed={bool(parsed)}, "
+            f"actionable={is_actionable}) — falling back to Gemini/Groq"
+        )
 
+    # 2) Gemini (existing path, unchanged)
+    gemini_result = chat_gemini(prompt, max_tokens=max_tokens, temperature=0.2)
     if gemini_result:
-        # Validate: must parse AND contain at least one actionable key.
-        # An empty {"summary": "", "bullets": {}, "skills_order": []} is
-        # equivalent to "no edits" and should trigger Groq fallback —
-        # otherwise downstream logic ships an effective no-op as a tailor.
         parsed = _extract_json(gemini_result)
         is_actionable = bool(parsed) and bool(
             parsed.get("summary")
@@ -482,6 +496,7 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
     else:
         print("   ↪️  cv_diff_tailor: Gemini returned empty — instant Groq fallback")
 
+    # 3) Groq (final fallback)
     return chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
 
 

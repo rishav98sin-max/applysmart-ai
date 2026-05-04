@@ -1392,14 +1392,38 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     wk = " ".join(review.get("weaknesses") or []).lower()
                     fab_flag = "fabricat" in fb or "fabricat" in wk or "invent" in fb
 
+                    # Option C (May 2026): when the diff was produced by
+                    # DeepSeek (a stronger instruction-follower than the
+                    # Llama reviewer), give borderline scores the benefit
+                    # of the doubt. The Llama reviewer often penalises
+                    # DeepSeek's terser, more JD-specific phrasing as
+                    # "less polished" even when the rewrites are clean.
+                    # Soft-accepting in the 65–71 band saves ~7K tokens/job
+                    # without weakening the hard safety checks above
+                    # (too_few_rewrites, fab_flag, all_reverted) — those
+                    # still force retries when triggered.
+                    try:
+                        from agents.llm_client import last_llm_source
+                        _deepseek_src = "DEEPSEEK" in (last_llm_source() or "")
+                    except Exception:
+                        _deepseek_src = False
+                    effective_threshold = (
+                        65 if _deepseek_src else REVIEWER_ACCEPT_THRESHOLD
+                    )
+
                     if not too_few_rewrites and not fab_flag and (
                         review["verdict"] == "accept"
-                        or review["score"] >= REVIEWER_ACCEPT_THRESHOLD
+                        or review["score"] >= effective_threshold
                     ):
+                        _src_tag = " [DeepSeek soft-accept]" if (
+                            _deepseek_src
+                            and review["score"] < REVIEWER_ACCEPT_THRESHOLD
+                            and review["verdict"] != "accept"
+                        ) else ""
                         print(
                             f"   ✓  {tag} accepting "
                             f"(score={review['score']}, {n_rewrites}/{n_bullets_total} "
-                            f"rewrites, no fabrications) — skipping retry."
+                            f"rewrites, no fabrications){_src_tag} — skipping retry."
                         )
                         break
 

@@ -22,6 +22,11 @@ try:
 except Exception:
     genai = None
 
+try:
+    import requests as _requests  # for DeepSeek HTTP calls (no extra SDK)
+except Exception:
+    _requests = None
+
 
 # ── Groq key rotation pool ──────────────────────────────────────────────────
 # Load up to 3 keys from env. On rate-limit, rotate to the next key.
@@ -167,6 +172,20 @@ _GROQ_TOKENS_PER_KEY_PER_DAY: int = int(
 
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# ── DeepSeek configuration (May 2026) ───────────────────────────────────────
+# DeepSeek V4 (released Apr 24, 2026) offers stronger instruction-following
+# than Llama 3.3 70B at ~$0.28 / 1M output tokens — effectively free for
+# our per-job tailor footprint (~7K in + ~1K out ≈ $0.001 per call).
+#
+# Default model: deepseek-chat == V4-Flash non-thinking mode (cheapest,
+# fastest, deterministic — no <think> reasoning tokens to strip).
+# Override via DEEPSEEK_MODEL env var. Endpoint is OpenAI-compatible so
+# we use plain HTTP via `requests` (no extra SDK dependency).
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_BASE_URL = os.getenv(
+    "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+).rstrip("/")
 
 
 def _load_groq_keys() -> list:
@@ -581,6 +600,130 @@ def reset_session_counter() -> None:
 def chat_quality(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
     print(f"   🤖 [GROQ / QUALITY] requesting {max_tokens} tokens...")
     return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
+
+
+# ── DeepSeek call (V4-Flash, OpenAI-compatible HTTP) ─────────────────────────
+
+def _load_deepseek_key() -> Optional[str]:
+    """Load DEEPSEEK_API_KEY from env or Streamlit secrets. Returns None
+    if no key is configured — callers must handle this and fall back."""
+    try:
+        from agents.runtime import secret_or_env
+        k = secret_or_env("DEEPSEEK_API_KEY")
+        if k and k.strip():
+            return k.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _increment_deepseek_tokens(delta: int) -> None:
+    """Track DeepSeek token usage in the shared file-cache. Stored under
+    the gemini bucket since the quota panel only displays groq+gemini —
+    DeepSeek is paid out-of-band so this is observability only."""
+    try:
+        current = _get_tokens_used_session()
+        # Reuse gemini bucket (UI-side) so usage shows up; add a separate
+        # bucket later if we want to break it out.
+        _set_tokens_used_session(current["groq"], current["gemini"] + delta)
+    except Exception:
+        pass
+
+
+def _call_deepseek(
+    prompt: str,
+    max_tokens: int = 2000,
+    temperature: float = 0.2,
+    json_mode: bool = False,
+) -> Optional[str]:
+    """
+    Call DeepSeek V4 via OpenAI-compatible HTTP. Returns the response
+    content string on success, or None on any failure (caller falls back).
+
+    Why None on failure (not raise):
+      DeepSeek is positioned as a *quality enhancement* over the Groq
+      free-tier path, not a critical-path provider. If the key is missing,
+      the network is down, the account is out of credit, etc. — we want
+      the caller to silently fall through to the existing Groq/Gemini
+      flow rather than crash the run.
+
+    Args:
+        json_mode: When True, request `response_format={"type":"json_object"}`.
+                   Useful for the cv_diff_tailor / strategist callers that
+                   need strict JSON output.
+    """
+    if _requests is None:
+        return None
+    key = _load_deepseek_key()
+    if not key:
+        return None
+    try:
+        payload = {
+            "model": DEEPSEEK_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        resp = _requests.post(
+            f"{DEEPSEEK_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=90.0,
+        )
+        if resp.status_code != 200:
+            print(
+                f"   ⚠️  DeepSeek HTTP {resp.status_code}: "
+                f"{resp.text[:200]} — falling back"
+            )
+            return None
+        data = resp.json()
+        content = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            or ""
+        ).strip()
+        # Token accounting (DeepSeek mirrors OpenAI's usage shape).
+        try:
+            usage = data.get("usage") or {}
+            total = int(usage.get("total_tokens", 0) or 0)
+            if total > 0:
+                _increment_deepseek_tokens(total)
+        except Exception:
+            pass
+        global _LAST_LLM_SOURCE
+        _LAST_LLM_SOURCE = f"DEEPSEEK ({DEEPSEEK_MODEL})"
+        return content
+    except Exception as e:
+        print(
+            f"   ⚠️  DeepSeek call failed "
+            f"({type(e).__name__}: {str(e)[:200]}) — falling back"
+        )
+        return None
+
+
+def chat_deepseek(
+    prompt: str,
+    max_tokens: int = 2000,
+    temperature: float = 0.2,
+    json_mode: bool = False,
+) -> Optional[str]:
+    """Public entry point for DeepSeek calls. Returns None if the key is
+    missing or the call fails — caller is responsible for falling back."""
+    if not _load_deepseek_key():
+        return None
+    print(f"   🤖 [DEEPSEEK / {DEEPSEEK_MODEL}] requesting {max_tokens} tokens...")
+    return _call_deepseek(
+        prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        json_mode=json_mode,
+    )
 
 
 def chat_fast(prompt: str, max_tokens: int = 500, temperature: float = 0.1) -> str:
