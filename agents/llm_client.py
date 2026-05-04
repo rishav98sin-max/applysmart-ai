@@ -178,13 +178,35 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # than Llama 3.3 70B at ~$0.28 / 1M output tokens — effectively free for
 # our per-job tailor footprint (~7K in + ~1K out ≈ $0.001 per call).
 #
-# Default model: deepseek-chat == V4-Flash non-thinking mode (cheapest,
-# fastest, deterministic — no <think> reasoning tokens to strip).
-# Override via DEEPSEEK_MODEL env var. Endpoint is OpenAI-compatible so
-# we use plain HTTP via `requests` (no extra SDK dependency).
+# Two providers are supported, selected by `LLM_PROVIDER` env var:
+#
+#   LLM_PROVIDER=direct  (default)
+#     Direct DeepSeek API at api.deepseek.com. Fast (~3-10s/call),
+#     full JSON mode, full SLA. Costs ~$0.001 per CV tailor call.
+#     Use for production launches and dev iteration.
+#
+#   LLM_PROVIDER=nvidia
+#     NVIDIA NIM (build.nvidia.com) at integrate.api.nvidia.com. Free
+#     (1K-5K credits lifetime), slower (~30-90s/call on shared GPU
+#     queue), 40 req/min rate limit. Use for extended testing phases
+#     where burning paid credits isn't desirable. Same OpenAI-compatible
+#     wire format so the only changes are base_url, api_key, model id.
+#
+# Both providers are OpenAI-compatible so we use plain HTTP via `requests`
+# (no extra SDK dependency). The `_resolve_deepseek_provider()` helper
+# returns the (api_key, base_url, model, timeout) tuple based on env.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "direct").lower().strip()
+
+# Direct DeepSeek (default).
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_BASE_URL = os.getenv(
     "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+).rstrip("/")
+
+# NVIDIA NIM hosted DeepSeek.
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-v4-flash")
+NVIDIA_BASE_URL = os.getenv(
+    "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
 ).rstrip("/")
 
 
@@ -617,6 +639,69 @@ def _load_deepseek_key() -> Optional[str]:
     return None
 
 
+def _load_nvidia_key() -> Optional[str]:
+    """Load NVIDIA_API_KEY (NIM, prefix `nvapi-`) from env or Streamlit
+    secrets. Returns None if no key is configured."""
+    try:
+        from agents.runtime import secret_or_env
+        k = secret_or_env("NVIDIA_API_KEY")
+        if k and k.strip():
+            return k.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_deepseek_provider() -> Optional[Dict[str, Any]]:
+    """
+    Resolve the active DeepSeek provider based on `LLM_PROVIDER`.
+
+    Returns a dict {api_key, base_url, model, timeout, label} on success,
+    or None if the configured provider has no key (caller falls back to
+    Groq). The `label` is used in log lines so users can see which
+    provider produced any given response.
+
+    Selection rules:
+      - LLM_PROVIDER=nvidia → require NVIDIA_API_KEY; fall back to direct
+        if NVIDIA key missing (better than total fail).
+      - LLM_PROVIDER=direct (or any other value) → require DEEPSEEK_API_KEY.
+      - Both keys missing → return None (callers route straight to Groq).
+    """
+    provider = LLM_PROVIDER
+
+    if provider == "nvidia":
+        nv_key = _load_nvidia_key()
+        if nv_key:
+            return {
+                "api_key": nv_key,
+                "base_url": NVIDIA_BASE_URL,
+                "model": NVIDIA_MODEL,
+                # NVIDIA NIM free tier shares GPU queues — calls can take
+                # 30-120s. Bump timeout so we don't kill long-but-eventually-
+                # successful responses.
+                "timeout": 180.0,
+                "label": f"NVIDIA NIM ({NVIDIA_MODEL})",
+            }
+        # NVIDIA configured but key missing — fall back to direct silently
+        # so the user isn't blocked when they forget the env var.
+        print(
+            "   ⚠️  LLM_PROVIDER=nvidia but NVIDIA_API_KEY missing — "
+            "falling back to direct DeepSeek"
+        )
+
+    # Direct DeepSeek (default + nvidia-fallback)
+    ds_key = _load_deepseek_key()
+    if ds_key:
+        return {
+            "api_key": ds_key,
+            "base_url": DEEPSEEK_BASE_URL,
+            "model": DEEPSEEK_MODEL,
+            "timeout": 90.0,
+            "label": f"DEEPSEEK ({DEEPSEEK_MODEL})",
+        }
+    return None
+
+
 def _increment_deepseek_tokens(delta: int) -> None:
     """Track DeepSeek token usage in the shared file-cache. Stored under
     the gemini bucket since the quota panel only displays groq+gemini —
@@ -654,12 +739,12 @@ def _call_deepseek(
     """
     if _requests is None:
         return None
-    key = _load_deepseek_key()
-    if not key:
+    cfg = _resolve_deepseek_provider()
+    if cfg is None:
         return None
     try:
         payload = {
-            "model": DEEPSEEK_MODEL,
+            "model": cfg["model"],
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -667,17 +752,17 @@ def _call_deepseek(
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         resp = _requests.post(
-            f"{DEEPSEEK_BASE_URL}/chat/completions",
+            f"{cfg['base_url']}/chat/completions",
             headers={
-                "Authorization": f"Bearer {key}",
+                "Authorization": f"Bearer {cfg['api_key']}",
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=90.0,
+            timeout=cfg["timeout"],
         )
         if resp.status_code != 200:
             print(
-                f"   ⚠️  DeepSeek HTTP {resp.status_code}: "
+                f"   ⚠️  {cfg['label']} HTTP {resp.status_code}: "
                 f"{resp.text[:200]} — falling back"
             )
             return None
@@ -688,7 +773,7 @@ def _call_deepseek(
             .get("content", "")
             or ""
         ).strip()
-        # Token accounting (DeepSeek mirrors OpenAI's usage shape).
+        # Token accounting (both providers mirror OpenAI's usage shape).
         try:
             usage = data.get("usage") or {}
             total = int(usage.get("total_tokens", 0) or 0)
@@ -697,11 +782,11 @@ def _call_deepseek(
         except Exception:
             pass
         global _LAST_LLM_SOURCE
-        _LAST_LLM_SOURCE = f"DEEPSEEK ({DEEPSEEK_MODEL})"
+        _LAST_LLM_SOURCE = cfg["label"]
         return content
     except Exception as e:
         print(
-            f"   ⚠️  DeepSeek call failed "
+            f"   ⚠️  {cfg['label']} call failed "
             f"({type(e).__name__}: {str(e)[:200]}) — falling back"
         )
         return None
@@ -713,11 +798,13 @@ def chat_deepseek(
     temperature: float = 0.2,
     json_mode: bool = False,
 ) -> Optional[str]:
-    """Public entry point for DeepSeek calls. Returns None if the key is
-    missing or the call fails — caller is responsible for falling back."""
-    if not _load_deepseek_key():
+    """Public entry point for DeepSeek calls. Returns None if no provider
+    is configured (no key) or the call fails — caller is responsible for
+    falling back. Honours `LLM_PROVIDER` to route to direct API or NVIDIA NIM."""
+    cfg = _resolve_deepseek_provider()
+    if cfg is None:
         return None
-    print(f"   🤖 [DEEPSEEK / {DEEPSEEK_MODEL}] requesting {max_tokens} tokens...")
+    print(f"   🤖 [{cfg['label']}] requesting {max_tokens} tokens...")
     return _call_deepseek(
         prompt,
         max_tokens=max_tokens,

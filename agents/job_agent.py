@@ -1404,7 +1404,12 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     # still force retries when triggered.
                     try:
                         from agents.llm_client import last_llm_source
-                        _deepseek_src = "DEEPSEEK" in (last_llm_source() or "")
+                        _src = (last_llm_source() or "").upper()
+                        # Both direct DeepSeek and NVIDIA-hosted DeepSeek count
+                        # as "DeepSeek source" for the soft-accept threshold.
+                        _deepseek_src = (
+                            "DEEPSEEK" in _src or "NVIDIA NIM" in _src
+                        )
                     except Exception:
                         _deepseek_src = False
                     effective_threshold = (
