@@ -6,7 +6,7 @@ import random
 import json
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from dotenv import load_dotenv
 
