@@ -9,6 +9,50 @@
 
 ---
 
+## v1.3 — CV Tailoring Pipeline Robustness (5 May 2026)
+
+**Bet under test:** Will comprehensive guardrails and edge-case handling make the CV tailoring pipeline robust enough to handle diverse CV formats and job descriptions without manual intervention?
+
+### Shipped
+
+- **Comprehensive CV tailoring pipeline fixes (P0, P1, P2-1):**
+  - **P0-1: Stub-summary handling** — Adjusts word count bands for very short summaries (<20 words), prevents fabrication when no original summary exists, and caps stub summaries at 60 words
+  - **P0-2: Zero-bullets early-exit** — Returns early with no-op diff when CV has 0 bullets to save ~25K tokens
+  - **P0-3: Job dedup audit** — Audited existing dedup logic (sufficient, no changes needed)
+  - **P1-1: Cross-page summary/bullets** — Guards against in-place edits when content spans multiple pages
+  - **P1-2: Wrong-language detection** — ASCII ratio heuristic to detect non-English LLM output in summaries and bullets
+  - **P1-3: Short-JD skip strategist** — Skips strategist call when JD < 50 words to save tokens
+  - **P1-4: Long-JD compression** — Compresses JDs > 800 words by extracting key sections (requirements, responsibilities, qualifications)
+  - **P1-5: Identity guard role-family awareness** — Allows role transitions within same career family (e.g., Account Manager → Social Media Account Manager) with role-family mappings
+  - **P1-6: Surface strategist-key mismatch** — Logs when bullet keys don't match role headers for better observability
+  - **P2-1: Outline cache** — In-memory cache with file mtime/size validation to avoid re-parsing PDFs
+
+- **Earlier bundled fixes:**
+  - **Outline parsing improvements** — `_merge_fragmented_roles` to collapse fragmented roles from 2-column layouts
+  - **Summary preservation** — `_summaries_equivalent` to detect when summaries are byte-identical
+  - **Identical-rewrite suppression** — Demotes byte-identical rewrites to text=None to save tokens
+  - **Prompt rule against no-op rewrites** — Added Rule 2a to prompt template
+  - **Concrete word-count band** — Passes absolute integers (e.g., "76-92 words") instead of percentages
+
+- **Strategist module enhancements:**
+  - 4-stage tolerant JSON parser (BOM, fences, brace-balance walk, strict=False)
+  - max_tokens bump 900 → 2500 to stop JSON truncation
+  - Short-JD skip and long-JD compression integration
+
+- **Quality fixes:**
+  - Cover letter depth requirements (require BOTH projects when CV has 2+)
+  - Em/en-dash stripping from LLM outputs (removes stylistic tell)
+  - Bullet glyph selection (default to U+2022 with Base14 fallback)
+  - Number guard tightened to enforce only magnitude-marked tokens
+  - CV embeddings: coerce dict-shaped bullets to text
+  - LangFuse telemetry improvements for DeepSeek
+
+### Why
+
+Run 12 telemetry showed several failure modes in the CV tailoring pipeline: summaries being cut too aggressively, bullets being dropped, language drift, and strategist JSON truncation. The comprehensive P0/P1/P2-1 analysis identified 55 potential failure modes, and the prioritized fixes address the most critical ones that were causing real issues in production.
+
+---
+
 ## v1.2 — Production Polish (22 Apr 2026)
 
 **Bet under test:** Will rebuild-path output be ATS-safe and visually trustworthy enough that users don't reject it for designer / multi-column CVs?

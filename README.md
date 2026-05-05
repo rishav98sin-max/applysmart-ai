@@ -89,19 +89,26 @@ node.
    ┌───────────────────────────┼───────────────────────────────┐
    ▼                           ▼                               ▼
 ┌───────┐   ┌───────┐   ┌───────────┐   ┌──────────┐   ┌──────────────┐
-│Planner│──▶│Scraper│──▶│  Matcher  │──▶│  Tailor  │──▶│ Cover-Letter │
-│       │   │       │   │ (vector + │   │ (diff +  │   │  Generator   │
-│       │   │       │   │    LLM)   │   │in-place) │   │              │
+│Planner│──▶│Scraper│──▶│  Matcher  │──▶│Strategist│──▶│  Tailor      │
+│       │   │       │   │ (vector + │   │ (bullet  │   │ (diff +      │
+│       │   │       │   │    LLM)   │   │ strategy)│   │in-place)     │
 └───────┘   └───────┘   └─────┬─────┘   └────┬─────┘   └──────┬───────┘
                               │              │                 │
                               │              ▼                 ▼
                               │        ┌───────────┐    ┌──────────────┐
                               │        │CV Reviewer│    │Cover-Letter  │
-                              │        │  (score)  │    │  Reviewer    │
-                              │        │           │    │(fabrication) │
+                              │        │  (score)  │    │  Generator   │
+                              │        │           │    │              │
                               │        └─────┬─────┘    └──────┬───────┘
-                              │              │ < 72?           │ < 70?
-                              │      retry Tailor ◀────────────┘
+                              │              │ < 72?           │
+                              │      retry Tailor           ▼
+                              │              │        ┌──────────────┐
+                              │              │        │Cover-Letter  │
+                              │              │        │  Reviewer    │
+                              │              │        │(fabrication) │
+                              │              │        └──────┬───────┘
+                              │              │               │ < 70?
+                              │              │      retry Gen ◀────┘
                               ▼
                        ┌──────────────┐
                        │ Email Agent  │──▶ Gmail SMTP (or preview)
@@ -117,11 +124,12 @@ node.
 | 3 | **Planner** | `agents/planner.py` | Generates 2-4 keyword bundles from CV + target role | Groq | LLM decides search strategy; not hard-coded |
 | 4 | **Scraper** | `agents/job_scraper.py` | Pulls live JDs from LinkedIn / Indeed / Glassdoor / Builtin / JobsIE | — | Multi-source fan-out with per-board fallback |
 | 5 | **Matcher** | `agents/job_matcher.py` | Scores every JD vs. the CV (0-100) | Groq | Vector retrieval (ChromaDB + MiniLM-L6) fused with LLM judgment |
-| 6 | **CV Tailor** | `agents/cv_tailor.py` | Rewrites CV per JD, preserving original layout | Gemini 2.5 Flash | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
-| 7 | **CV Reviewer** | `agents/reviewer.py` | Grades the tailored CV (0-100) against JD + original CV | Groq | Triggers retry cycles if score < 72 |
-| 8 | **Cover-Letter Generator** | `agents/cover_letter_generator.py` | 3-paragraph letter tied to the top-scoring CV signals | Gemini 2.5 Flash | Consumes matcher scores + tailored-CV highlights |
-| 9 | **Cover-Letter Reviewer** | `agents/cover_letter_reviewer.py` | Grades fabrication (0-100) | Groq | Retries the generator with feedback if score < 70 |
-| 10 | **Email Agent** | `agents/email_agent.py` | Gmail SMTP delivery with PDF attachments | — | Preview mode gates sending; per-card manual send |
+| 6 | **Strategist** | `agents/tailor_strategist.py` | Generates bullet-level strategy (promote/rewrite/drop) | Groq | LLM decides strategic narrative; reduces cosmetic edits |
+| 7 | **CV Tailor** | `agents/cv_diff_tailor.py` | Rewrites CV per JD, preserving original layout | Groq/Gemini | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
+| 8 | **CV Reviewer** | `agents/reviewer.py` | Grades the tailored CV (0-100) against JD + original CV | Groq | Triggers retry cycles if score < 72 |
+| 9 | **Cover-Letter Generator** | `agents/cover_letter_generator.py` | 3-paragraph letter tied to the top-scoring CV signals | Gemini 2.5 Flash | Consumes matcher scores + tailored-CV highlights |
+| 10 | **Cover-Letter Reviewer** | `agents/cover_letter_reviewer.py` | Grades fabrication (0-100) | Groq | Retries the generator with feedback if score < 70 |
+| 11 | **Email Agent** | `agents/email_agent.py` | Gmail SMTP delivery with PDF attachments | — | Preview mode gates sending; per-card manual send |
 
 ### Shared state
 
@@ -284,7 +292,7 @@ Fully supported. Nothing in the code assumes a cloud runtime.
 
 ## Guardrails
 
-Nine guardrails sit between user input and the model. Each has a specific
+Twelve guardrails sit between user input and the model. Each has a specific
 failure mode it prevents and a precise location in the code.
 
 ### Input guardrails
@@ -336,6 +344,16 @@ failure mode it prevents and a precise location in the code.
    Scores below 70 trigger a retry with feedback. The tailored CV path
    has an equivalent reviewer (`agents/reviewer.py`, threshold 72). Both
    retry counts are capped by `MAX_TAILOR_RETRIES` (default 1).
+
+10. **Stub-summary handling.** `agents/cv_diff_tailor.py` adjusts word count
+    bands for very short summaries (<20 words), prevents fabrication when no
+    original summary exists, and caps stub summaries at 60 words.
+
+11. **Zero-bullets early-exit.** `agents/cv_diff_tailor.py` returns early with
+    no-op diff when CV has 0 bullets to save ~25K tokens.
+
+12. **Wrong-language detection.** `agents/cv_diff_tailor.py` uses ASCII ratio
+    heuristic to detect non-English LLM output in summaries and bullets.
 
 ### Observability guardrails
 
@@ -392,6 +410,7 @@ agents/
   planner.py             # keyword bundles + quality bar
   job_scraper.py         # LinkedIn / Indeed / Glassdoor / Builtin / JobsIE
   job_matcher.py         # CV ↔ JD scoring (vector-aware)
+  tailor_strategist.py    # bullet-level strategy generation (promote/rewrite/drop)
   cv_tailor.py           # surgical CV edits (legacy full-text path)
   cv_diff_tailor.py      # diff-based tailor (outline-aware)
   cover_letter_generator.py
