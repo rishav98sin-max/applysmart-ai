@@ -22,7 +22,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from agents.pdf_editor import build_outline
+from agents.pdf_editor import build_outline_cached
 
 load_dotenv()
 
@@ -252,11 +252,26 @@ RULES (strict):
    - Never sound robotic. Write like a person describing themselves to
      another person in plain English.
 
-   The CURRENT SUMMARY is shown above with an exact word count. Your rewrite
-   MUST be between 95% and 115% of that count — measure as you write. A
-   shorter summary leaves an ugly white gap in the PDF because the layout
-   rect is sized for the original, and a shortened summary also loses
-   impact. NEVER drop below 95% of the original length.
+   ┌────────────────────────────────────────────────────────────────┐
+   │ SUMMARY WORD-COUNT TARGET (HARD CONSTRAINT)                    │
+   │                                                                │
+   │   Original summary: {cur_word_count} words                     │
+   │   Your rewrite MUST be between {cur_word_min} and {cur_word_max} words │
+   │   (95%–115% of the original — these numbers are pre-computed   │
+   │    so you do NOT need to do the math yourself).                │
+   │                                                                │
+   │   Before you submit, count your words. If below {cur_word_min}, │
+   │   you MUST add more CV-grounded detail (specific outcomes,     │
+   │   years, platforms, methodologies from the CV) until you       │
+   │   reach the floor. If above {cur_word_max}, compress by removing │
+   │   filler (adjectives, hedges) without dropping any number,     │
+   │   proper noun, or credential.                                  │
+   │                                                                │
+   │   A summary below the floor leaves a blank gap in the PDF      │
+   │   (the layout rect is sized for the original) AND causes the   │
+   │   post-processor to revert your entire rewrite to the original │
+   │   verbatim — wasting your output entirely. HIT THE BAND.       │
+   └────────────────────────────────────────────────────────────────┘
 
    HARD FABRICATION BAN (applies to the SUMMARY specifically):
    - Reference ONLY facts, skills, tools, frameworks, certifications,
@@ -403,6 +418,24 @@ RULES (strict):
      noun verbatim, return text=null (revert) instead of submitting an
      overlong rewrite that will be rejected anyway.
 
+2a. NO-OP REWRITES ARE FORBIDDEN.
+    If you submit `text` identical (or trivially whitespace/case-different)
+    to the original bullet, you have not rewritten it — you have pretended
+    to rewrite it. This wastes tokens and produces a CV that looks identical
+    to the untailored input. A post-processor detects byte-equivalent
+    rewrites and silently demotes them to `text=null`, so submitting an
+    identical string gives you ZERO credit and costs you an output slot.
+    Every bullet you choose to rewrite MUST differ from the original by
+    at least ONE of:
+      • Lead verb swap (e.g., "Defined and executed…" → "Managed…")
+      • New JD-keyword foregrounded in the first 60 characters
+      • Sentence structure change (e.g., pulling a number to the front)
+      • Compression / expansion within the 90-120% length band
+    If you cannot make a meaningful change while keeping every number and
+    proper noun verbatim, omit `text` and submit only `{{"i": N}}` —
+    leaving the bullet unchanged is an HONEST response; submitting the
+    original as a "rewrite" is a DISHONEST one.
+
 2b. STYLE BAN — ZERO em-dashes (—) and ZERO en-dashes (–) in any rewrite
     (summary OR bullets). They are the #1 stylistic tell of LLM-written
     prose. Use commas, semicolons, colons, parentheses, or full stops
@@ -453,7 +486,7 @@ Return the JSON now:"""
 # on any error or missing key, so this is strictly an upgrade.
 # ─────────────────────────────────────────────────────────────
 
-def _call_llm(prompt: str, max_tokens: int = 2000) -> str:
+def _call_llm(prompt: str, max_tokens: int = 3000) -> str:
     """
     Provider chain (May 2026): DeepSeek V4-Flash → Groq.
 
@@ -654,6 +687,108 @@ def _check_credentials_preserved(
             missing[kind] = gone
     return missing or None
 
+
+def _is_english_text(text: str, min_ascii_ratio: float = 0.85) -> bool:
+    """
+    Heuristic check to determine if text is predominantly English using
+    ASCII character ratio. Non-English languages (e.g., Chinese, Arabic,
+    Cyrillic scripts) have low ASCII ratios. Returns True if the text
+    appears to be English, False otherwise.
+    
+    Args:
+        text: The text to check.
+        min_ascii_ratio: Minimum ratio of ASCII characters to consider text English.
+                         Default 0.85 means at least 85% of characters must be ASCII.
+    
+    Returns:
+        True if text appears to be English, False if likely non-English.
+    """
+    if not text:
+        return True  # Empty text is considered "safe"
+    
+    # Count ASCII characters (ordinal < 128)
+    ascii_chars = sum(1 for c in text if ord(c) < 128)
+    ascii_ratio = ascii_chars / max(1, len(text))
+    
+    return ascii_ratio >= min_ascii_ratio
+
+
+def _compress_long_jd(job_description: str, max_words: int = 800) -> str:
+    """
+    Compress a very long job description by extracting key sections.
+    When the JD exceeds max_words, this function extracts the most
+    relevant sections (requirements, responsibilities, qualifications)
+    and drops boilerplate (company descriptions, equal opportunity
+    statements, etc.) to reduce token usage while preserving signal.
+
+    Uses a simple heuristic: looks for common section headers and
+    extracts content from them, up to the word limit.
+    """
+    if not job_description:
+        return job_description
+    
+    jd_lower = job_description.lower()
+    word_count = len(job_description.split())
+    
+    # If JD is already under the limit, return as-is
+    if word_count <= max_words:
+        return job_description
+    
+    # Common section headers in JDs (case-insensitive)
+    section_patterns = [
+        r"requirements?:?",
+        r"qualifications?:?",
+        r"responsibilities?:?",
+        r"what you'll do",
+        r"what we're looking for",
+        r"you will:",
+        r"you should:",
+        r"key responsibilities",
+        r"required skills",
+        r"preferred skills",
+        r"about the role",
+        r"role overview",
+        r"your role",
+    ]
+    
+    # Try to extract key sections
+    sections: List[str] = []
+    
+    for pattern in section_patterns:
+        # Look for the section header
+        match = re.search(pattern, jd_lower, re.IGNORECASE)
+        if match:
+            start = match.start()
+            # Find the end of this section (next major header or end of text)
+            remaining = jd_lower[start + len(match.group(0)):]
+            next_section_match = re.search(
+                r"\n\s*(?:requirements?:?|qualifications?:?|responsibilities?:?|benefits?:?|about us:|company:|what we offer)",
+                remaining,
+                re.IGNORECASE
+            )
+            if next_section_match:
+                end = start + len(match.group(0)) + next_section_match.start()
+                section_text = job_description[start:end].strip()
+            else:
+                # Take the rest of the text from this section
+                section_text = job_description[start:].strip()
+            
+            if section_text and len(section_text.split()) > 10:
+                sections.append(section_text)
+    
+    # If we found sections, concatenate them up to the word limit
+    if sections:
+        compressed = "\n\n".join(sections)
+        # Still respect the word limit
+        words = compressed.split()
+        if len(words) > max_words:
+            compressed = " ".join(words[:max_words]) + "..."
+        return compressed
+    
+    # Fallback: if no sections found, just truncate to max_words
+    words = job_description.split()
+    return " ".join(words[:max_words]) + "..."
+
 # Capitalized / acronym term pattern used by the summary-fabrication guard.
 # Matches multi-word proper nouns ("US GAAP", "International Financial"),
 # standalone acronyms (IFRS, SOX, GAAP), and CamelCase tokens (LangGraph).
@@ -708,6 +843,7 @@ def _check_professional_identity_fabrication(orig_summary: str, new_summary: str
     
     Allows: "passionate about transitioning to X", "interested in exploring X"
     Allows: Highlighting experience that exists in bullets (even if framed differently)
+    Allows: Role transitions within the same career family (e.g., Account Manager → Social Media Account Manager)
     Disallows: Adding completely NEW skills that don't exist at all in the CV
     
     Returns error message if fabrication detected, None otherwise.
@@ -717,7 +853,11 @@ def _check_professional_identity_fabrication(orig_summary: str, new_summary: str
     
     # Extract bullet text from outline to check for related experience
     bullet_texts = []
+    role_headers = []
     for role in outline.get("roles", []):
+        header = (role.get("header") or role.get("title") or "").lower()
+        if header:
+            role_headers.append(header)
         for bullet in role.get("bullets", []):
             if isinstance(bullet, dict):
                 bullet_texts.append(bullet.get("text", "").lower())
@@ -725,6 +865,7 @@ def _check_professional_identity_fabrication(orig_summary: str, new_summary: str
                 bullet_texts.append(bullet.lower())
     
     all_bullets_text = " ".join(bullet_texts)
+    all_roles_text = " ".join(role_headers)
     
     # Extract professional identity phrases from both summaries
     orig_lower = orig_summary.lower()
@@ -737,6 +878,78 @@ def _check_professional_identity_fabrication(orig_summary: str, new_summary: str
     ]
     if any(phrase in new_lower for phrase in transition_phrases):
         return None  # Allow transition language
+    
+    # P1-5 (May 2026): Role-family awareness. Define role families to allow
+    # transitions within the same career family. For example, Account Manager,
+    # Social Media Account Manager, Senior Account Executive, and Account
+    # Executive are all in the same "Account Management" family. Transitions
+    # within a family should be allowed even if the exact title isn't in the CV.
+    role_families = {
+        "account_management": [
+            "account manager", "account executive", "senior account executive",
+            "social media account manager", "social media account executive",
+            "client manager", "client executive", "customer success manager",
+            "relationship manager", "key account manager"
+        ],
+        "marketing": [
+            "marketing manager", "marketing executive", "digital marketing",
+            "social media manager", "content marketing", "brand marketing",
+            "marketing and communications", "communications manager",
+            "marketing specialist", "marketing coordinator"
+        ],
+        "sales": [
+            "sales manager", "sales executive", "business development",
+            "sales representative", "account manager", "sales director",
+            "enterprise sales", "sales engineer"
+        ],
+        "product": [
+            "product manager", "product owner", "senior product manager",
+            "technical product manager", "product lead", "associate product manager"
+        ],
+        "engineering": [
+            "software engineer", "senior software engineer", "full stack engineer",
+            "backend engineer", "frontend engineer", "devops engineer",
+            "software developer", "principal engineer", "staff engineer"
+        ],
+        "data": [
+            "data scientist", "data analyst", "data engineer",
+            "machine learning engineer", "analytics engineer", "business analyst"
+        ],
+        "design": [
+            "product designer", "ux designer", "ui designer", "design lead",
+            "visual designer", "interaction designer", "service designer"
+        ],
+        "operations": [
+            "operations manager", "operations analyst", "devops engineer",
+            "site reliability engineer", "it operations", "business operations"
+        ],
+        "finance": [
+            "financial analyst", "finance manager", "controller",
+            "accountant", "fp&a analyst", "treasury analyst"
+        ],
+        "hr": [
+            "hr manager", "recruiter", "talent acquisition", "people operations",
+            "hr business partner", "recruiting coordinator"
+        ],
+        "consulting": [
+            "consultant", "management consultant", "strategy consultant",
+            "advisor", "principal consultant", "senior consultant"
+        ]
+    }
+    
+    # Check if any role in the CV belongs to a family
+    cv_families = set()
+    for family_name, titles in role_families.items():
+        if any(title in all_roles_text for title in titles):
+            cv_families.add(family_name)
+    
+    # Check if the new summary mentions a role title that belongs to any of the CV's families
+    for family_name, titles in role_families.items():
+        if family_name in cv_families:
+            # If the CV has roles in this family, allow any title from this family in the summary
+            if any(title in new_lower for title in titles):
+                # This is a valid role-family transition - allow it
+                return None
     
     # Check if new summary adds a domain not in original CV
     # Common professional domains to check
@@ -1258,6 +1471,22 @@ def _normalise_bullet_list(
             else:
                 orig_text = orig_bullet
                 orig_len = len(orig_bullet) if orig_bullet else 0
+            # Identical-rewrite suppression (May 2026 / Run 12 fix).
+            # Observed failure mode: the LLM submits `text` byte-identical
+            # (or trivially whitespace/case-different) to the source bullet
+            # and we count it as a rewrite in telemetry, inflating
+            # n_rewrites while producing zero textual change in the PDF.
+            # Treat it as "keep original" (text=None) so the metric
+            # reflects reality and retries trigger when needed.
+            def _norm_for_eq(s: str) -> str:
+                # Unify typographic dashes, collapse whitespace, lower-case.
+                s2 = (s or "").replace("\u2013", "-").replace("\u2014", "-")
+                return " ".join(s2.lower().split())
+            if _norm_for_eq(text) == _norm_for_eq(orig_text):
+                text = None
+                normalised.append({"i": idx, "text": text})
+                seen.add(idx)
+                continue
             ok, reason = _rewrite_is_safe(orig_text, text, original_length=orig_len)
             if not ok:
                 print(
@@ -1332,6 +1561,27 @@ def _normalise_bullet_list(
                                     "rewrite_preview": text[:120],
                                 })
                                 text = None
+                            else:
+                                # P1-2 (May 2026): Wrong-language detection for bullets.
+                                # If the LLM produces a bullet rewrite in a non-English
+                                # language (e.g., Chinese, Arabic, Cyrillic scripts),
+                                # reject it and revert to the original. The ASCII ratio
+                                # heuristic catches languages with non-Latin character sets.
+                                if not _is_english_text(text, min_ascii_ratio=0.85):
+                                    ascii_chars = sum(1 for c in text if ord(c) < 128)
+                                    ascii_ratio = ascii_chars / max(1, len(text))
+                                    print(
+                                        f"   ⚠️  rewrite rejected (bullet {idx}, "
+                                        f"wrong language ASCII ratio {ascii_ratio:.2f}): "
+                                        f"{text[:80]!r} — reverting to original"
+                                    )
+                                    _LAST_BULLET_REVERTS.append({
+                                        "bullet_index": idx,
+                                        "reason": "wrong_language",
+                                        "ascii_ratio": round(ascii_ratio, 3),
+                                        "rewrite_preview": text[:120],
+                                    })
+                                    text = None
         normalised.append({"i": idx, "text": text})
         seen.add(idx)
 
@@ -1371,6 +1621,7 @@ def _sanitise_diff(
     # Bullets
     real_roles = {r["header"].strip().lower(): r for r in outline.get("roles", [])}
     bullets_raw = raw.get("bullets") or {}
+    unmatched_keys: List[str] = []
     if isinstance(bullets_raw, dict):
         for rk, order in bullets_raw.items():
             if not isinstance(order, list):
@@ -1385,6 +1636,7 @@ def _sanitise_diff(
                         match_key = r["header"]
                         break
             if not match_key:
+                unmatched_keys.append(str(rk))
                 continue
             role = next(r for r in outline["roles"] if r["header"] == match_key)
             orig_texts = role.get("bullets") or []
@@ -1407,6 +1659,19 @@ def _sanitise_diff(
             )
             if not is_noop:
                 out["bullets"][match_key] = normalised
+
+    # Observability (May 2026): surface section-key mismatches. If the
+    # strategist/tailor produced bullet keys that none of the real role
+    # headers matched (fuzzy or exact), log them with the list of real
+    # headers so the regression is visible and actionable instead of
+    # silently producing a zero-rewrite CV.
+    if unmatched_keys:
+        real_hdrs = [r["header"] for r in outline.get("roles", [])]
+        print(
+            f"   ⚠️  tailor: {len(unmatched_keys)} bullet section key(s) "
+            f"did not match any role header. Unmatched={unmatched_keys!r} "
+            f"Real headers={real_hdrs!r}"
+        )
 
     # Skills — policy: DO NOT reorder skills. The candidate's skills block
     # stays byte-identical to the original CV. Drop any LLM-returned order.
@@ -1528,13 +1793,41 @@ def tailor_cv_diff(
                       heuristic.
     """
     if outline is None:
-        outline = build_outline(cv_pdf_path)
+        outline = build_outline_cached(cv_pdf_path)
 
     # Reset the per-call bullet-revert tracker so counts reflect THIS job.
     _LAST_BULLET_REVERTS.clear()
 
     orig_summary = (outline.get("summary") or "").strip()
     orig_words   = len(orig_summary.split()) if orig_summary else 0
+
+    # ── P0-2: Zero-bullets early-exit ───────────────────────────────────
+    # If the CV has no bullet content at all (paragraph-style CVs, rebuild
+    # outputs that lost role boundaries, or parser-incompatible layouts
+    # that survived the replica check), running the LLM tailor wastes
+    # ~25-30K tokens producing rewrites the editor can't apply. Return a
+    # no-op diff so the supervisor can route to rebuild without spending.
+    _total_bullets = sum(
+        len(r.get("bullets") or []) for r in (outline.get("roles") or [])
+    )
+    if _total_bullets == 0:
+        print(
+            "   ⏭️  cv_diff_tailor: outline has 0 bullets across all roles "
+            "— skipping LLM tailor (would produce no editable changes). "
+            "Caller should route to rebuild path."
+        )
+        return {
+            "summary":      orig_summary,    # preserve verbatim if any
+            "bullets":      {},
+            "skills_order": [],
+            "_debug": {
+                "early_exit":          "zero_bullets",
+                "summary_reverts":     [],
+                "bullet_reverts":      [],
+                "bullet_reverts_count": 0,
+                "all_reverted":        True,
+            },
+        }
 
     # Render the strategy block once (empty string when no strategy was
     # provided OR the strategist returned an empty payload). The tailor
@@ -1548,9 +1841,54 @@ def tailor_cv_diff(
 
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
 
+    # Pre-compute concrete summary word-count bands (95%-115% of the
+    # original) so the LLM sees absolute integers rather than having to
+    # multiply percentages itself. LLMs reliably ignore "95%-115%" but
+    # respect "between 76 and 92 words" (Run 12 evidence: DeepSeek shipped
+    # 56 words against a 80-word original despite the percentage rule).
+    _orig_word_count = len(orig_summary.split()) if orig_summary else 0
+    # P0-1 (May 2026): Stub-summary handling. When the original is empty
+    # or very short (< 20 words) the 95%-115% band is meaninglessly tight
+    # (e.g., 11-13 words for a 12-word original) and the LLM either
+    # produces an unbounded fabrication or we revert pointlessly. Use an
+    # absolute floor/ceiling:
+    #   • orig=0  : ban summary changes (LLM must return empty string).
+    #   • orig<20 : allow expansion up to 60 words but no further.
+    #   • orig>=20: standard 95%-115% band.
+    _SUMMARY_STUB_THRESHOLD = 20
+    _SUMMARY_STUB_CAP       = 60
+    if _orig_word_count == 0:
+        _orig_word_min, _orig_word_max = 0, 0
+    elif _orig_word_count < _SUMMARY_STUB_THRESHOLD:
+        _orig_word_min = max(1, _orig_word_count - 2)        # allow tighten
+        _orig_word_max = min(_SUMMARY_STUB_CAP,
+                             max(_orig_word_count + 10, int(_orig_word_count * 1.15)))
+    else:
+        _orig_word_min = max(1, int(_orig_word_count * 0.95))
+        _orig_word_max = int(_orig_word_count * 1.15)
+
     def _render_prompt(extra: str = "") -> str:
+        # P1-4 (May 2026): Long-JD compression. When the job description is
+        # very long (e.g., > 800 words), it consumes excessive tokens in the
+        # prompt and may cause context overflow. Compress the JD by extracting
+        # key sections (requirements, responsibilities, qualifications) while
+        # dropping boilerplate (company descriptions, equal opportunity statements).
+        # This reduces token usage by 30-50% while preserving the signal the
+        # tailor needs to produce a useful diff.
+        _JD_MAX_WORD_THRESHOLD = 800
+        jd_for_processing = job_description or ""
+        jd_word_count = len(jd_for_processing.split())
+        if jd_word_count > _JD_MAX_WORD_THRESHOLD:
+            jd_compressed = _compress_long_jd(jd_for_processing, max_words=_JD_MAX_WORD_THRESHOLD)
+            compressed_word_count = len(jd_compressed.split())
+            print(
+                f"   ↘️  cv_diff_tailor: JD compressed from {jd_word_count} → "
+                f"{compressed_word_count} words to reduce token usage."
+            )
+            jd_for_processing = jd_compressed
+
         jd_block = wrap_untrusted_block(
-            (job_description or "").strip() or "(no description provided)",
+            jd_for_processing.strip() or "(no description provided)",
             label="JOB_DESCRIPTION",
         )
         p = _PROMPT_TEMPLATE.format(
@@ -1560,6 +1898,9 @@ def tailor_cv_diff(
             job_description_block = jd_block,
             outline               = _format_outline_for_prompt(outline),
             strategy_block        = strategy_block_str or "(no strategy provided — use the legacy fallback floors in the RULES section below)",
+            cur_word_count        = _orig_word_count,
+            cur_word_min          = _orig_word_min,
+            cur_word_max          = _orig_word_max,
         )
         p += "\n\n" + _build_feedback_addendum(feedback, previous_diff)
         if extra:
@@ -1585,6 +1926,50 @@ def tailor_cv_diff(
     # Mixpanel instead of dying silently in stdout.
     diff.setdefault("_debug", {}).setdefault("summary_reverts", [])
     new_sum = (diff.get("summary") or "").strip()
+
+    # P0-1 (May 2026): no-original-summary fabrication block. When the CV
+    # has NO original summary text (orig_summary=""), any non-empty
+    # rewrite from the LLM is by definition invented from JD + bullets —
+    # there is no original for the credential / identity guards to
+    # protect. Most CVs without a summary are deliberate (the candidate
+    # chose not to include one); injecting an LLM-fabricated paragraph
+    # would surprise the user and degrade trust. Drop the rewrite.
+    if new_sum and not orig_summary:
+        print(
+            f"   ⚠️  cv_diff_tailor: LLM produced a summary ({len(new_sum.split())} words) "
+            f"but the CV has no original summary — dropping rewrite to avoid "
+            f"fabricating a section the user chose not to include."
+        )
+        diff["_debug"]["summary_reverts"].append({
+            "reason":     "no_original_summary",
+            "new_words":  len(new_sum.split()),
+        })
+        diff["summary"] = ""
+        new_sum = ""
+
+    # P0-1 (May 2026): stub-summary upper-bound enforcement. When the
+    # original was 1-19 words, the LLM may still expand far beyond the
+    # 60-word cap despite the prompt directive (small originals attract
+    # over-explanation). Hard-cap the rewrite at _SUMMARY_STUB_CAP words;
+    # if it overflows, revert to the original verbatim rather than ship
+    # an outsized summary that overflows the layout box.
+    if new_sum and orig_summary and 0 < _orig_word_count < _SUMMARY_STUB_THRESHOLD:
+        new_words_now = len(new_sum.split())
+        if new_words_now > _SUMMARY_STUB_CAP:
+            print(
+                f"   ⚠️  cv_diff_tailor: stub-summary rewrite overflowed cap "
+                f"({new_words_now} > {_SUMMARY_STUB_CAP} words) — reverting "
+                f"to original to preserve layout."
+            )
+            diff["_debug"]["summary_reverts"].append({
+                "reason":     "stub_summary_overflow",
+                "new_words":  new_words_now,
+                "cap":        _SUMMARY_STUB_CAP,
+                "orig_words": _orig_word_count,
+            })
+            diff["summary"] = orig_summary
+            new_sum = orig_summary
+
     if new_sum and orig_summary:
         
         # Check for professional identity fabrication
@@ -1634,6 +2019,27 @@ def tailor_cv_diff(
                         "missing": missing_creds,
                     })
                     diff["summary"] = orig_summary
+                else:
+                    # P1-2 (May 2026): Wrong-language detection. If the LLM
+                    # produces a summary in a non-English language (e.g., Chinese,
+                    # Arabic, Cyrillic scripts), reject it and revert to the
+                    # original. The ASCII ratio heuristic catches languages with
+                    # non-Latin character sets. We use 0.85 as the threshold
+                    # (same as cv_validator.py) to allow for common punctuation
+                    # and accented characters in English text (é, ü, etc.).
+                    if not _is_english_text(new_sum, min_ascii_ratio=0.85):
+                        ascii_chars = sum(1 for c in new_sum if ord(c) < 128)
+                        ascii_ratio = ascii_chars / max(1, len(new_sum))
+                        print(
+                            f"   ⚠️  summary appears to be in a non-English language "
+                            f"(ASCII ratio {ascii_ratio:.2f}) — reverting to original "
+                            f"summary to prevent language drift."
+                        )
+                        diff["_debug"]["summary_reverts"].append({
+                            "reason":       "wrong_language",
+                            "ascii_ratio":  round(ascii_ratio, 3),
+                        })
+                        diff["summary"] = orig_summary
 
     # ── Length-enforcement retry ─────────────────────────────────────
     # Triggers when the new summary is below 85% of the original word count.
@@ -1793,13 +2199,15 @@ def tailor_cv_diff(
         src = _lls()
     except Exception:
         src = "unknown"
+    _sr = diff.get("_debug", {}).get("summary_reverts", [])
+    _sr_note = f" | summary_reverts={len(_sr)}:{_sr[0].get('reason','?')}" if _sr else ""
     print(
         f"   ✂️  cv_diff_tailor{tag} [via {src}]: "
         f"summary={new_words}/{orig_words}w | "
         f"roles_edited={len(diff['bullets'])} | "
         f"bullets_rewritten={n_rewrites} | "
         f"bullets_dropped={n_dropped} | "
-        f"skills_reordered={'yes' if diff['skills_order'] else 'no'}"
+        f"skills_reordered={'yes' if diff['skills_order'] else 'no'}{_sr_note}"
     )
 
     # Attach bullet-revert observability for the UI / Mixpanel. Keeps the

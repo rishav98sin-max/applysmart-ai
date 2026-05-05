@@ -24,7 +24,7 @@ from agents.cv_tailor import tailor_cv
 from agents.cv_diff_tailor import tailor_cv_diff
 from agents.pdf_editor import (
     apply_edits as apply_pdf_edits,
-    build_outline as _build_outline,
+    build_outline_cached as _build_outline,
     detect_replica_compatibility as _detect_replica_compatibility,
 )
 from agents.reviewer    import review_tailored_cv, ACCEPT_THRESHOLD as REVIEWER_ACCEPT_THRESHOLD
@@ -41,7 +41,7 @@ from agents.llm_client import chat_quality
 
 load_dotenv(override=True)
 
-MAX_SUPERVISOR_CYCLES = 32
+MAX_SUPERVISOR_CYCLES = int(os.getenv("MAX_SUPERVISOR_CYCLES", "8"))
 
 LLM_SUPERVISOR_ENABLED = os.getenv("LLM_SUPERVISOR", "1").strip().lower() not in (
     "0", "false", "no", "off",
@@ -77,6 +77,41 @@ MAX_TAILOR_RETRIES = int(os.getenv("MAX_TAILOR_RETRIES", "1"))
 MATCH_LOOP_INTER_CALL_SLEEP_S = float(
     os.getenv("APPLYSMART_MATCH_LOOP_SLEEP_S", "6.0")
 )
+
+# ─────────────────────────────────────────────────────────────
+# Cover-letter deterministic pre-check (token-saver)
+# ─────────────────────────────────────────────────────────────
+# Cheap rule-based grounding check. Returns (ok, reason). When ok==True,
+# the caller MAY skip the LLM cover-letter reviewer entirely. The checks
+# mirror the LLM rubric's cheapest dimensions (length + banned buzzwords
+# + numeric-token grounding against CV/JD) without needing a model call.
+_COVER_LETTER_BANNED_BUZZWORDS = (
+    "dynamic", "passionate", "fast-paced", "rockstar", "ninja",
+    "game-changer", "synergy", "synergies", "think outside the box",
+    "results-driven", "detail-oriented", "self-starter",
+)
+_NUM_TOKEN_RE = re.compile(r"\b\d[\d,\.]{1,}\b")  # two+ digit runs only
+def _cover_letter_deterministic_ok(
+    cover_letter: str, cv_text: str, jd_text: str,
+) -> tuple[bool, str]:
+    if not cover_letter or not cv_text:
+        return False, "empty_inputs"
+    words = cover_letter.split()
+    wc = len(words)
+    if wc < 280 or wc > 460:
+        return False, f"word_count={wc}"
+    low = cover_letter.lower()
+    hit = next((b for b in _COVER_LETTER_BANNED_BUZZWORDS if b in low), None)
+    if hit:
+        return False, f"banned_buzzword:{hit!r}"
+    # Every multi-digit numeric token must appear in CV or JD to avoid
+    # fabricated metrics slipping through.
+    haystack = (cv_text + "\n" + (jd_text or "")).lower()
+    for m in _NUM_TOKEN_RE.findall(low):
+        if m not in haystack:
+            return False, f"ungrounded_number:{m!r}"
+    return True, f"word_count={wc},no_buzzwords,numbers_grounded"
+
 
 HARD_TERMINAL_STATUSES = frozenset({
     "validation_failed",
@@ -1102,18 +1137,44 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
             )
             try:
                 from agents.cover_letter_reviewer import review_cover_letter
-                cl_review_local = review_cover_letter(
-                    cv_text         = state["cv_text"],
-                    cover_letter    = cl_text,
-                    job_description = jd,
-                    job_title       = title,
-                    company         = company,
+                # Token-saver (May 5): run a cheap deterministic grounding
+                # pre-check before the LLM reviewer. When the letter is
+                # within length spec, free of banned buzzwords, and every
+                # numeric token in it appears in the CV or JD, we skip the
+                # reviewer LLM call entirely and accept. The LLM only adds
+                # value when something looks fishy — otherwise it's a ~1k
+                # token no-op per job.
+                det_ok, det_reason = _cover_letter_deterministic_ok(
+                    cl_text, state["cv_text"], jd,
                 )
-                print(
-                    f"   🧐 {tag} CL review: score={cl_review_local['score']}/100, "
-                    f"verdict={cl_review_local['verdict']}, "
-                    f"fabrications={len(cl_review_local['fabrications'])}"
-                )
+                if det_ok and os.getenv("SKIP_COVER_REVIEWER_WHEN_CLEAN", "1").strip().lower() not in ("0", "false", "no", "off"):
+                    cl_review_local = {
+                        "score": 85,
+                        "verdict": "accept",
+                        "feedback": "Deterministic pre-check passed; LLM reviewer skipped.",
+                        "fabrications": [],
+                        "strengths": [], "weaknesses": [],
+                        "_source": "deterministic_skip",
+                    }
+                    print(
+                        f"   ✅ {tag} CL deterministic checks passed "
+                        f"({det_reason}) — skipping LLM reviewer"
+                    )
+                else:
+                    if not det_ok:
+                        print(f"   🔎 {tag} CL deterministic pre-check triggered reviewer: {det_reason}")
+                    cl_review_local = review_cover_letter(
+                        cv_text         = state["cv_text"],
+                        cover_letter    = cl_text,
+                        job_description = jd,
+                        job_title       = title,
+                        company         = company,
+                    )
+                    print(
+                        f"   🧐 {tag} CL review: score={cl_review_local['score']}/100, "
+                        f"verdict={cl_review_local['verdict']}, "
+                        f"fabrications={len(cl_review_local['fabrications'])}"
+                    )
                 # Only retry if the first attempt looks clearly weak.
                 # Skip the retry when the score is already decent to avoid
                 # the 40→40 feedback loop seen in the Cormac run (reviewer
@@ -1412,9 +1473,27 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         )
                     except Exception:
                         _deepseek_src = False
-                    effective_threshold = (
-                        65 if _deepseek_src else REVIEWER_ACCEPT_THRESHOLD
+                    # Tightened retry gate (May 5): when none of the hard
+                    # safety flags (too_few_rewrites / fab_flag / all_reverted)
+                    # are tripped, give the reviewer a wider soft-accept band
+                    # to avoid spending ~7K tokens on a retry that historically
+                    # lands within 3–5 points of the first attempt. DeepSeek
+                    # continues to get the widest band because the Llama
+                    # reviewer consistently under-scores its terser phrasing.
+                    _all_reverted = bool(
+                        (diff.get("_debug") or {}).get("all_reverted")
                     )
+                    _hard_flag = too_few_rewrites or fab_flag or _all_reverted
+                    if _deepseek_src:
+                        effective_threshold = 65
+                    elif not _hard_flag:
+                        # Accept within 7 points of the hard threshold when
+                        # the deterministic guards are satisfied.
+                        effective_threshold = max(
+                            REVIEWER_ACCEPT_THRESHOLD - 7, 60
+                        )
+                    else:
+                        effective_threshold = REVIEWER_ACCEPT_THRESHOLD
 
                     if not too_few_rewrites and not fab_flag and (
                         review["verdict"] == "accept"

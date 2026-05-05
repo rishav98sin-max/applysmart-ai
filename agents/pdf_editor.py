@@ -16,8 +16,62 @@ from __future__ import annotations
 import os
 import re
 from typing import Any, Dict, List, Optional
+import hashlib
 
 import fitz  # PyMuPDF
+
+
+# ─────────────────────────────────────────────────────────────
+# OUTLINE CACHE (P2-1: May 2026)
+# ─────────────────────────────────────────────────────────────
+# Simple in-memory cache for CV outlines to avoid re-parsing the
+# same PDF multiple times when tailoring to multiple jobs.
+# Cache key: (pdf_path, file_mtime, file_size) - invalidates when
+# the file changes. This is safe for single-process usage; for
+# multi-process, a Redis or file-based cache would be needed.
+
+_outline_cache: Dict[str, tuple] = {}  # cache_key -> (outline, mtime, size)
+
+
+def _get_cache_key(pdf_path: str) -> tuple:
+    """Generate a cache key based on file path, mtime, and size."""
+    try:
+        stat = os.stat(pdf_path)
+        return (pdf_path, stat.st_mtime, stat.st_size)
+    except OSError:
+        return (pdf_path, 0, 0)
+
+
+def build_outline_cached(pdf_path: str) -> Dict[str, Any]:
+    """
+    Wrapper around build_outline that uses an in-memory cache.
+    Returns the cached outline if the PDF hasn't changed, otherwise
+    parses the PDF and updates the cache.
+    """
+    cache_key = _get_cache_key(pdf_path)
+    
+    # Check if we have a cached outline for this file
+    if cache_key in _outline_cache:
+        cached_outline, cached_mtime, cached_size = _outline_cache[cache_key]
+        # Verify the file hasn't changed
+        try:
+            stat = os.stat(pdf_path)
+            if stat.st_mtime == cached_mtime and stat.st_size == cached_size:
+                # File unchanged, return cached outline
+                return cached_outline
+        except OSError:
+            pass  # File error, fall through to re-parse
+    
+    # Parse the PDF and cache the result
+    outline = build_outline(pdf_path)
+    cache_key = _get_cache_key(pdf_path)
+    try:
+        stat = os.stat(pdf_path)
+        _outline_cache[cache_key] = (outline, stat.st_mtime, stat.st_size)
+    except OSError:
+        pass  # Still cache the outline even if we can't get stats
+    
+    return outline
 
 
 # ─────────────────────────────────────────────────────────────
@@ -315,6 +369,16 @@ def _classify_heading(text: str) -> Optional[str]:
         return None
     for kind, rx in _HEADINGS.items():
         if rx.match(t):
+            # May 2026 (Run 12 fix): reject the bare singular "Project"
+            # (no qualifier word, no colon, no plural). On Shrestha-style
+            # CVs the word "Project" appears as a sub-section label INSIDE
+            # an experience role (labelling the project the candidate was
+            # responsible for). Letting the projects regex match it splits
+            # the role mid-bullet and corrupts the outline. Any legitimate
+            # project section heading is either plural ("Projects"),
+            # qualified ("Personal Projects"), or punctuated ("Project:").
+            if kind == "projects" and t.strip().lower() == "project":
+                return None
             return kind
     return None
 
@@ -686,6 +750,13 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     prev_line: Optional[Dict[str, Any]] = None
     prev_was_bullet_text: bool = False
+    # Track the leftmost x0 seen for any role header in this section.
+    # Real role headers all sit at (or very near) the same left margin;
+    # a "bold" line indented well to the right of that margin is virtually
+    # always a wrap continuation of an indented bullet whose body text
+    # also happens to be rendered in a bold font (common in marketing /
+    # comms CVs — see Shrestha-style layout, May 2026 Run 12 diagnosis).
+    header_baseline_x0: Optional[float] = None
 
     for ln in lines:
         text = ln["text"]
@@ -701,7 +772,51 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Role header: bold, not bullet. (We deliberately do NOT require
         # `not marker_bullet` here — a stray marker from a previous visual row
         # must not stop us from recognising a real bold role header.)
-        if bold and not explicit_bullet:
+        #
+        # May 2026 (Run 12 fix): two extra guards prevent bullet wrap-lines
+        # from being misclassified as fresh role headers when the bullet body
+        # text is rendered in bold (Shrestha-style marketing CVs):
+        #
+        #   (1) Continuation guard — if the previous line was bullet body
+        #       text, this line was NOT preceded by a bullet marker, the
+        #       y-gap is within normal inter-line spacing, AND its x0 sits
+        #       within 40pt of the previous bullet's first-line x0, then it
+        #       is a wrap continuation of that bullet, not a new role.
+        #
+        #   (2) Indent guard — once we have observed a real role header in
+        #       this section, any subsequent bold non-bullet line whose x0
+        #       is more than 15pt to the right of that baseline cannot be a
+        #       role header. CVs do not indent role headers; an indented
+        #       bold line is bullet body emphasis.
+        is_continuation = (
+            prev_was_bullet_text
+            and not marker_bullet
+            and prev_line is not None
+            and abs(ln["bbox"][0] - prev_line["bbox"][0]) <= 40
+            and (median_gap == 0.0 or gap <= median_gap * 1.3)
+        )
+        # Indent guard: a bold line indented well past the established role
+        # baseline is most likely bullet body emphasis, NOT a new role —
+        # UNLESS the line itself carries a strong role-header signal
+        # (date pattern or Company–Role em-dash). Multi-page CVs sometimes
+        # render later role headers at a different left margin (Shrestha:
+        # Ogilvy at x≈24, Genesis BCW at x≈107 on page 2). The signal-bypass
+        # makes the guard layout-tolerant while still rejecting indented
+        # bullet-body bold lines that lack a header signal.
+        line_has_header_signal = bool(
+            _DATE_HINT_RX.search(text) or _COMPANY_DASH_RX.search(text)
+        )
+        indent_blocks_header = (
+            header_baseline_x0 is not None
+            and ln["bbox"][0] > header_baseline_x0 + 15
+            and not line_has_header_signal
+        )
+        if (
+            bold
+            and not explicit_bullet
+            and not is_continuation
+            and not indent_blocks_header
+        ):
             cur = {
                 "header_text":   text,
                 "header_line":   ln,
@@ -709,6 +824,8 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "sub_lines":     [],
             }
             roles.append(cur)
+            if header_baseline_x0 is None or ln["bbox"][0] < header_baseline_x0:
+                header_baseline_x0 = ln["bbox"][0]
             prev_was_bullet_text = False
             prev_line = ln
             continue
@@ -749,7 +866,75 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
 
         prev_line = ln
 
-    return roles
+    # ── Post-merge fragmented roles (May 2026 / Run 12 fix) ─────────────
+    # On 2-column layouts (left column = sub-section labels like
+    # "Experience:" / "SAP Labs" / "India", right column = bullets), the
+    # parser's top-down line iteration interleaves the columns and
+    # promotes left-column labels to fake role headers. We post-process
+    # by merging any "role" whose header lacks ALL real-role signals
+    # (no date pattern, no italic sub-title, no company-style em-dash
+    # phrase) into the previous role. This collapses the noise back
+    # into the right place without needing full column detection.
+    return _merge_fragmented_roles(roles)
+
+
+_DATE_HINT_RX = re.compile(
+    r"\b("
+    r"(?:19|20)\d{2}"                                    # 1995, 2024
+    r"|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"   # month names
+    r"|january|february|march|april|june|july|august"
+    r"|september|october|november|december"
+    r"|present|current|now|today"
+    r")\b",
+    re.I,
+)
+_COMPANY_DASH_RX = re.compile(r"\w+\s*[\u2013\u2014\-]\s*\w+")
+
+
+def _role_header_has_signal(role: Dict[str, Any]) -> bool:
+    """
+    True if `role`'s header (or its italic sub_lines) carries a real
+    role-header signal: a date / month / 'present', or a Company–Role
+    em-dash phrase, or any italic sub-line (typical CV job-title styling).
+    """
+    hdr = (role.get("header_text") or "").strip()
+    if not hdr:
+        return False
+    if _DATE_HINT_RX.search(hdr):
+        return True
+    if _COMPANY_DASH_RX.search(hdr):
+        return True
+    # Italic sub_lines under a header are almost always a job-title
+    # subtitle on real role headers.
+    if role.get("sub_lines"):
+        return True
+    # Fallback: if any sub_line carries a date hint, accept.
+    for sl in role.get("sub_lines") or []:
+        if _DATE_HINT_RX.search(sl.get("text") or ""):
+            return True
+    return False
+
+
+def _merge_fragmented_roles(roles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Walk roles in order. The FIRST role is always kept (it is what the
+    section heading decided). For each subsequent role, if its header
+    has no real-role signal, merge its bullet_groups + sub_lines into
+    the most recent kept role. Otherwise, keep it as a new role.
+
+    This preserves all bullets — they just attach to the right role.
+    """
+    if not roles:
+        return roles
+    kept: List[Dict[str, Any]] = [roles[0]]
+    for r in roles[1:]:
+        if _role_header_has_signal(r):
+            kept.append(r)
+        else:
+            anchor = kept[-1]
+            anchor["bullet_groups"].extend(r.get("bullet_groups") or [])
+            anchor["sub_lines"].extend(r.get("sub_lines") or [])
+    return kept
 
 
 def _append_bullet(role: Dict[str, Any], line: Dict[str, Any]) -> None:
@@ -1181,6 +1366,140 @@ def _first_span_of_lines(lines: List[Dict[str, Any]]) -> Optional[dict]:
     return _pick_body_span(lines)
 
 
+def _summaries_equivalent(a: str, b: str) -> bool:
+    """
+    True when two summary strings carry the same content modulo whitespace,
+    case, and typographic dash variants. Used by apply_edits to short-circuit
+    the redact-and-insert path when a credential / identity guard has
+    reverted a rewritten summary back to the original PDF text — in which
+    case redacting and re-inserting the same text can silently fail
+    (tighter rect than the original draw region) and leave the summary
+    block blank.
+    """
+    def _norm(s: str) -> str:
+        if not s:
+            return ""
+        # Unify typographic dashes, collapse whitespace, lower-case.
+        s2 = s.replace("\u2013", "-").replace("\u2014", "-")
+        return " ".join(s2.lower().split())
+    return _norm(a) == _norm(b)
+
+
+def _apply_summary_edit(
+    doc:         "fitz.Document",
+    sections:    List[Dict[str, Any]],
+    sum_sec:     Dict[str, Any],
+    new_summary: str,
+    font_cache:  Dict[int, str],
+    report:      Dict[str, Any],
+) -> None:
+    """
+    Redact the existing summary block and draw `new_summary` in its place.
+
+    Safety net (May 2026 / Run 12 fix): if the final insert_textbox call
+    returns fontsize=0 (couldn't fit at any size in the shrink ladder),
+    re-draw the ORIGINAL summary text instead of leaving an empty box.
+    Protects against the silent-empty-summary regression seen when the
+    reverted summary is nominally different but geometrically equivalent
+    to the original.
+    """
+    # ── P4 (Apr 28): Summary overflow guard ────────
+    # Reject dangerously long rewrites BEFORE touching the PDF.
+    orig_text = " ".join(ln["text"] for ln in sum_sec["lines"]).strip()
+    orig_words = len(orig_text.split())
+    new_words  = len(new_summary.split())
+    overflow_ratio = (new_words / orig_words) if orig_words >= 10 else 0.0
+    if overflow_ratio > 1.4:
+        msg = (
+            f"summary: rewrite is {new_words} words vs "
+            f"{orig_words} original ({overflow_ratio:.1f}\u00d7) "
+            f"\u2014 rejected to prevent layout overflow"
+        )
+        print(f"   \U0001f6e1\ufe0f  pdf_editor: {msg}")
+        report["skipped"].append(msg)
+        report.setdefault("_debug", {})["summary_overflow_rejected"] = {
+            "orig_words": orig_words,
+            "new_words":  new_words,
+            "ratio":      round(overflow_ratio, 2),
+        }
+        return
+
+    # P1-1 (May 2026): Cross-page summary guard. When the summary spans
+    # multiple pages, redacting only the first page's bbox leaves the
+    # tail orphaned on page 2 with no matching insert. Skip the in-place
+    # edit and let the caller (rebuild path) regenerate the CV cleanly.
+    summary_pages = {ln["page"] for ln in sum_sec["lines"]}
+    if len(summary_pages) > 1:
+        msg = (
+            f"summary: spans {len(summary_pages)} pages "
+            f"({sorted(summary_pages)}) — in-place edit cannot safely "
+            f"redact across page boundaries; skipping rewrite."
+        )
+        print(f"   \u26a0\ufe0f  pdf_editor: {msg}")
+        report["skipped"].append(msg)
+        report.setdefault("_debug", {})["summary_cross_page"] = {
+            "pages": sorted(summary_pages),
+        }
+        return
+
+    page_idx = sum_sec["lines"][0]["page"]
+    page = doc[page_idx]
+    rect = _union_rect([ln["bbox"] for ln in sum_sec["lines"]], pad=1.5)
+
+    # Data-driven rect boundaries (exclude self from right-margin measure).
+    page_lines = _all_lines_on_page(sections, page_idx)
+    own_y_min = min(ln["bbox"][1] for ln in sum_sec["lines"]) - 0.5
+    own_y_max = max(ln["bbox"][3] for ln in sum_sec["lines"]) + 0.5
+    other_lines = [
+        ln for ln in page_lines
+        if not (own_y_min <= ln["bbox"][1] <= own_y_max)
+    ]
+    rect.x1 = max(rect.x1, _measured_right_margin(other_lines, page.rect.width))
+    next_y0 = _next_y0_below(rect, other_lines, page.rect.height)
+    rect.y1 = min(rect.y1, max(rect.y1, next_y0 - 2.0))
+
+    ref = _first_span_of_lines(sum_sec["lines"])
+    if ref is None:
+        report["skipped"].append("summary: no reference span")
+        return
+
+    measured = _measure_line_gap(sum_sec["lines"])
+    _redact_rect(page, rect)
+    sz = _insert_fitted(
+        page, rect, new_summary, ref, align=0,
+        line_gap=measured,
+        doc=doc, font_cache=font_cache,
+    )
+    if sz > 0:
+        report["applied"]["summary"] = {"fontsize": sz, "line_gap": round(measured, 3)}
+        return
+
+    # ── Silent-empty guard (May 2026 / Run 12 fix) ─────────────────
+    # insert_textbox returned rc<0 at every size in the shrink ladder.
+    # Rather than ship an empty redacted rectangle, restore the ORIGINAL
+    # summary text so the PDF at worst carries unchanged content.
+    print(
+        "   \u26a0\ufe0f  pdf_editor: summary rewrite did not fit at any "
+        "font size; restoring original summary to avoid empty box."
+    )
+    sz_fallback = _insert_fitted(
+        page, rect, orig_text, ref, align=0,
+        line_gap=measured,
+        doc=doc, font_cache=font_cache,
+    )
+    if sz_fallback > 0:
+        report["applied"]["summary"] = {
+            "fontsize": sz_fallback,
+            "line_gap": round(measured, 3),
+            "fallback": "restored_original",
+        }
+    else:
+        # Absolute worst case: mention in report so the caller can
+        # surface a UI warning. The PDF will have an empty summary box.
+        report["skipped"].append("summary: rewrite AND fallback both overflowed")
+        report.setdefault("_debug", {})["summary_empty_fallback"] = True
+
+
 def _redact_rect(page: fitz.Page, rect: fitz.Rect) -> None:
     page.add_redact_annot(rect, fill=(1, 1, 1))
     # Keep images/graphics; only remove text+fill.
@@ -1371,80 +1690,31 @@ def apply_edits(
             if sum_sec is None:
                 sum_sec = _infer_summary_from_header(sections)
             if sum_sec and sum_sec["lines"]:
-                # ── P4 (Apr 28): Summary overflow guard ────────
-                # If the rewritten summary is much longer than the original
-                # block, applying it via _insert_fitted() will overflow into
-                # the next section's text spans (role headers below get
-                # clipped to fragments — the "A" / "Cl" damage seen in the
-                # Barden run on Apr 27). Reject the summary edit cleanly
-                # so the supervisor's overflow signal can route to the
-                # rebuild path or trigger a stricter retry.
-                #
-                # Threshold 1.4×: legitimate tailored summaries can grow
-                # 10-30% naturally (added JD verbs, foregrounded facts).
-                # Beyond 1.4× we're in disaster territory (e.g. 80→385
-                # words from the Personal-Projects parser bug).
-                orig_text = " ".join(
+                # ── Trivial-summary short-circuit (May 2026 / Run 12 fix) ──
+                # When the credential / identity / foreign-term guards in
+                # cv_diff_tailor revert a rewritten summary to the original
+                # text, `new_summary` arrives equal to the existing PDF
+                # text. The redact-then-insert path that follows can fail
+                # to fit the same text into a slightly tighter rect (the
+                # next-sibling y1 cap shrinks the box by 2pt vs. the
+                # natural draw region), leaving the summary block redacted
+                # but empty — see Run 12 Shrestha output. Skip the whole
+                # path when the summary is unchanged: zero risk of empty
+                # box, zero token cost.
+                _orig_for_compare = " ".join(
                     ln["text"] for ln in sum_sec["lines"]
                 ).strip()
-                orig_words = len(orig_text.split())
-                new_words = len(new_summary.split())
-                # Only enforce when we have a meaningful original to
-                # compare against — very short originals (<10 words) are
-                # often placeholder/empty summaries on stub CVs.
-                overflow_ratio = (new_words / orig_words) if orig_words >= 10 else 0.0
-                if overflow_ratio > 1.4:
-                    msg = (
-                        f"summary: rewrite is {new_words} words vs "
-                        f"{orig_words} original ({overflow_ratio:.1f}\u00d7) "
-                        f"\u2014 rejected to prevent layout overflow"
-                    )
-                    print(f"   \U0001f6e1\ufe0f  pdf_editor: {msg}")
-                    report["skipped"].append(msg)
-                    # Surface in the report's debug counters so the
-                    # supervisor can detect it via best_review._debug
-                    report.setdefault("_debug", {})["summary_overflow_rejected"] = {
-                        "orig_words": orig_words,
-                        "new_words": new_words,
-                        "ratio": round(overflow_ratio, 2),
-                    }
+                if _summaries_equivalent(new_summary, _orig_for_compare):
+                    report["applied"]["summary"] = {"skipped": "unchanged"}
                 else:
-                    page_idx = sum_sec["lines"][0]["page"]
-                    page = doc[page_idx]
-                    rect = _union_rect([ln["bbox"] for ln in sum_sec["lines"]], pad=1.5)
-                    # Apr 28 follow-up: data-driven rect extension. Replaces
-                    # the old hardcoded `width-40` (broke on non-standard
-                    # margins) and avoids any vertical extension at all on
-                    # the summary block — the next-sibling y0 of the first
-                    # role/projects/skills heading naturally bounds it.
-                    page_lines = _all_lines_on_page(sections, page_idx)
-                    # Exclude the summary's own lines from the right-margin
-                    # measurement so an unusually short summary doesn't
-                    # constrain its own wrap zone.
-                    own_y_min = min(ln["bbox"][1] for ln in sum_sec["lines"]) - 0.5
-                    own_y_max = max(ln["bbox"][3] for ln in sum_sec["lines"]) + 0.5
-                    other_lines = [
-                        ln for ln in page_lines
-                        if not (own_y_min <= ln["bbox"][1] <= own_y_max)
-                    ]
-                    rect.x1 = max(rect.x1, _measured_right_margin(other_lines, page.rect.width))
-                    # Bound y1 strictly below the next sibling minus a 2pt
-                    # safety gap. If nothing below, leave the union rect's
-                    # natural bottom (don't extend it artificially).
-                    next_y0 = _next_y0_below(rect, other_lines, page.rect.height)
-                    rect.y1 = min(rect.y1, max(rect.y1, next_y0 - 2.0))
-                    ref = _first_span_of_lines(sum_sec["lines"])
-                    if ref is not None:
-                        measured = _measure_line_gap(sum_sec["lines"])
-                        _redact_rect(page, rect)
-                        sz = _insert_fitted(
-                            page, rect, new_summary, ref, align=0,
-                            line_gap=measured,
-                            doc=doc, font_cache=font_cache,
-                        )
-                        report["applied"]["summary"] = {"fontsize": sz, "line_gap": round(measured, 3)}
-                    else:
-                        report["skipped"].append("summary: no reference span")
+                    _apply_summary_edit(
+                        doc, sections, sum_sec, new_summary,
+                        font_cache, report,
+                    )
+                # Drop into the unchanged branch. Both paths leave the
+                # original PDF intact in the trivial case; the rewrite
+                # path runs only when there's a real text delta.
+                pass
             else:
                 report["skipped"].append("summary: section not found")
 
@@ -1502,6 +1772,28 @@ def apply_edits(
                         )
                     )
                     if trivial:
+                        continue
+
+                    # P1-1 (May 2026): Cross-page bullet group guard. When
+                    # the bullet block straddles a page break, a single
+                    # _union_rect on page A leaves any bullet lines on
+                    # page B orphaned + un-redacted, while the rewritten
+                    # text gets squeezed onto page A only. Skip the
+                    # rewrite for that role and surface in the report so
+                    # the reviewer can decide whether to retry or accept.
+                    bullet_pages = {
+                        ln["page"] for b in bullets for ln in b["lines"]
+                    }
+                    if len(bullet_pages) > 1:
+                        msg = (
+                            f"role {header[:40]!r}: bullet group spans "
+                            f"{len(bullet_pages)} pages "
+                            f"({sorted(bullet_pages)}) — in-place edit "
+                            f"cannot redact across page boundary; "
+                            f"keeping role original."
+                        )
+                        print(f"   \u26a0\ufe0f  pdf_editor: {msg}")
+                        report["skipped"].append(msg)
                         continue
 
                     page_idx = bullets[0]["lines"][0]["page"]

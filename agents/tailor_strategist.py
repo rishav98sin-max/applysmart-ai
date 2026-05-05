@@ -146,6 +146,22 @@ HARD RULES — non-negotiable
   any other field.
 - Do not invent metrics, percentages, headcounts, or revenue numbers.
 - Do not invent job titles, company names, or certifications.
+- CREDENTIAL GROUNDING (critical — May 2026 fix): Years-of-experience,
+  degree grades, dates, employer names, university names, and any
+  numeric outcome in the CV must be COPIED VERBATIM — never rounded,
+  downgraded, or paraphrased. If the CV header says "Work Experience –
+  4 years" you write "4 years" (not "3+ years", not "4+ years").
+  The tailor's credential guard will revert any summary that drops or
+  alters these tokens, silently wasting the rewrite. If the CV does
+  not state a YoE, OMIT the signal rather than inferring one.
+- SECTION-KEY DISCIPLINE (critical — May 2026 fix): The `bullet_strategy`
+  and `synthesised_bullets` keys MUST be the role-header lines that
+  appear after "▸" in the CV outline block — e.g. "Ogilvy – Senior
+  Account Executive October 2024 – Present", NOT the outer section
+  label "ROLES" / "PROJECTS". Copy the header text after "▸" verbatim,
+  including punctuation and dates. If you emit "ROLES:" or "PROJECTS:"
+  or any other generic label as a key, the tailor silently drops your
+  entire strategy and the candidate gets an un-tailored CV.
 - For project_reframings: the new_label must be defensible from the
   EXISTING bullets of that project. Provide a 1-line grounding_evidence.
 - For synthesised_bullets: every claim in the proposed text must be
@@ -174,7 +190,7 @@ OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
   ],
 
   "bullet_strategy": {{
-    "<exact role header as it appears in CV outline>": [
+    "<exact role-header line after ▸ in the CV outline — e.g. 'Ogilvy – Senior Account Executive October 2024 – Present'. NEVER 'ROLES' or 'PROJECTS'>": [
       {{
         "i": 0,
         "action": "rewrite_verb_led" | "promote" | "deprioritise",
@@ -186,7 +202,7 @@ OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
   }},
 
   "synthesised_bullets": {{
-    "<exact role header>": [
+    "<exact role-header line after ▸ — same grammar as bullet_strategy keys>": [
       {{
         "text": "<new bullet, every claim grounded in other bullets of this role>",
         "grounding_evidence": "<role bullet indices and what each contributes>"
@@ -210,6 +226,85 @@ Return the JSON now:"""
 # ─────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────
+
+def _compress_long_jd(job_description: str, max_words: int = 800) -> str:
+    """
+    Compress a very long job description by extracting key sections.
+    When the JD exceeds max_words, this function extracts the most
+    relevant sections (requirements, responsibilities, qualifications)
+    and drops boilerplate (company descriptions, equal opportunity
+    statements, etc.) to reduce token usage while preserving signal.
+
+    Uses a simple heuristic: looks for common section headers and
+    extracts content from them, up to the word limit.
+    """
+    if not job_description:
+        return job_description
+    
+    jd_lower = job_description.lower()
+    word_count = len(job_description.split())
+    
+    # If JD is already under the limit, return as-is
+    if word_count <= max_words:
+        return job_description
+    
+    # Common section headers in JDs (case-insensitive)
+    section_patterns = [
+        r"requirements?:?",
+        r"qualifications?:?",
+        r"responsibilities?:?",
+        r"what you'll do",
+        r"what we're looking for",
+        r"you will:",
+        r"you should:",
+        r"key responsibilities",
+        r"required skills",
+        r"preferred skills",
+        r"about the role",
+        r"role overview",
+        r"your role",
+    ]
+    
+    # Try to extract key sections
+    import re
+    sections: List[str] = []
+    
+    for pattern in section_patterns:
+        # Look for the section header
+        match = re.search(pattern, jd_lower, re.IGNORECASE)
+        if match:
+            start = match.start()
+            # Find the end of this section (next major header or end of text)
+            # Look for next all-caps line, numbered list, or common section marker
+            remaining = jd_lower[start + len(match.group(0)):]
+            next_section_match = re.search(
+                r"\n\s*(?:requirements?:?|qualifications?:?|responsibilities?:?|benefits?:?|about us:|company:|what we offer)",
+                remaining,
+                re.IGNORECASE
+            )
+            if next_section_match:
+                end = start + len(match.group(0)) + next_section_match.start()
+                section_text = job_description[start:end].strip()
+            else:
+                # Take the rest of the text from this section
+                section_text = job_description[start:].strip()
+            
+            if section_text and len(section_text.split()) > 10:
+                sections.append(section_text)
+    
+    # If we found sections, concatenate them up to the word limit
+    if sections:
+        compressed = "\n\n".join(sections)
+        # Still respect the word limit
+        words = compressed.split()
+        if len(words) > max_words:
+            compressed = " ".join(words[:max_words]) + "..."
+        return compressed
+    
+    # Fallback: if no sections found, just truncate to max_words
+    words = job_description.split()
+    return " ".join(words[:max_words]) + "..."
+
 
 def _format_outline_for_strategist(outline: Dict[str, Any]) -> str:
     """
@@ -290,6 +385,18 @@ def _normalise_section_keys(d: Dict[str, Any]) -> Dict[str, Any]:
         r":\s",                  # any "Foo: bar" pattern
         flags=re.IGNORECASE,
     )
+    # Generic outer-section labels the strategist sometimes echoes back
+    # from the CV outline block ("ROLES:" / "PROJECTS:" / "SKILLS:"…).
+    # These are NOT role headers — the apply layer has no way to match
+    # them to a specific role, so their bullet_actions would be silently
+    # dropped. Reject them here with a clear log line so the regression
+    # is visible instead of looking like "strategy did nothing".
+    META_KEYS = {
+        "roles", "role", "projects", "project", "skills", "skill",
+        "education", "experience", "work experience", "professional experience",
+        "summary", "about",
+    }
+    dropped: List[str] = []
     for raw_key, value in d.items():
         if not isinstance(raw_key, str):
             out[raw_key] = value
@@ -299,7 +406,16 @@ def _normalise_section_keys(d: Dict[str, Any]) -> Dict[str, Any]:
         clean = clean.strip(" \t\r\n.,:;")
         if not clean:
             clean = raw_key.strip()
+        if clean.lower() in META_KEYS:
+            dropped.append(raw_key)
+            continue
         out[clean] = value
+    if dropped:
+        print(
+            f"   ⚠️  strategist: dropped meta-key section(s) "
+            f"{dropped!r} — these are outer labels, not role headers. "
+            f"Prompt will be tightened on next pass."
+        )
     return out
 
 
@@ -434,6 +550,41 @@ def build_tailor_strategy(
     if not outline or not (job_description or "").strip():
         return dict(EMPTY_STRATEGY)
 
+    # P1-3 (May 2026): Short-JD skip strategist. When the job description
+    # is too short (e.g., < 50 words), it provides insufficient signal for
+    # meaningful strategic analysis. Running the strategist on a minimal JD
+    # wastes tokens (~500-800) and produces a strategy that's either generic
+    # or hallucinated. Skip the strategist call and return empty strategy
+    # so the tailor proceeds without strategic guidance (which is appropriate
+    # for low-information JDs anyway).
+    _JD_MIN_WORD_THRESHOLD = 50
+    jd_word_count = len((job_description or "").split())
+    if jd_word_count < _JD_MIN_WORD_THRESHOLD:
+        print(
+            f"   ⏭️  strategist: JD too short ({jd_word_count} words < "
+            f"{_JD_MIN_WORD_THRESHOLD}) — skipping strategist call, "
+            f"returning empty strategy."
+        )
+        return dict(EMPTY_STRATEGY)
+
+    # P1-4 (May 2026): Long-JD compression. When the job description is
+    # very long (e.g., > 800 words), it consumes excessive tokens in the
+    # prompt and may cause context overflow. Compress the JD by extracting
+    # key sections (requirements, responsibilities, qualifications) while
+    # dropping boilerplate (company descriptions, equal opportunity statements).
+    # This reduces token usage by 30-50% while preserving the signal the
+    # strategist needs to produce a useful strategy.
+    _JD_MAX_WORD_THRESHOLD = 800
+    jd_for_processing = job_description or ""
+    if jd_word_count > _JD_MAX_WORD_THRESHOLD:
+        jd_compressed = _compress_long_jd(jd_for_processing, max_words=_JD_MAX_WORD_THRESHOLD)
+        compressed_word_count = len(jd_compressed.split())
+        print(
+            f"   ↘️  strategist: JD compressed from {jd_word_count} → "
+            f"{compressed_word_count} words to reduce token usage."
+        )
+        jd_for_processing = jd_compressed
+
     from agents.runtime        import track_llm_call
     from agents.llm_client     import chat_deepseek, chat_quality
     from agents.prompt_safety  import wrap_untrusted_block, untrusted_block_preamble
@@ -441,7 +592,7 @@ def build_tailor_strategy(
     track_llm_call(agent="tailor_strategist")
 
     jd_block = wrap_untrusted_block(
-        (job_description or "").strip() or "(no description provided)",
+        jd_for_processing.strip() or "(no description provided)",
         label="JOB_DESCRIPTION",
     )
 
@@ -478,8 +629,33 @@ def build_tailor_strategy(
 
     parsed = _extract_json(raw or "")
     if not parsed:
-        print(f"   ⚠️  strategist: JSON parse failed (len={len(raw or '')}) — empty strategy")
-        return dict(EMPTY_STRATEGY)
+        # Stale-deploy signature: len(raw) ≤ ~3,600 chars ≈ 900 tokens is
+        # the old max_tokens=900 ceiling. The new code uses 2500. When we
+        # see a short-and-unparseable strategist response, it strongly
+        # suggests the pod serving this request is still on the old code.
+        # Auto-retry once on Groq with a higher budget rather than letting
+        # the whole pipeline fall back to a mock strategy (which wastes
+        # ~25K downstream tokens on a run that can never tailor properly).
+        raw_len = len(raw or "")
+        if raw_len > 0 and raw_len <= 3600:
+            print(
+                f"   ⚠️  strategist: JSON parse failed (len={raw_len}, "
+                f"likely stale-deploy 900-token truncation) — retrying on Groq"
+            )
+            try:
+                raw2 = chat_quality(prompt, max_tokens=2500, temperature=0.2)
+                parsed = _extract_json(raw2 or "")
+                if parsed:
+                    raw = raw2
+                else:
+                    print(f"   ⚠️  strategist: Groq retry also failed — empty strategy")
+                    return dict(EMPTY_STRATEGY)
+            except Exception as e:
+                print(f"   ⚠️  strategist: Groq retry raised {type(e).__name__}: {e} — empty strategy")
+                return dict(EMPTY_STRATEGY)
+        else:
+            print(f"   ⚠️  strategist: JSON parse failed (len={raw_len}) — empty strategy")
+            return dict(EMPTY_STRATEGY)
 
     # Normalise expected keys so downstream consumers can do simple
     # dict.get() without KeyError. We do not validate values here —

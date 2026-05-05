@@ -115,6 +115,22 @@ def _patch_groq_caller() -> None:
         except Exception:
             return 0
 
+    def _split_tokens(prompt_s: str, resp_s: str, total: int) -> tuple[int, int]:
+        # Heuristic char→token split (~4 chars/token) to allocate the known
+        # `total` between prompt and completion. The Groq SDK response we
+        # use doesn't surface per-side usage, so this is the cheapest way
+        # to get a realistic in/out ratio in LangFuse without a deeper patch.
+        if total <= 0:
+            return 0, 0
+        p_chars = len(prompt_s or "")
+        r_chars = len(resp_s or "")
+        denom   = p_chars + r_chars
+        if denom <= 0:
+            return total, 0
+        p_tok = int(round(total * (p_chars / denom)))
+        p_tok = max(0, min(p_tok, total))
+        return p_tok, total - p_tok
+
     def wrapped(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
         agent = _t.current_agent.get() or "unknown"
         job_id = _t.current_job_id.get()
@@ -133,6 +149,7 @@ def _patch_groq_caller() -> None:
             after_tokens = _read_groq_tokens_used()
             tokens_this_call = max(0, after_tokens - before_tokens)
             truncated = _looks_truncated(response, max_tokens)
+            p_tok, c_tok = _split_tokens(prompt, response or "", tokens_this_call)
             try:
                 _t.record_llm_call(
                     agent=agent,
@@ -140,8 +157,8 @@ def _patch_groq_caller() -> None:
                     model=model_name(),
                     prompt=prompt,
                     response=response or "",
-                    prompt_tokens=0,                    # SDK split unavailable here
-                    completion_tokens=0,                # (would need deeper SDK patch)
+                    prompt_tokens=p_tok,                # char-ratio estimate
+                    completion_tokens=c_tok,            # (SDK split unavailable)
                     total_tokens=tokens_this_call,
                     duration_ms=duration_ms,
                     truncated=truncated,
@@ -220,6 +237,20 @@ def _patch_gemini_caller() -> None:
                 else gemini_model()
             )
             truncated = _looks_truncated(response, max_tokens)
+            # Same char-ratio heuristic as the Groq wrapper — keeps LangFuse
+            # in/out totals meaningful when Gemini falls back to Groq mid-run.
+            if tokens_this_call > 0:
+                _pc = len(prompt or "")
+                _rc = len(response or "")
+                _den = _pc + _rc
+                if _den > 0:
+                    _pt = int(round(tokens_this_call * (_pc / _den)))
+                    _pt = max(0, min(_pt, tokens_this_call))
+                    _ct = tokens_this_call - _pt
+                else:
+                    _pt, _ct = tokens_this_call, 0
+            else:
+                _pt, _ct = 0, 0
             try:
                 _t.record_llm_call(
                     agent=agent,
@@ -227,8 +258,8 @@ def _patch_gemini_caller() -> None:
                     model=model,
                     prompt=prompt,
                     response=response or "",
-                    prompt_tokens=0,
-                    completion_tokens=0,
+                    prompt_tokens=_pt,
+                    completion_tokens=_ct,
                     total_tokens=tokens_this_call,
                     duration_ms=duration_ms,
                     truncated=truncated,
