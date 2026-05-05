@@ -29,8 +29,8 @@ except Exception:
 
 
 # ── Groq key rotation pool ──────────────────────────────────────────────────
-# Load up to 3 keys from env. On rate-limit, rotate to the next key.
-# Multiply daily budget: 3 keys × 100K = 300K tokens/day.
+# Load up to 7 keys from env. On rate-limit, rotate to the next key.
+# Multiply daily budget: 8 keys × 100K = 800K tokens/day.
 _GROQ_KEYS: list = []
 _GROQ_KEY_INDEX: int = 0
 _GROQ_CLIENTS: dict = {}  # key → Groq client instance
@@ -69,7 +69,7 @@ _GEMINI_RATE_LIMIT_LOCK = threading.Lock()
 # Set by _call_gemini and _call_groq on every successful return so callers
 # can log "which model produced this kept output". Values:
 #   "GEMINI key#1" / "GEMINI key#2" / "GEMINI key#3"  → live Gemini call
-#   "GROQ key#1"   / "GROQ key#2"                      → live Groq call
+#   "GROQ key#1"   / "GROQ key#2" ... "GROQ key#8"     → live Groq call
 #                                                        (also after Gemini fallback)
 #   "unknown"                                          → no successful call yet
 # Read via last_llm_source(). Module-global rather than per-call return value
@@ -214,7 +214,7 @@ def _load_groq_keys() -> list:
     """Load all available Groq keys from env at startup."""
     from agents.runtime import secret_or_env
     keys = []
-    for var in ("GROQ_API_KEY", "GROQ_API_KEY_2", "GROQ_API_KEY_3", "GROQ_API_KEY_4"):
+    for var in ("GROQ_API_KEY", "GROQ_API_KEY_2", "GROQ_API_KEY_3", "GROQ_API_KEY_4", "GROQ_API_KEY_5", "GROQ_API_KEY_6", "GROQ_API_KEY_7", "GROQ_API_KEY_8"):
         k = secret_or_env(var)
         if k and k.startswith("gsk_") and k not in keys:
             keys.append(k)
