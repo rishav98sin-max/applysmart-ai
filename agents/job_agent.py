@@ -41,7 +41,7 @@ from agents.llm_client import chat_quality
 
 load_dotenv(override=True)
 
-MAX_SUPERVISOR_CYCLES = int(os.getenv("MAX_SUPERVISOR_CYCLES", "8"))
+MAX_SUPERVISOR_CYCLES = int(os.getenv("MAX_SUPERVISOR_CYCLES", "32"))
 
 LLM_SUPERVISOR_ENABLED = os.getenv("LLM_SUPERVISOR", "1").strip().lower() not in (
     "0", "false", "no", "off",
