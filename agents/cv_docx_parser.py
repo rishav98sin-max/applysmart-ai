@@ -627,11 +627,16 @@ def _outline_quality_ok(outline: Dict[str, Any]) -> bool:
 
     for role in roles:
         header = role.get("header", "")
+        # Normalise whitespace before length check — pdf2docx sometimes pads
+        # role headers with trailing spaces (e.g. "Title   Jan 2026") that push
+        # a genuine header past the 150-char corruption threshold and cause a
+        # false failure, sending the run to the slower PyMuPDF fallback.
+        header_clean = re.sub(r"\s+", " ", header).strip()
         # Bad sign: header contains bullet content (>150 chars or has newlines)
-        if len(header) > 150 or "\n" in header:
+        if len(header_clean) > 150 or "\n" in header:
             return False
         # Bad sign: only 1 bullet when header is already garbled
-        if len(role.get("bullets", [])) <= 1 and len(header) > 80:
+        if len(role.get("bullets", [])) <= 1 and len(header_clean) > 80:
             return False
 
     return True

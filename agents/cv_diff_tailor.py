@@ -822,11 +822,16 @@ _CAPTERM_STOPWORDS = {
 }
 
 
-def _cv_vocabulary(outline: Dict[str, Any]) -> set:
+def _cv_vocabulary(outline: Dict[str, Any], cv_full_text: str = "") -> set:
     """
     Build a lowercased token-and-bigram vocabulary from everything in the
     outline (summary, bullets, skills, role headers). Used to decide whether
     a new summary introduced terms not present in the CV.
+
+    cv_full_text: raw text extracted from the PDF (passed by tailor_cv_diff).
+    Including it catches terms that appear in the raw PDF but were lost or
+    paraphrased during outline parsing (e.g. "API" in a role body that the
+    outline parser collapsed into a shorter bullet).
     """
     parts: List[str] = []
     parts.append(outline.get("summary") or "")
@@ -843,6 +848,11 @@ def _cv_vocabulary(outline: Dict[str, Any]) -> set:
         parts.extend(s for s in skills if isinstance(s, str))
     elif isinstance(skills, str):
         parts.append(skills)
+    # Include raw PDF text so terms that the outline parser condensed (e.g.
+    # "REST API" mentioned in a body paragraph but not in the structured
+    # bullet) don't get falsely flagged as CV-foreign.
+    if cv_full_text:
+        parts.append(cv_full_text)
     text = " ".join(parts).lower()
     # Also strip common separators for robust membership checks.
     return {text}  # return as single-element set; callers use 'in' on the text
@@ -1426,9 +1436,12 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
         return False, "empty rewrite"
     # Use the provided original_length if available, otherwise fall back to len(orig)
     orig_len = original_length if original_length is not None else len(orig)
-    lo, hi = orig_len * _REWRITE_LEN_MIN_RATIO, orig_len * _REWRITE_LEN_MAX_RATIO
+    # Use round() not int() so a rewrite of 203 chars against a 135-char original
+    # (135 * 1.50 = 202.5 → round → 203) is not rejected by float truncation.
+    lo = round(orig_len * _REWRITE_LEN_MIN_RATIO)
+    hi = round(orig_len * _REWRITE_LEN_MAX_RATIO)
     if not (lo <= len(new) <= hi):
-        return False, f"length {len(new)} outside {int(lo)}-{int(hi)}"
+        return False, f"length {len(new)} outside {lo}-{hi}"
     orig_nums = {m.group(0).strip().lower() for m in _NUMBER_RX.finditer(orig)}
     new_text_l = new.lower()
     for tok in orig_nums:
@@ -2160,7 +2173,7 @@ def tailor_cv_diff(
             diff["summary"] = orig_summary
         else:
             # Check for foreign capitalized terms
-            cv_vocab = _cv_vocabulary(outline)
+            cv_vocab = _cv_vocabulary(outline, cv_full_text=cv_text)
             foreign = _foreign_capitalized_terms(new_sum, cv_vocab)
             if foreign:
                 print(
