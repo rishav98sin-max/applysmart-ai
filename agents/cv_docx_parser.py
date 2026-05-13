@@ -607,36 +607,43 @@ def outline_anchors(outline: Dict[str, Any]) -> List[Tuple[str, int]]:
 
 def _outline_quality_ok(outline: Dict[str, Any]) -> bool:
     """
-    Check if the parsed outline is corrupted (e.g., pdf2docx bug).
+    Decide whether the parsed outline is usable by the DOCX editor.
 
-    May 2026 fix: pdf2docx sometimes duplicates text 3× and merges bullet
-    content into role headers, producing garbage outlines. This check
-    detects such corruption and signals the router to fall back to the
-    PDF path.
+    Rewritten May 2026 (run 17 follow-up): the previous check rejected
+    outlines whose role headers were long, newline-heavy, or "garbled".
+    That caught true pdf2docx corruption (3x duplicated text) but ALSO
+    caught legitimate table-based CVs where the right column contains
+    descriptive "Project: ..." labels that pdf2docx faithfully preserves
+    as long paragraphs. Those outlines are functionally fine — the
+    bullets are correctly anchored to their paragraphs, and the editor
+    rewrites bullets, not headers. Rejecting them sent the run to the
+    PyMuPDF in-place fallback which shrinks fonts on every rewrite.
 
-    Corruption indicators:
-    - Role header > 150 characters (contains bullet content)
-    - Role header contains newlines (merged paragraphs)
-    - Role has ≤1 bullet when header is already long (>80 chars)
+    The new check is purely functional: an outline is usable if at
+    least one role has at least one bullet that the editor can rewrite.
+    Header cosmetics (length, newlines, "Project: ..." prefixes) are
+    irrelevant because the header is just a lookup key — the actual
+    edit lands on the bullet's paragraph anchor.
 
-    Returns False if any corruption is detected, True otherwise.
+    Returns False only when the outline is structurally unusable:
+      - No roles at all (pdf2docx produced an empty document or the
+        parser couldn't identify any experience/projects section)
+      - Every role has zero anchored bullets (no editable content)
     """
     roles = outline.get("roles") or []
     if not roles:
         return False
 
+    total_anchored_bullets = 0
     for role in roles:
-        header = role.get("header", "")
-        # Normalise whitespace before length check — pdf2docx sometimes pads
-        # role headers with trailing spaces (e.g. "Title   Jan 2026") that push
-        # a genuine header past the 150-char corruption threshold and cause a
-        # false failure, sending the run to the slower PyMuPDF fallback.
-        header_clean = re.sub(r"\s+", " ", header).strip()
-        # Bad sign: header contains bullet content (>150 chars or has newlines)
-        if len(header_clean) > 150 or "\n" in header:
-            return False
-        # Bad sign: only 1 bullet when header is already garbled
-        if len(role.get("bullets", [])) <= 1 and len(header_clean) > 80:
-            return False
+        for b in role.get("bullets") or []:
+            if isinstance(b, dict) and isinstance(b.get("_anchor"), int):
+                total_anchored_bullets += 1
+            elif isinstance(b, dict) and b.get("text"):
+                # Legacy: bullet dicts without explicit anchors still count
+                # — the editor falls back to text matching for those.
+                total_anchored_bullets += 1
+    if total_anchored_bullets == 0:
+        return False
 
     return True
