@@ -578,6 +578,23 @@ _NUMBER_RX = re.compile(
     re.I,
 )
 
+# Run-17 audit fix #28: split the credential check from the general
+# number-token check. The bullet-level guard (_rewrite_is_safe) still
+# enforces every _NUMBER_RX token — those are outcome metrics tied to a
+# specific bullet's claim. The SUMMARY-level credential check should only
+# enforce tokens that are genuinely credentials (percentages, currency)
+# and not generic scale tokens like "200+" or "600K". A summary that
+# honestly compresses "Led 30% revenue growth across 200+ events and a
+# $5M portfolio" to "Led 30% revenue growth on a $5M portfolio for
+# enterprise clients" loses "200+" — that's scale, not a credential. The
+# new regex keeps % and $ enforcement; the bullet check still preserves
+# all numbers verbatim because that's where outcomes live.
+_CREDENTIAL_NUMBER_RX = re.compile(
+    r"\d[\d.,]*%"            # percentages (outcome credentials)
+    r"|\$\d[\d.,]*[KMB]?",   # currency (financial credentials)
+    re.I,
+)
+
 
 # Em-dash / en-dash normaliser for LLM-produced rewrites.
 #
@@ -658,7 +675,10 @@ def _extract_credentials(summary: str) -> Dict[str, List[str]]:
         for m in rx.finditer(summary):
             grades.append(m.group(0).strip().lower())
     yoe = [m.group(0).strip().lower() for m in _YOE_RX.finditer(summary)]
-    numbers = [m.group(0).strip().lower() for m in _NUMBER_RX.finditer(summary)]
+    # Run-17 audit fix #28: use the credential-class regex (% + currency only)
+    # for summary preservation. Scale tokens like "200+" or "600K" can be
+    # legitimately compressed when reframing the summary for a JD.
+    numbers = [m.group(0).strip().lower() for m in _CREDENTIAL_NUMBER_RX.finditer(summary)]
     # De-duplicate while preserving order.
     def _dedupe(items: List[str]) -> List[str]:
         seen: set = set()
@@ -1218,6 +1238,24 @@ def _check_solo_project_fabrication(
         return None
     orig_l = (original or "").lower()
     new_l  = (rewrite or "").lower()
+
+    # Run-17 audit fix #21: don't revert when the original ALREADY hints at
+    # collaboration via a synonym. A bullet "Built CLI shared with infra
+    # colleagues" legitimately rewriting to "Built CLI adopted across
+    # engineering teams" is honest paraphrase, not fabrication. Require
+    # BOTH a banned phrase AND the absence of any collaborator noun in the
+    # original before reverting.
+    _COLLAB_HINTS = (
+        "team", "colleague", "partner", "collaborat", "shared",
+        "stakeholder", "engineer", "designer", "manager", "client",
+        "with the", "with our", "with my", "with a ", "alongside",
+        "joint", "co-built", "co-developed", "contributor",
+    )
+    if any(h in orig_l for h in _COLLAB_HINTS):
+        # Original signals collaboration; rewriting with a banned phrase
+        # is reframing, not fabrication. Skip the check.
+        return None
+
     for phrase in _PROJECT_FABRICATION_PHRASES:
         if phrase in new_l and phrase not in orig_l:
             return phrase
@@ -1329,27 +1367,32 @@ def _check_do_not_inject(
     """Returns the offending term, or None when the rewrite is clean."""
     if not rewrite or not do_not_inject:
         return None
-    # If the full CV text is not available (CV parser failed to extract
-    # text from the PDF), skip the do_not_inject check entirely. Without
-    # the full CV we cannot verify which terms are truly JD-only vs.
-    # terms the strategist mis-classified. Blocking everything would
-    # silently revert all rewrites and produce an un-tailored CV.
-    if not cv_full_text:
-        return None
-    new_l  = " " + (rewrite or "").lower() + " "
-    orig_l = " " + (original or "").lower() + " "
-    cv_l   = cv_full_text.lower()
+    # Run-17 audit fix #10: do NOT early-exit when cv_full_text is empty.
+    # The previous behaviour silently disabled the guard whenever the PDF
+    # parser returned "" (every DOCX upload), letting do_not_inject terms
+    # leak in. The fallback below still uses original-bullet comparison
+    # so something is enforced even without cv_full_text.
+    new_lc  = (rewrite or "").lower()
+    orig_lc = (original or "").lower()
+    cv_lc   = (cv_full_text or "").lower()
+
     for raw_term in do_not_inject:
         term = (raw_term or "").strip().lower()
         if not term or len(term) < 3:
             continue
-        # Whole-word-ish match: pad with spaces / punctuation boundaries.
-        # The simple substring is acceptable here — these terms are
-        # multi-character technical phrases, not common substrings.
-        if term in new_l and term not in orig_l:
+        # Run-17 audit fix #20: word-boundary match. The old substring
+        # comparison made "API" match "rapid", "scraping", "snapshot",
+        # silently reverting bullets that happened to contain those
+        # letter sequences. Use a real word-boundary regex.
+        try:
+            rx = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+        except re.error:
+            # Bad term from strategist — skip rather than crash.
+            continue
+        if rx.search(new_lc) and not rx.search(orig_lc):
             # If the term IS anywhere in the full CV text, the strategist
             # mis-classified it as JD-only. Accept the rewrite.
-            if term in cv_l:
+            if cv_lc and rx.search(cv_lc):
                 continue
             return raw_term
     return None
@@ -1436,10 +1479,28 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
         return False, "empty rewrite"
     # Use the provided original_length if available, otherwise fall back to len(orig)
     orig_len = original_length if original_length is not None else len(orig)
-    # Use round() not int() so a rewrite of 203 chars against a 135-char original
-    # (135 * 1.50 = 202.5 → round → 203) is not rejected by float truncation.
-    lo = round(orig_len * _REWRITE_LEN_MIN_RATIO)
-    hi = round(orig_len * _REWRITE_LEN_MAX_RATIO)
+
+    # Run-17 audit fix #18: piecewise length floor. The flat 0.45 ratio
+    # over-rejects legitimate compression of verbose originals — a 220-char
+    # rambling bullet honestly tightened to 95 chars (43%) was reverted
+    # even though JD-alignment usually IS compression. Long originals have
+    # more headroom for legitimate trimming, so loosen the floor for them.
+    if orig_len > 150:
+        lo = max(40, round(orig_len * 0.30))
+    else:
+        lo = round(orig_len * _REWRITE_LEN_MIN_RATIO)
+
+    # Run-17 audit fix #19: piecewise length ceiling. The flat 1.50 ratio
+    # rejects legitimate JD-keyword-led rewrites of short bullets — a
+    # 60-char bullet rewritten with strong verbs to 95 chars (158%) is
+    # well within any layout budget but was reverted on ratio. Use an
+    # absolute cap for short originals; keep the ratio for longer ones
+    # where font shrinkage actually starts to matter.
+    if orig_len < 80:
+        hi = max(180, round(orig_len * _REWRITE_LEN_MAX_RATIO))
+    else:
+        hi = round(orig_len * _REWRITE_LEN_MAX_RATIO)
+
     if not (lo <= len(new) <= hi):
         return False, f"length {len(new)} outside {lo}-{hi}"
     orig_nums = {m.group(0).strip().lower() for m in _NUMBER_RX.finditer(orig)}
@@ -1549,9 +1610,14 @@ def _normalise_bullet_list(
             # Treat it as "keep original" (text=None) so the metric
             # reflects reality and retries trigger when needed.
             def _norm_for_eq(s: str) -> str:
-                # Unify typographic dashes, collapse whitespace, lower-case.
-                s2 = (s or "").replace("\u2013", "-").replace("\u2014", "-")
-                return " ".join(s2.lower().split())
+                # Run-17 audit fix #25: do NOT normalise dashes here. The
+                # previous version collapsed em-/en-dashes to hyphens before
+                # equality, treating "Led 5\u20137% \u2014 designed A/B tests" and
+                # "Led 5-7%, designed A/B tests" as identical (the second
+                # clause is genuinely rewritten). _strip_em_en_dashes_text
+                # runs upstream on the LLM output already; equality should
+                # operate on substantive characters only (whitespace + case).
+                return " ".join((s or "").lower().split())
             if _norm_for_eq(text) == _norm_for_eq(orig_text):
                 text = None
                 normalised.append({"i": idx, "text": text})
