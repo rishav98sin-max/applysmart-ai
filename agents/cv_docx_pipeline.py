@@ -8,10 +8,10 @@ Routing & orchestration glue for the DOCX-based CV tailoring path
 This module is the SINGLE entry point job_agent.py uses to decide:
 
     "For this user's CV, should we tailor via DOCX (in-place edit then
-     render via mammoth+WeasyPrint) or via the original PDF replica /
+     render via LibreOffice headless) or via the original PDF replica /
      rebuild path?"
 
-The routing rules (May 13 / step 7):
+The routing rules (May 13 / step 7, updated per Claude spec):
 
   1.  User uploaded a `.docx` file directly:
         → DOCX path, full confidence (score = 100).

@@ -1079,8 +1079,10 @@ _REWRITE_LEN_MIN_RATIO = 0.5   # rewrite must be at least 50% of original length
 #
 # Why not 1.20: too strict for Groq-fallback path. With DEEPSEEK_API_KEY
 # unfunded or rate-limited, every fallback rewrite would revert → mostly
-# original CV ships. 1.30 keeps the failure mode usable.
-_REWRITE_LEN_MAX_RATIO = 1.30
+# original CV ships.
+# May 2026 fix (Claude spec): loosened from 1.30 → 1.50 to reduce false
+# reverts on legitimate paraphrases that expand slightly.
+_REWRITE_LEN_MAX_RATIO = 1.50
 
 
 # H4: thread-local revert tracker. Reset at the start of every
@@ -1291,17 +1293,23 @@ def _check_cross_role_contamination(
 # and reject if the term appears in the rewrite but did NOT appear in
 # the original bullet (a term legitimately in the original is not a
 # new injection — it's pre-existing CV content).
+#
+# May 2026 fix (Claude spec): strategist sometimes mis-classifies CV terms
+# as JD-only. Before rejecting, check if the term actually exists anywhere
+# in the full CV text. If it does, accept it as a false positive.
 # ─────────────────────────────────────────────────────────────
 def _check_do_not_inject(
-    rewrite:      str,
-    original:     str,
+    rewrite:       str,
+    original:      str,
     do_not_inject: List[str],
+    cv_full_text:  str = "",
 ) -> Optional[str]:
     """Returns the offending term, or None when the rewrite is clean."""
     if not rewrite or not do_not_inject:
         return None
     new_l  = " " + (rewrite or "").lower() + " "
     orig_l = " " + (original or "").lower() + " "
+    cv_l   = (cv_full_text or "").lower()
     for raw_term in do_not_inject:
         term = (raw_term or "").strip().lower()
         if not term or len(term) < 3:
@@ -1310,6 +1318,10 @@ def _check_do_not_inject(
         # The simple substring is acceptable here — these terms are
         # multi-character technical phrases, not common substrings.
         if term in new_l and term not in orig_l:
+            # May 2026: if the term IS in the full CV text, strategist
+            # mis-classified it as JD-only. Accept the rewrite.
+            if cv_l and term in cv_l:
+                continue
             return raw_term
     return None
 
@@ -1436,6 +1448,7 @@ def _normalise_bullet_list(
     orig_texts:    List[Any],
     section:       str = "experience",
     do_not_inject: Optional[List[str]] = None,
+    cv_text:       str = "",
 ) -> List[Dict[str, Any]]:
     """
     Accept either:
@@ -1558,7 +1571,7 @@ def _normalise_bullet_list(
                         text = None
                     else:
                         # do_not_inject — strategist-classified JD-only terms.
-                        dni = _check_do_not_inject(text, orig_text, do_not_inject or [])
+                        dni = _check_do_not_inject(text, orig_text, do_not_inject or [], cv_text)
                         if dni:
                             print(
                                 f"   ⚠️  rewrite rejected (bullet {idx}, "
@@ -1709,6 +1722,7 @@ def _sanitise_diff(
     raw:           Dict[str, Any],
     outline:       Dict[str, Any],
     do_not_inject: Optional[List[str]] = None,
+    cv_text:       str = "",
 ) -> Dict[str, Any]:
     """
     Validate and repair the LLM output against the real outline.
@@ -1764,6 +1778,7 @@ def _sanitise_diff(
                 order, n, orig_texts,
                 section=section,
                 do_not_inject=do_not_inject,
+                cv_text=cv_text,
             )
             if not normalised:
                 continue
@@ -1931,6 +1946,11 @@ def tailor_cv_diff(
     if outline is None:
         outline = build_outline_cached(cv_pdf_path)
 
+    # May 2026 fix (Claude spec): extract full CV text for do_not_inject guard
+    # to reduce false positives when strategist mis-classifies CV terms.
+    from agents.cv_parser import parse_cv
+    cv_text = parse_cv(cv_pdf_path)
+
     # Reset the per-call bullet-revert tracker so counts reflect THIS job.
     _LAST_BULLET_REVERTS.clear()
 
@@ -2050,7 +2070,7 @@ def tailor_cv_diff(
 
     raw_text = _call_llm(_render_prompt())
     raw_json = _extract_json(raw_text)
-    diff     = _sanitise_diff(raw_json, outline, do_not_inject=strategy_dni)
+    diff     = _sanitise_diff(raw_json, outline, do_not_inject=strategy_dni, cv_text=cv_text)
 
     # ── Summary fabrication guard ────────────────────────────────────
     # Reject summaries that introduce proper nouns / skill terms absent
@@ -2208,7 +2228,7 @@ def tailor_cv_diff(
         )
         raw_text2 = _call_llm(_render_prompt(extra=enforce))
         raw_json2 = _extract_json(raw_text2)
-        diff2     = _sanitise_diff(raw_json2, outline, do_not_inject=strategy_dni)
+        diff2     = _sanitise_diff(raw_json2, outline, do_not_inject=strategy_dni, cv_text=cv_text)
         new_sum2  = (diff2.get("summary") or "").strip()
         if new_sum2 and len(new_sum2.split()) >= int(orig_words * _SUMMARY_MIN_RATIO):
             # May 1 fix: re-run the credential-preservation guard on the
@@ -2302,7 +2322,7 @@ def tailor_cv_diff(
             )
             raw_text_rr = _call_llm(_render_prompt(extra=enforce_rewrites))
             raw_json_rr = _extract_json(raw_text_rr)
-            diff_rr     = _sanitise_diff(raw_json_rr, outline, do_not_inject=strategy_dni)
+            diff_rr     = _sanitise_diff(raw_json_rr, outline, do_not_inject=strategy_dni, cv_text=cv_text)
             n_rewrites_rr, n_dropped_rr = _count_diff_edits(diff_rr)
             if n_rewrites_rr > 0:
                 # Preserve the BETTER summary — we forced this retry to fix

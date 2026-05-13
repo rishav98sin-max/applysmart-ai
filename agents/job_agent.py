@@ -1432,6 +1432,17 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                             _dbg.get("summary_reverts") or []
                         )
                         best_review["_all_reverted"] = bool(_dbg.get("all_reverted"))
+                        # May 2026 fix (Claude spec): log revert counts with reasons
+                        # so production logs show which guards are over-firing.
+                        reverts = best_review["_bullet_reverts"]
+                        reasons = [
+                            r.get("reason", "?")
+                            for r in _dbg.get("bullet_reverts", [])
+                        ]
+                        if reverts:
+                            print(
+                                f"   ⚠️  {tag} {reverts} bullet(s) reverted by guards: {reasons}"
+                            )
 
                     # C3: total-revert override. If every change was reverted
                     # by fabrication guards, the reviewer is scoring the
