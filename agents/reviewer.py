@@ -181,17 +181,27 @@ STRICT RULES
   * Each ROLE block is tagged with [section=...]. Roles with section=projects
     are SOLO work by default — no team, no stakeholders, no organisation,
     no cross-functional partners — UNLESS the original bullet already
-    states otherwise (e.g. "co-built with X", "team of three").
+    states otherwise (e.g. "co-built with X", "team of three", "with
+    engineers", "shared with colleagues").
   * If a [REWRITTEN] bullet under a section=projects role introduces ANY
     of the following framings that the original lacks, this is FABRICATION
     and you MUST cap the score at 50 and list the offending phrase as the
-    #1 weakness:
-      - "team", "teams", "cross-functional", "cross-team"
+    #1 weakness — UNLESS the original (shown below the [REWRITTEN] marker)
+    or any of its sibling bullets in the same project already signals
+    collaboration via a synonym ("with X", "shared", "colleagues",
+    "engineers", "designers", "managers", "partner", "joint", "co-built",
+    "team of N", "contributors"). In that case the rewrite is paraphrase,
+    not fabrication — DO NOT cap.
+      - "cross-functional", "cross-team"
       - "stakeholders", "stakeholder alignment", "primary liaison"
       - "the organisation", "across the org", "company-wide"
       - "managed escalations", "managed expectations of …"
       - "platform teams", "engineering teams", "business teams"
       - "partnered with engineering / design / product / business"
+  * Note: bare "team" / "teams" alone is NOT enough to cap — those words
+    appear in too many legitimate phrasings. Only cap when one of the
+    multi-word phrases above appears AND the original lacks any collaboration
+    signal.
   * A solo personal-project bullet rewritten as "Acted as bridge between
     business stakeholders and deep technical teams" is FABRICATION even
     if it doesn't add a number — it invents collaborators. Flag it.
@@ -226,19 +236,30 @@ OUTPUT (JSON only, no prose, no markdown fences):
 Return the review now:"""
 
 
-def _call_llm(prompt: str, max_tokens: int = 500) -> str:
-    # C1: removed module-level 3-retry loop. chat_fast already rotates Groq
-    # keys internally; retrying here just multiplies token waste on real
-    # exhaustion (3 module retries × N keys × inner client retries = 9-30 calls
-    # for a single logical operation, all hitting the same exhausted pool).
-    # Exceptions propagate to the per-job try/except in job_agent.py where
-    # they're handled gracefully as job-level failures.
+def _call_llm(prompt: str, max_tokens: int = 500) -> tuple:
+    """
+    Returns (text, error_kind):
+      - ("<json or whatever>", None)         : LLM responded
+      - ("", "transport")                    : exception raised (rate limit,
+                                               network, key exhaustion)
+      - ("", "empty")                        : LLM returned empty string
+
+    Run-17 audit fix #5: the previous version conflated transport errors
+    with empty responses, both returning "". The caller then fail-opened
+    at score=100 ("reviewer unavailable") for BOTH cases, which silently
+    auto-accepted every job after a Groq key exhaustion. Now the caller
+    can fail-CLOSED on transport (force retry) while still fail-opening
+    when the LLM genuinely returned nothing parseable.
+    """
     track_llm_call(agent="reviewer")
     try:
-        return chat_fast(prompt, max_tokens=max_tokens, temperature=0.1)
+        text = chat_fast(prompt, max_tokens=max_tokens, temperature=0.1)
+        if text is None or text == "":
+            return "", "empty"
+        return text, None
     except Exception as e:
         print(f"   ❌ reviewer LLM error: {type(e).__name__}: {e}")
-        return ""
+        return "", "transport"
 
 
 def _sanitise(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -329,30 +350,53 @@ def review_tailored_cv(
         threshold             = ACCEPT_THRESHOLD,
     )
 
-    text = _call_llm(prompt)
-    raw  = _extract_json(text)
+    text, err_kind = _call_llm(prompt)
+    raw  = _extract_json(text) if text else {}
     if not raw:
-        # C2: distinguish "reviewer didn't run" from "reviewer ran but emitted
-        # garbage". The latter is suspicious — malformed JSON often correlates
-        # with borderline-fabricating tailor output (LLM gets confused mid-
-        # rationale). Fail-OPEN only when the LLM produced no text at all
-        # (transport / quota failure). Fail-CLOSED with a forced retry when
-        # the LLM produced text we couldn't parse.
-        if not text:
-            # Genuine reviewer-unavailable case → don't block the pipeline.
+        # Run-17 audit fix #5: distinguish three cases — transport error
+        # (fail-CLOSED, force retry), empty LLM response (fail-CLOSED at
+        # score=55, retry), and unparseable JSON (fail-CLOSED at score=50,
+        # retry). The OLD code fail-OPENED at score=100 on transport
+        # errors, which silently auto-accepted every subsequent job after
+        # a Groq key exhaustion.
+        if err_kind == "transport":
             try:
                 from agents.analytics import track_event
-                track_event("reviewer_failopen_noresponse", "system_infra", {
+                track_event("reviewer_failclosed_transport", "system_infra", {
+                    "company": company, "title": job_title,
+                })
+            except Exception:
+                pass
+            print(
+                "   ⚠️  reviewer transport error — failing closed "
+                "(score=55, retry) to avoid silent auto-accept"
+            )
+            return {
+                "score":      55,
+                "strengths":  [],
+                "weaknesses": ["reviewer transport error — unable to verify"],
+                "feedback":   "Reviewer could not be reached. "
+                              "Re-tailor with stricter adherence to the JD.",
+                "verdict":    "retry",
+            }
+        if err_kind == "empty" or not text:
+            # LLM returned nothing — fail-CLOSED at borderline score, retry
+            # once. If we're already on the retry attempt, the upstream
+            # MAX_TAILOR_RETRIES loop will accept whatever score lands.
+            try:
+                from agents.analytics import track_event
+                track_event("reviewer_failclosed_empty", "system_infra", {
                     "company": company, "title": job_title,
                 })
             except Exception:
                 pass
             return {
-                "score":      100,
+                "score":      55,
                 "strengths":  [],
-                "weaknesses": [],
-                "feedback":   "(reviewer unavailable — accepted by default)",
-                "verdict":    "accept",
+                "weaknesses": ["reviewer returned empty response"],
+                "feedback":   "Reviewer produced no review. "
+                              "Re-tailor with sharper JD-aligned verbs.",
+                "verdict":    "retry",
             }
         # Got text but couldn't parse JSON → fail-closed at score=50, retry.
         try:

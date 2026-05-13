@@ -1465,7 +1465,12 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     # rather than shipping an unchanged CV under a deceptive
                     # accept verdict.
                     all_reverted = bool((diff.get("_debug") or {}).get("all_reverted"))
-                    if all_reverted and attempt < MAX_TAILOR_RETRIES:
+                    # Run-17 audit fix #3: body_reverted means summary survived
+                    # but every bullet rewrite was reverted. Without this, the
+                    # reviewer would score a summary-only change and accept it
+                    # while the body of the CV is verbatim original.
+                    body_reverted = bool((diff.get("_debug") or {}).get("body_reverted"))
+                    if (all_reverted or body_reverted) and attempt < MAX_TAILOR_RETRIES:
                         print(
                             f"   🛡️  {tag} all-revert detected — "
                             f"forcing retry with stricter prompt"
@@ -1550,7 +1555,10 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     _all_reverted = bool(
                         (diff.get("_debug") or {}).get("all_reverted")
                     )
-                    _hard_flag = too_few_rewrites or fab_flag or _all_reverted
+                    _body_reverted = bool(
+                        (diff.get("_debug") or {}).get("body_reverted")
+                    )
+                    _hard_flag = too_few_rewrites or fab_flag or _all_reverted or _body_reverted
                     if _deepseek_src:
                         effective_threshold = 65
                     elif not _hard_flag:

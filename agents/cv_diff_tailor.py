@@ -844,21 +844,25 @@ _CAPTERM_STOPWORDS = {
 
 def _cv_vocabulary(outline: Dict[str, Any], cv_full_text: str = "") -> set:
     """
-    Build a lowercased token-and-bigram vocabulary from everything in the
-    outline (summary, bullets, skills, role headers). Used to decide whether
-    a new summary introduced terms not present in the CV.
+    Build a lowercased token+bigram vocabulary from everything in the CV
+    (outline summary/bullets/skills/headers AND raw PDF text). Used by
+    `_foreign_capitalized_terms` to decide whether a summary rewrite
+    introduced terms not present in the CV.
 
-    cv_full_text: raw text extracted from the PDF (passed by tailor_cv_diff).
-    Including it catches terms that appear in the raw PDF but were lost or
-    paraphrased during outline parsing (e.g. "API" in a role body that the
-    outline parser collapsed into a shorter bullet).
+    Run-17 audit fix #9: previously this returned a 1-element set
+    containing the full concatenated text. Callers then did substring
+    matching against that single blob — every "vocabulary check" was a
+    plain `in` on the entire CV string, with no word boundaries. A
+    coincidental letter sequence (e.g. "Stamp 1G" inside an unrelated
+    bullet) could whitelist itself for the summary. Now we return an
+    actual set of tokens + bigrams, and callers do real word-level
+    membership checks.
     """
     parts: List[str] = []
     parts.append(outline.get("summary") or "")
     for r in outline.get("roles", []) or []:
         parts.append(r.get("header") or "")
         for b in r.get("bullets") or []:
-            # build_outline emits {"text": str, "length": int}; legacy str also tolerated.
             if isinstance(b, dict):
                 parts.append(b.get("text") or "")
             elif isinstance(b, str):
@@ -868,14 +872,22 @@ def _cv_vocabulary(outline: Dict[str, Any], cv_full_text: str = "") -> set:
         parts.extend(s for s in skills if isinstance(s, str))
     elif isinstance(skills, str):
         parts.append(skills)
-    # Include raw PDF text so terms that the outline parser condensed (e.g.
-    # "REST API" mentioned in a body paragraph but not in the structured
-    # bullet) don't get falsely flagged as CV-foreign.
     if cv_full_text:
         parts.append(cv_full_text)
+
     text = " ".join(parts).lower()
-    # Also strip common separators for robust membership checks.
-    return {text}  # return as single-element set; callers use 'in' on the text
+    # Tokenise on non-alphanumeric (keep word boundaries). Drop short
+    # tokens that match too freely.
+    tokens = {w for w in re.split(r"[^a-z0-9+]+", text) if len(w) >= 2}
+    # Also emit bigrams so phrases like "machine learning", "data science"
+    # match cleanly even if individual words appear elsewhere.
+    words = [w for w in re.split(r"[^a-z0-9+]+", text) if w]
+    bigrams = {f"{words[i]} {words[i+1]}" for i in range(len(words) - 1)}
+
+    # Keep the full-text blob too so callers that want substring fallback
+    # can grab it via `next(iter(...))` — but the standard membership
+    # check should use the token/bigram sets.
+    return tokens | bigrams | {text}
 
 
 def _check_professional_identity_fabrication(orig_summary: str, new_summary: str, outline: Dict[str, Any]) -> Optional[str]:
@@ -1055,13 +1067,23 @@ def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
     """
     if not summary:
         return []
-    cv_text = next(iter(cv_text_set), "") if cv_text_set else ""
+    # Run-17 audit fix #9: cv_text_set is now a real set (tokens + bigrams
+    # + full text). Pick the longest element (= the full text blob) for
+    # substring fallback; build cv_tokens directly from the set members
+    # that look like words, which is a more accurate vocabulary check
+    # than the previous "split the full text on \W+" approach.
+    if not cv_text_set:
+        return []
+    cv_text = max(cv_text_set, key=len, default="")
     if not cv_text:
         return []
     foreign: List[str] = []
     seen: set = set()
-    # Split CV text into a token set for cheap word-level membership.
-    cv_tokens = {w for w in re.split(r"\W+", cv_text) if w}
+    # Use the pre-built tokens from cv_text_set when available; fall back
+    # to splitting the full text for legacy callers.
+    cv_tokens = {t for t in cv_text_set if t and " " not in t and len(t) < 40}
+    if not cv_tokens:
+        cv_tokens = {w for w in re.split(r"\W+", cv_text) if w}
     word_rx = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-/&]*")
     for m in _CAPTERM_RX.finditer(summary):
         term = m.group(0).strip()
@@ -1619,6 +1641,16 @@ def _normalise_bullet_list(
                 # operate on substantive characters only (whitespace + case).
                 return " ".join((s or "").lower().split())
             if _norm_for_eq(text) == _norm_for_eq(orig_text):
+                # Run-17 audit fix #7: log identical-rewrite suppressions
+                # to the revert tracker so we can distinguish "LLM said the
+                # rewrite was identical to original" from "rewrite genuinely
+                # passed all guards". Both end up as text=None in the diff
+                # but mean very different things for telemetry.
+                _LAST_BULLET_REVERTS.append({
+                    "bullet_index": idx,
+                    "reason": "identical_rewrite",
+                    "rewrite_preview": (text or "")[:120],
+                })
                 text = None
                 normalised.append({"i": idx, "text": text})
                 seen.add(idx)
@@ -2511,16 +2543,42 @@ def tailor_cv_diff(
     has_summary_change = bool((diff.get("summary") or "").strip()) and not summary_reverted
     has_bullet_change  = n_rewrites > 0
     has_skills_change  = bool(diff.get("skills_order"))
+
+    # Run-17 audit fix #3: also flag the case where the SUMMARY survived
+    # but every bullet rewrite was reverted. Previously, a surviving summary
+    # would set has_summary_change=True and mask the bullet-level failure
+    # — the reviewer would then score a CV where only the summary differs
+    # and accept it at 70+, leading the user to ship effectively the
+    # original body. A genuine tailoring run rewrites bullets too; if the
+    # tailor attempted bullet rewrites and ALL got reverted, force retry.
+    bullets_attempted_and_all_reverted = (
+        len(_LAST_BULLET_REVERTS) > 0
+        and n_rewrites == 0
+    )
+
     diff["_debug"]["all_reverted"] = (
         not has_summary_change
         and not has_bullet_change
         and not has_skills_change
         and (summary_reverted or bullets_all_reverted)
     )
+    # New: distinguish "summary worked but bullets all reverted" — this
+    # is the silent-failure case the old check missed.
+    diff["_debug"]["body_reverted"] = (
+        bullets_attempted_and_all_reverted
+        and not has_skills_change
+    )
+
     if diff["_debug"]["all_reverted"]:
         print(
             "   🛡️  cv_diff_tailor: ALL changes reverted by fabrication "
             "guards — diff is effectively a no-op. Caller should retry with "
             "stricter prompting or skip the replica path."
+        )
+    elif diff["_debug"]["body_reverted"]:
+        print(
+            "   🛡️  cv_diff_tailor: every bullet rewrite reverted; summary "
+            "kept. The body of the CV is unchanged — caller should retry "
+            "with sharper JD-aligned bullet prompts."
         )
     return diff
