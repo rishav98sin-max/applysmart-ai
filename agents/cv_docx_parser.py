@@ -242,7 +242,14 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
     uses these to relocate paragraphs in the on-disk DOCX without
     re-parsing the outline.
     """
-    out: Dict[str, Any] = {"summary": "", "roles": [], "skills": []}
+    # `_summary_anchors` and `_skills_anchors` are internal fields the
+    # editor uses to relocate the summary / skills paragraphs without
+    # re-parsing. cv_diff_tailor and tailor_strategist only read
+    # `summary` / `roles` / `skills`, so unknown fields pass through harmlessly.
+    out: Dict[str, Any] = {
+        "summary": "", "roles": [], "skills": [],
+        "_summary_anchors": [], "_skills_anchors": [],
+    }
 
     if not docx_path or not os.path.exists(docx_path):
         return out
@@ -319,7 +326,7 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
     # section header are often a Summary block (templates that skip the
     # "Summary" label). Capture them into a pre-section buffer; if the CV
     # never has an explicit Summary header, we'll use them.
-    pre_section_prose: List[str] = []
+    pre_section_prose: List[Tuple[int, str]] = []   # (anchor, text)
 
     for entry in classified:
         kind = entry["kind"]
@@ -336,16 +343,13 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
             # contain "@" or phone numbers). Save short prose lines as
             # possible summary candidates.
             if len(text) > 40 and "@" not in text and not re.search(r"\+?\d[\d\s().-]{6,}", text):
-                pre_section_prose.append(text)
+                pre_section_prose.append((idx, text))
             continue
 
         if current_section == "summary":
-            if kind in ("prose", "header_like"):
+            if kind in ("prose", "header_like", "bullet"):
                 summary_chunks.append(text)
-            # Bullets inside the summary block: rare. Append as a flat
-            # sentence so the LLM sees the full summary text.
-            elif kind == "bullet":
-                summary_chunks.append(text)
+                out["_summary_anchors"].append(idx)
             continue
 
         if current_section in ("experience", "projects"):
@@ -399,6 +403,7 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
         if current_section == "skills":
             if kind in ("prose", "bullet", "header_like"):
                 skills_chunks.append(text)
+                out["_skills_anchors"].append(idx)
             continue
 
         # Other sections (education / certifications / etc.) are recorded
@@ -409,7 +414,8 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
     # Summary fallback: if we never hit an explicit Summary section but
     # we did capture some pre-section prose, use that.
     if not summary_chunks and pre_section_prose:
-        summary_chunks = pre_section_prose
+        summary_chunks = [text for _idx, text in pre_section_prose]
+        out["_summary_anchors"] = [idx for idx, _text in pre_section_prose]
 
     out["summary"] = " ".join(s.strip() for s in summary_chunks).strip()
 
