@@ -409,14 +409,15 @@ RULES (strict):
    - Prefer concrete over abstract: "authored 12 PRDs" not "produced many documents".
    - Length: STRICT 90-120% of the original bullet's character length.
      Count characters before submitting. The post-processor REJECTS any
-     rewrite outside 50%-200% of the original — but the visible-quality
-     band is much tighter at 90-120%. Going above 130% means your rewrite
-     either added filler words or invented a new fact (both are failures).
-     EXAMPLE: original is 180 chars → your rewrite must be 162-216 chars.
-     EXAMPLE: original is 95 chars → your rewrite must be 85-114 chars.
-     If you cannot land within 120% while keeping every number and proper
+     rewrite outside 50%-130% of the original — there is no tolerance
+     beyond 130% because longer rewrites force font shrinkage that makes
+     the rendered PDF look inconsistent. The visible-quality band is even
+     tighter at 90-120%; aim for that.
+     EXAMPLE: original is 180 chars → target 162-216 chars; HARD CAP at 234 chars (130%).
+     EXAMPLE: original is 95 chars → target 85-114 chars; HARD CAP at 123 chars (130%).
+     If you cannot land within 130% while keeping every number and proper
      noun verbatim, return text=null (revert) instead of submitting an
-     overlong rewrite that will be rejected anyway.
+     overlong rewrite that will be silently reverted to the original.
 
 2a. NO-OP REWRITES ARE FORBIDDEN.
     If you submit `text` identical (or trivially whitespace/case-different)
@@ -1400,8 +1401,32 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
     orig_nums = {m.group(0).strip().lower() for m in _NUMBER_RX.finditer(orig)}
     new_text_l = new.lower()
     for tok in orig_nums:
-        if tok and tok not in new_text_l:
-            return False, f"number token {tok!r} missing"
+        if not tok:
+            continue
+        # Direct verbatim presence (covers percentages, currency, K/M/B scale).
+        if tok in new_text_l:
+            continue
+        # Audit fix #3: count-with-plus tokens like "200+" / "3+" accept
+        # natural English paraphrases that preserve the digit AND the
+        # "at-least" floor. "over 200", "more than 200", "200 or more"
+        # all mean exactly "200+" to a recruiter. Without this, DeepSeek
+        # rewrites get reverted for legitimate paraphrasing (Run 13
+        # bullet 6: "over 200 events" → guard rejected for losing the
+        # literal '+'). The digit core MUST still survive — "many" or
+        # "several" does NOT pass.
+        m = re.fullmatch(r"(\d+)\+", tok)
+        if m:
+            n = m.group(1)
+            paraphrases = (
+                f"over {n}",
+                f"more than {n}",
+                f"{n} or more",
+                f"at least {n}",
+                f"upwards of {n}",
+            )
+            if any(p in new_text_l for p in paraphrases):
+                continue
+        return False, f"number token {tok!r} missing"
     return True, ""
 
 
@@ -1595,6 +1620,91 @@ def _normalise_bullet_list(
     return normalised
 
 
+# ─────────────────────────────────────────────────────────────
+# Token-overlap key matching (May 2026 / audit fix #2).
+#
+# The previous matching strategy (`startswith` / `in`) failed when the
+# strategist re-framed a role label (e.g. "ApplySmart AI | AI-Powered
+# Product" vs the real header "ApplySmart AI | Agentic AI Product …").
+# All three prefix/contains checks miss because the divergent middle
+# word ("AI-Powered" ↔ "Agentic AI") breaks substring continuity.
+#
+# Run 14 evidence: 2 of 4 role buckets ("ApplySmart AI | …",
+# "Client: Elevance …") were emitted by the tailor LLM but failed to
+# match any real role header → every bullet rewrite for those roles
+# was silently dropped → bullets_rewritten=2/15 instead of ~8/15.
+#
+# This helper falls back to a *content-word overlap* score after the
+# fast prefix paths fail. It treats role headers as bags of words
+# (lowercased, stop-words removed, dates/punctuation stripped) and
+# requires ≥60% of the LLM's content words to appear in some real
+# header. The highest-scoring header wins; ties are broken by length
+# (prefer shorter / more specific match).
+# ─────────────────────────────────────────────────────────────
+_KEY_MATCH_THRESHOLD = 0.60   # ≥60% of LLM key's content tokens must appear
+
+# Words that carry no identifying signal — strip before scoring.
+_KEY_STOPWORDS: frozenset = frozenset({
+    "a", "an", "the", "and", "or", "of", "at", "in", "on", "for", "to",
+    "with", "by", "as", "is", "are", "was", "were", "be", "been",
+    "client", "role", "project", "company", "position", "title",
+    "experience", "work", "team",
+    # months — purely temporal, no role identity
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
+    "oct", "nov", "dec",
+    "january", "february", "march", "april", "june", "july",
+    "august", "september", "october", "november", "december",
+    "present", "current",
+})
+
+
+def _key_tokens(text: str) -> set:
+    """Lowercase, split on non-alphanum, drop stopwords + pure-digit tokens."""
+    if not text:
+        return set()
+    # Split on anything that is not alphanumeric.
+    raw = re.split(r"[^a-z0-9]+", text.lower())
+    return {
+        w for w in raw
+        if w
+        and w not in _KEY_STOPWORDS
+        and not w.isdigit()           # drop years / dates
+        and len(w) >= 2               # drop single-char noise
+    }
+
+
+def _best_overlap_match(
+    rk_l: str,
+    real_roles: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    """
+    Find the real role header whose content tokens best cover the LLM key's
+    content tokens. Returns the header (original case) if overlap ≥
+    `_KEY_MATCH_THRESHOLD`, otherwise None.
+
+    Used only after the cheap prefix/contains checks have failed.
+    """
+    rk_tokens = _key_tokens(rk_l)
+    if not rk_tokens:
+        return None
+    best_score = 0.0
+    best_header: Optional[str] = None
+    best_len = 10**9
+    for h_l, r in real_roles.items():
+        h_tokens = _key_tokens(h_l)
+        if not h_tokens:
+            continue
+        overlap = len(rk_tokens & h_tokens) / len(rk_tokens)
+        if overlap < _KEY_MATCH_THRESHOLD:
+            continue
+        # Highest overlap wins; tie-break by shorter header (more specific).
+        if overlap > best_score or (overlap == best_score and len(h_l) < best_len):
+            best_score = overlap
+            best_header = r["header"]
+            best_len = len(h_l)
+    return best_header
+
+
 def _sanitise_diff(
     raw:           Dict[str, Any],
     outline:       Dict[str, Any],
@@ -1631,10 +1741,18 @@ def _sanitise_diff(
             if rk_l in real_roles:
                 match_key = real_roles[rk_l]["header"]
             else:
+                # Cheap prefix/contains pass first.
                 for h_l, r in real_roles.items():
                     if h_l.startswith(rk_l) or rk_l.startswith(h_l) or rk_l in h_l:
                         match_key = r["header"]
                         break
+                # Audit fix #2: fall back to content-word overlap when the
+                # cheap pass misses. This catches re-framed labels like
+                # "AI-Powered Product" vs "Agentic AI Product" where both
+                # share ≥60% of identifying words ("ApplySmart", "AI",
+                # "Product") despite the diverging middle word.
+                if not match_key:
+                    match_key = _best_overlap_match(rk_l, real_roles)
             if not match_key:
                 unmatched_keys.append(str(rk))
                 continue
@@ -1760,6 +1878,24 @@ def _build_feedback_addendum(
         "(b) same indices space (use the 'i' field to reference original "
         "bullets). Returning the same bullets-untouched diff as last time "
         "will be rejected again."
+    )
+    # Audit fix #4 (May 2026): re-assert the length cap on retry.
+    # The reviewer's feedback often pushes the LLM toward verbose
+    # restructurings ("Translated product strategy into epics, features,
+    # user stories, leading 3+ concurrent…") that overshoot the 130%
+    # hard cap. Without an explicit reminder on retry the post-processor
+    # silently reverts the new bullets and we ship the original — the
+    # reviewer then scores low again, retries run out, low score accepted.
+    parts.append("")
+    parts.append(
+        "LENGTH CAP REMINDER (same as first pass — applies to this retry "
+        "too): every rewritten bullet must be 50–130% of the original "
+        "bullet's character count. If the reviewer's feedback requires a "
+        "longer phrasing than 130% allows, COMPRESS by cutting adjectives "
+        "or splitting one bullet's claim across a semicolon — do NOT "
+        "submit an overlong rewrite. The post-processor will silently "
+        "revert any bullet outside the 50–130% band, which is the exact "
+        "failure mode that triggered this retry."
     )
     return "\n".join(parts)
 

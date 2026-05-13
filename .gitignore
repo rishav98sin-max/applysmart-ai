@@ -51,3 +51,27 @@ Error SS/
 
 # Diagnostic run artefacts (per-call LLM telemetry — see diagnostics/README.md)
 diagnostics/runs/
+
+# Personal CVs folder (real candidate PDFs — never commit)
+CVs/
+
+# Temporary scratch / one-off run scripts at repo root
+tmp_*.py
+tmp_*.txt
+tmp_*/
+
+# LangFuse local log dumps (per-run telemetry; large and PII-bearing)
+diagnostics/LangFuseLogsRun*.jsonl
+diagnostics/LangFuseRun*.jsonl
+diagnostics/Langfuse_*.json
+diagnostics/langfuse_*.jsonl
+diagnostics/langfuse_*.py
+diagnostics/baseline_log*.jsonl
+diagnostics/Langfuse_baslineLog*.json
+
+# One-off diagnostic scripts (kept locally, not committed)
+diagnostics/_*.py
+diagnostics/_*.pdf
+
+# Audit reports (per-session — keep locally)
+AUDIT_REPORT_*.md

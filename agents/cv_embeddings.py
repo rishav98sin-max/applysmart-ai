@@ -67,8 +67,24 @@ def _ensure_chroma():
         return _chroma_client
     try:
         import chromadb
+        # Audit fix #5: disable ChromaDB anonymous telemetry. The current
+        # chromadb release ships a posthog client whose `capture()` signature
+        # has drifted from chromadb's call site, producing a flood of
+        # "capture() takes 1 positional argument but 3 were given" lines on
+        # every run. We send no data anyway — this both silences the noise
+        # and saves a few network round-trips per indexing call.
+        try:
+            from chromadb.config import Settings
+            settings = Settings(anonymized_telemetry=False)
+        except Exception:
+            settings = None
         os.makedirs(_DB_DIR, exist_ok=True)
-        _chroma_client = chromadb.PersistentClient(path=_DB_DIR)
+        if settings is not None:
+            _chroma_client = chromadb.PersistentClient(
+                path=_DB_DIR, settings=settings,
+            )
+        else:
+            _chroma_client = chromadb.PersistentClient(path=_DB_DIR)
         return _chroma_client
     except Exception as e:
         _import_failed = True
