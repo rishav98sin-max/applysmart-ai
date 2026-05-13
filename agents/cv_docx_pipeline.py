@@ -193,6 +193,16 @@ def try_route_docx(
             )
             return None
 
+        # May 2026 fix: check outline quality for pdf2docx corruption
+        # (text duplication, merged bullet content into headers)
+        from agents.cv_docx_parser import _outline_quality_ok
+        if not _outline_quality_ok(outline):
+            print(
+                "   ↩️  cv_docx_pipeline: converted DOCX outline quality check failed "
+                "(likely pdf2docx corruption) — using PDF replica path instead."
+            )
+            return None
+
         print(
             f"   📄 cv_docx_pipeline: DOCX route activated "
             f"(PDF→DOCX, score={result.get('score')}/100, "

@@ -683,7 +683,8 @@ def _check_credentials_preserved(
     new_text_lower = new_summary.lower()
     missing: Dict[str, List[str]] = {}
     for kind in ("grades", "yoe", "numbers"):
-        gone = [tok for tok in orig[kind] if tok not in new_text_lower]
+        # May 2026 fix: case-insensitive check so "600K+" matches "600k+"
+        gone = [tok for tok in orig[kind] if tok.lower() not in new_text_lower]
         if gone:
             missing[kind] = gone
     return missing or None
@@ -1053,7 +1054,9 @@ def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
     return foreign
 
 _MIN_BULLETS_PER_ROLE = 2
-_REWRITE_LEN_MIN_RATIO = 0.5   # rewrite must be at least 50% of original length
+_REWRITE_LEN_MIN_RATIO = 0.45  # rewrite must be at least 45% of original length
+# May 2026 fix (Claude spec): lowered from 0.50 to 0.45 to reduce false reverts
+# on legitimate paraphrases that compress slightly.
 # May 2026 fix #2b: tightened upper bound from 2.0 → 1.30 to bound forced
 # font shrinkage in the PDF editor at ≤1pt (recruiter-imperceptible).
 #

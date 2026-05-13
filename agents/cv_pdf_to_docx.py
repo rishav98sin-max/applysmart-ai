@@ -265,6 +265,10 @@ def convert_pdf_to_docx(
         )
         return result
 
+    # May 2026 fix: deduplicate consecutive paragraphs (pdf2docx bug with
+    # table-based layouts that duplicates text 3×).
+    _deduplicate_docx_paragraphs(output_path)
+
     if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
         result["reason"] = "pdf2docx produced no output"
         return result
@@ -285,3 +289,37 @@ def convert_pdf_to_docx(
         )
 
     return result
+
+
+def _deduplicate_docx_paragraphs(docx_path: str) -> None:
+    """
+    Remove consecutively duplicated paragraphs (pdf2docx bug).
+
+    May 2026 fix: pdf2docx sometimes duplicates text 3× in table-based PDF
+    layouts (e.g., header/contact sections). This deduplication pass clears
+    consecutive duplicate paragraphs while preserving unique content.
+    """
+    try:
+        import docx as _docx
+    except Exception:
+        return  # docx unavailable — skip dedup
+
+    try:
+        doc = _docx.Document(docx_path)
+    except Exception:
+        return  # can't open docx — skip dedup
+
+    seen = []
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if text and seen and text == seen[-1]:
+            # Clear this duplicate paragraph
+            for run in para.runs:
+                run.text = ""
+        elif text:
+            seen.append(text)
+
+    try:
+        doc.save(docx_path)
+    except Exception:
+        pass  # save failed — continue with potentially duplicated docx

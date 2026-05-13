@@ -603,3 +603,35 @@ def outline_anchors(outline: Dict[str, Any]) -> List[Tuple[str, int]]:
             if isinstance(banc, int):
                 pairs.append(("bullet", banc))
     return pairs
+
+
+def _outline_quality_ok(outline: Dict[str, Any]) -> bool:
+    """
+    Check if the parsed outline is corrupted (e.g., pdf2docx bug).
+
+    May 2026 fix: pdf2docx sometimes duplicates text 3× and merges bullet
+    content into role headers, producing garbage outlines. This check
+    detects such corruption and signals the router to fall back to the
+    PDF path.
+
+    Corruption indicators:
+    - Role header > 150 characters (contains bullet content)
+    - Role header contains newlines (merged paragraphs)
+    - Role has ≤1 bullet when header is already long (>80 chars)
+
+    Returns False if any corruption is detected, True otherwise.
+    """
+    roles = outline.get("roles") or []
+    if not roles:
+        return False
+
+    for role in roles:
+        header = role.get("header", "")
+        # Bad sign: header contains bullet content (>150 chars or has newlines)
+        if len(header) > 150 or "\n" in header:
+            return False
+        # Bad sign: only 1 bullet when header is already garbled
+        if len(role.get("bullets", [])) <= 1 and len(header) > 80:
+            return False
+
+    return True
