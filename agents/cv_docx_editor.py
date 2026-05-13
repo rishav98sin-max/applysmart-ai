@@ -316,11 +316,40 @@ def apply_diff_to_docx(
                 # the NEW bullet followed by the ORIGINAL wrap-line text
                 # below it (e.g. "[New rewrite] ... [original wrap-text]"
                 # leaks through). See cv_docx_parser._continuation_anchors.
+                #
+                # Run-17 audit fix #27: the parser's continuation detection
+                # is permissive — any prose paragraph after a bullet can be
+                # misclassified as a wrap-continuation. Blanking such a
+                # paragraph silently deletes legitimate CV content. We now
+                # only blank continuations that LOOK like genuine wrap text:
+                #   - short (≤ 60% of typical line length, i.e. ≤72 chars)
+                #   - OR lowercase-starting (a wrap line doesn't start a
+                #     new sentence)
+                # Any continuation that looks like an independent paragraph
+                # (long, capitalised-starting) is left in place and logged.
                 cont_anchors = bullet_obj.get("_continuation_anchors") or []
                 for cont_idx in cont_anchors:
                     cont_para = paragraphs.get(cont_idx)
-                    if cont_para is not None:
+                    if cont_para is None:
+                        continue
+                    cont_text = (cont_para.text or "").strip()
+                    if not cont_text:
+                        # Already empty — safe to skip.
+                        continue
+                    looks_like_wrap = (
+                        len(cont_text) <= 72
+                        or (cont_text[:1].islower() if cont_text else False)
+                        or cont_text.startswith(("•", "-", "·", "*"))
+                    )
+                    if looks_like_wrap:
                         _blank_paragraph(cont_para)
+                    else:
+                        print(
+                            f"   🛡️  cv_docx_editor: kept continuation @ "
+                            f"anchor={cont_idx} (looks independent, "
+                            f"len={len(cont_text)}, preview="
+                            f"{cont_text[:60]!r})"
+                        )
                 edits_applied += 1
 
     # ── 3. Save ─────────────────────────────────────────────

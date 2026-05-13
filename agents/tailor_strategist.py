@@ -376,13 +376,20 @@ def _normalise_section_keys(d: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(d, dict):
         return {}
     out: Dict[str, Any] = {}
-    # Patterns that mark "end of role title, start of metadata noise"
+    # Patterns that mark "end of role title, start of metadata noise".
+    # Run-17 audit fix #8: dropped the bare ":\s" arm. Real role headers
+    # often contain a colon: "Software Engineer: Backend", "Client:
+    # Elevance Health", "Project: HR Dashboard". The old regex truncated
+    # these to the leading clause, after which the apply layer couldn't
+    # match the key to any real role and silently dropped all bullet
+    # actions. We now only split on colons that follow specific metadata
+    # labels (Tech Stack:, Skills:, Tools:, Stack:) — those are real
+    # boilerplate trailers, not role names.
     SPLIT_PATTERNS = re.compile(
         r"\s\s+|"                # double space
         r"\s\|\s|"               # " | "
         r"\s[-—]\s|"             # " - " or " — "
-        r"\s+(?:Tech\s+Stack|Stack|Skills|Tools|Tech)\s*:|"  # metadata trailers
-        r":\s",                  # any "Foo: bar" pattern
+        r"\s+(?:Tech\s+Stack|Stack|Skills|Tools|Tech)\s*:",  # metadata trailers
         flags=re.IGNORECASE,
     )
     # Generic outer-section labels the strategist sometimes echoes back
