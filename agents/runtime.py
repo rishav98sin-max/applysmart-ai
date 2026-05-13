@@ -106,6 +106,9 @@ _EMAIL_RX = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 _PHONE_RX = re.compile(r"(?<!\d)(?:\+?\d[\d\-\s().]{7,}\d)(?!\d)")
 
 
+_ALLOWED_UPLOAD_EXTS: tuple[str, ...] = (".pdf", ".docx")
+
+
 def _sanitise_basename(name: str, default_stem: str = "cv") -> str:
     """
     Produce a safe basename (no directory components) from `name`.
@@ -114,23 +117,36 @@ def _sanitise_basename(name: str, default_stem: str = "cv") -> str:
     - NFKC-normalise unicode then keep only `[A-Za-z0-9._\\- ]`.
     - Collapse whitespace to `_`.
     - Fall back to `default_stem` if nothing remains.
-    - Enforce `.pdf` extension regardless of input.
+    - Preserve the original extension if it's `.pdf` or `.docx`
+      (May 2026: DOCX path); otherwise default to `.pdf` so the
+      legacy code path still gets a usable filename. The router in
+      `cv_docx_pipeline.try_route_docx` keys off this extension to
+      decide which pipeline to use, so silently coercing a `.docx`
+      upload to `.pdf` would defeat the router.
     """
     # Drop any path parts an attacker might have supplied.
     raw = os.path.basename(str(name or "").strip())
     # Remove null bytes + control chars, NFKC-normalise unicode.
     raw = unicodedata.normalize("NFKC", raw)
     raw = raw.replace("\x00", "").replace("\r", "").replace("\n", "")
-    # Whitelist allowed chars.
+    # Detect & preserve a known good extension BEFORE the whitelist
+    # collapses dots. We compare lowercased to handle "RESUME.PDF" etc.
+    raw_lower = raw.lower()
+    chosen_ext = ".pdf"
+    for allowed in _ALLOWED_UPLOAD_EXTS:
+        if raw_lower.endswith(allowed):
+            chosen_ext = allowed
+            break
+    # Whitelist allowed chars (replaces every disallowed run with `_`).
     raw = _SAFE_NAME_RX.sub("_", raw)
     raw = re.sub(r"\s+", "_", raw).strip("._ ")
-    # Split stem+ext, enforce .pdf.
+    # Split off the extension we just identified, if it survived the pass.
     stem, _, _ = raw.rpartition(".")
     if not stem:
         stem = default_stem
     # Cap stem length (filesystem limits, sanity).
     stem = stem[:80] or default_stem
-    return f"{stem}.pdf"
+    return f"{stem}{chosen_ext}"
 
 
 def safe_upload_path(upload_dir: str, original_filename: str) -> str:

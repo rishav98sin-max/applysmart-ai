@@ -741,10 +741,14 @@ with st.sidebar:
 
     st.markdown('<div class="sidebar-h">Upload</div>', unsafe_allow_html=True)
     uploaded_cv = st.file_uploader(
-        "Your CV (PDF)", type=["pdf"], label_visibility="collapsed",
+        "Your CV (PDF or DOCX)",
+        type=["pdf", "docx"],
+        label_visibility="collapsed",
     )
-    # Add file info below uploader in a single line
-    st.caption("PDF • Max 7 MB")
+    # Add file info below uploader in a single line. DOCX uploads route
+    # through the May 2026 in-place editor; PDFs continue through the
+    # existing replica/rebuild path unless DOCX_PATH_ENABLED=1.
+    st.caption("PDF or DOCX • Max 7 MB")
     # Hide Streamlit's default 200MB text and reduce spacing
     st.markdown("""
     <style>

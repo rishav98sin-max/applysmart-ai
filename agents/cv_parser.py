@@ -127,12 +127,69 @@ def _extract_page_text_columnwise(page: "fitz.Page") -> str:
     return "\n".join(parts)
 
 
+def _parse_docx_text(cv_path: str) -> str:
+    """
+    Extract plain text from a `.docx` CV. Used by `parse_cv` when the
+    uploaded file is a Word document (May 2026 / DOCX path).
+
+    Walks every paragraph in document order, including paragraphs nested
+    inside tables (pdf2docx-converted DOCX layouts use tables for
+    multi-column blocks, so skipping tables would drop role headers).
+    Returns "" on any failure so the caller's error path takes over.
+    """
+    try:
+        import docx as _docx_lib   # python-docx
+        from docx.oxml.ns import qn
+    except Exception:
+        return ""
+    try:
+        doc = _docx_lib.Document(cv_path)
+    except Exception as e:
+        print(f"Error opening DOCX: {e}")
+        return ""
+
+    P_TAG, TBL_TAG = qn("w:p"), qn("w:tbl")
+    chunks: list[str] = []
+
+    def _walk(parent_element, container_obj):
+        for child in parent_element.iterchildren():
+            if child.tag == P_TAG:
+                # Use the paragraph's `.text` (joins runs) — same shape
+                # the DOCX parser/editor see, so downstream guards stay
+                # consistent.
+                from docx.text.paragraph import Paragraph
+                p = Paragraph(child, container_obj)
+                t = (p.text or "").strip()
+                if t:
+                    chunks.append(t)
+            elif child.tag == TBL_TAG:
+                from docx.table import Table
+                tbl = Table(child, container_obj)
+                for row in tbl.rows:
+                    for cell in row.cells:
+                        _walk(cell._tc, cell)
+
+    _walk(doc.element.body, doc)
+    return "\n".join(chunks).strip()
+
+
 def parse_cv(cv_path):
     text = ""
     try:
         if not os.path.exists(cv_path):
             print(f"CV file not found at: {cv_path}")
             return ""
+
+        # May 2026 (DOCX path): route Word documents through python-docx
+        # rather than PyMuPDF (which can't open `.docx`). The cleanup
+        # passes below are PDF-extraction artefacts (bullet glyph repair,
+        # column merging) that don't apply to DOCX, so we return early
+        # with the raw extracted text.
+        if cv_path.lower().endswith(".docx"):
+            text = _parse_docx_text(cv_path)
+            if text:
+                print(f"CV (DOCX) parsed successfully: {len(text)} characters extracted")
+            return text
 
         doc = fitz.open(cv_path)
         for page in doc:
