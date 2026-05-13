@@ -606,9 +606,16 @@ _BANNED_PHRASE_REPLACEMENTS: tuple = (
     # so we don't leave an orphan "make me." fragment behind.
     (r"\bmake(?:s)?\s+(?:me|him|her)\s+(?:a\s+)?strong\s+fit\s+for\s+this\s+role\b",
      "match this role well"),
-    # Bare "strong fit for this role" — drop the tail; nearby grammar
-    # usually carries it (". A strong fit..." → ".").
-    (r"[,]?\s*(?:a\s+)?strong\s+fit\s+for\s+this\s+role\b", ""),
+    # Run-17 audit fix #23: the bare "strong fit for this role" deletion
+    # was too aggressive. "My background is a strong fit for this role,
+    # which calls for…" got mangled into "My background is, which calls
+    # for…" — dangling clause. Anchor the replacement to a verb so we
+    # don't strip leaving a verb without its complement. Patterns now
+    # cover the most common framings without leaving orphans.
+    (r"\b(is|am|was|were|be|being|been)\s+(?:a\s+)?strong\s+fit\s+for\s+this\s+role\b",
+     r"\1 well suited to this role"),
+    (r"\b(seems?|seemed|appears?|appeared|feels?|felt)\s+(?:like\s+)?(?:a\s+)?strong\s+fit\s+for\s+this\s+role\b",
+     r"\1 well suited to this role"),
     # "I believe I would be a great fit" — drop entirely.
     (r"\bi\s+believe\s+i\s+would\s+be\s+(?:a\s+)?great\s+fit\b", ""),
     # "passionate team player" — drop.
@@ -627,16 +634,41 @@ def _strip_banned_phrases(body: str) -> tuple:
     """
     Deterministic post-pass. Returns (cleaned_body, list_of_phrases_stripped).
     Empty list = no changes made.
+
+    Run-17 audit fix #11: orphan-clause guard. After each replacement we
+    detect sentences that have collapsed into ungrammatical fragments
+    ("X is, which calls for…", " . ", lone punctuation) and skip the
+    replacement when that happens. This prevents the strip from creating
+    worse output than it removes — the surrounding sentence is left intact
+    and the banned phrase ships as-is rather than mangling the letter.
     """
     if not body:
         return body, []
 
     out = body
     stripped: List[str] = []
+
+    def _is_grammatically_safe(candidate: str) -> bool:
+        # Heuristics for orphan clauses introduced by deletion.
+        if re.search(r"\bis\s*,", candidate):  # "X is, which..."
+            return False
+        if re.search(r"\b(am|are|was|were|be|been|being)\s*,", candidate):
+            return False
+        if re.search(r"[.,;:!?]\s*[.,;:!?]", candidate):  # ", ." or ". ."
+            return False
+        if re.search(r"\s{2,}[a-zA-Z]", candidate):  # too many spaces left behind
+            # acceptable if we'll clean later — but check anyway
+            pass
+        return True
+
     for pattern_str, replacement in _BANNED_PHRASE_REPLACEMENTS:
         rx = re.compile(pattern_str, re.IGNORECASE)
         new_out, n = rx.subn(replacement, out)
         if n > 0:
+            if not _is_grammatically_safe(new_out):
+                # Skip this replacement — it would mangle the letter.
+                # Better to ship the original phrase than a broken sentence.
+                continue
             stripped.append(pattern_str)
             out = new_out
 
@@ -718,15 +750,34 @@ def _render_strategy_for_cover_letter(strategy: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _foreign_terms_in_letter(body: str, cv_text: str, company: str, job_title: str) -> list:
+def _foreign_terms_in_letter(
+    body: str,
+    cv_text: str,
+    company: str,
+    job_title: str,
+    job_description: str = "",
+) -> list:
     """
     Find capitalized/acronym tokens in `body` that are NOT present in the CV
-    text, the company name, or the job title. These usually indicate tools
-    or frameworks the LLM invented from the JD. Returns a deduped list.
+    text, the company name, the job title, or the JD. These usually indicate
+    tools or frameworks the LLM invented. Returns a deduped list.
+
+    Run-17 audit fix #22: include `job_description` in the haystack. A
+    cover letter that names two of the company's products (which appear
+    in the JD but not the CV) would otherwise be flagged as fabrication,
+    forcing retry-with-stricter-prompt and eventually a placeholder. The
+    JD facts ARE legitimate things to anchor the letter to. The strategist's
+    do_not_inject list is the authoritative fabrication list — defer to it
+    instead of inventing a parallel one from capitalisation heuristics.
     """
     if not body:
         return []
-    haystack = " ".join([cv_text or "", company or "", job_title or ""]).lower()
+    haystack = " ".join([
+        cv_text or "",
+        company or "",
+        job_title or "",
+        job_description or "",
+    ]).lower()
     foreign: list = []
     seen: set = set()
     for m in _CAPTERM_RX.finditer(body):
@@ -754,15 +805,23 @@ def _cover_letter_is_complete(body: str) -> bool:
     Return False when the body looks truncated — too short, ends mid-word,
     or trails off on a connective word. These letters would otherwise ship
     as a 2-line stub like the AIB case in the April 22 run.
+
+    Run-17 audit fix #24: relaxed the word floor from 140 → 100 and the
+    char floor from 500 → 380. The previous floors were rejecting tight,
+    well-structured 130-word letters (legitimate for some EU markets and
+    internal-referral notes) as "truncated", forcing retry. After 3
+    retries the system fell through to a generic placeholder. We now lean
+    on the truncation-trailer regex below to detect actual incompleteness;
+    word count is a length preference, not a completeness signal.
     """
     if not body:
         return False
     stripped = body.strip()
-    if len(stripped) < 500:
-        return False  # <~80 words — always too short for a 340-400 word letter
+    if len(stripped) < 380:
+        return False
 
     word_count = len(stripped.split())
-    if word_count < 140:
+    if word_count < 100:
         return False
 
     # Last non-whitespace char should be sentence-ending punctuation.
@@ -879,7 +938,10 @@ def generate_cover_letter(
             # threshold (>=2) tolerates a single legitimate proper noun
             # (e.g. the company's product line) while still catching
             # JD-keyword invention like "Python, JMeter, Selenium".
-            foreign = _foreign_terms_in_letter(raw, cv_text, company, job_title)
+            foreign = _foreign_terms_in_letter(
+                raw, cv_text, company, job_title,
+                job_description=job_description,
+            )
             if len(foreign) >= 2:
                 print(
                     f"   ⚠️  Cover letter introduced CV-foreign terms {foreign!r} "

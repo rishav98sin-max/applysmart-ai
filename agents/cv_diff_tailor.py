@@ -1170,9 +1170,25 @@ def _get_bullet_reverts() -> List[Dict[str, Any]]:
 # Backwards-compat shim: keep `_LAST_BULLET_REVERTS` as a property-like
 # accessor for any existing reads. Writes go through _get_bullet_reverts().
 class _BulletRevertsProxy:
-    """Backwards-compat shim — delegates list ops to thread-local storage."""
+    """Backwards-compat shim — delegates list ops to thread-local storage.
+
+    Run-17 audit fix #16: the proxy supports list-like reads and method
+    calls (.clear(), .append() via __getattr__) but ASSIGNMENT to the
+    module name `_LAST_BULLET_REVERTS = [...]` would silently rebind the
+    name and break thread-safety for every subsequent caller. We can't
+    block module-level rebinding without metaclass tricks, but we CAN
+    forbid attribute writes on the proxy itself to make accidental
+    "self.foo = bar" style misuse fail loudly instead of silently
+    corrupting the shared cache.
+    """
     def __getattr__(self, name):
         return getattr(_get_bullet_reverts(), name)
+    def __setattr__(self, name, value):
+        raise AttributeError(
+            f"_BulletRevertsProxy is read-only at the attribute level. "
+            f"Call _LAST_BULLET_REVERTS.append(...) or .clear() instead "
+            f"of assigning to '{name}'."
+        )
     def __iter__(self):
         return iter(_get_bullet_reverts())
     def __len__(self):

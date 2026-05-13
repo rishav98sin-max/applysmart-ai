@@ -285,7 +285,12 @@ def current_budget() -> Optional[LLMBudget]:
 # wait: if Groq says "wait longer than MAX_RATE_LIMIT_WAIT", we raise
 # BudgetExceeded and let the run abort gracefully.
 
-MAX_RATE_LIMIT_WAIT: int = int(os.getenv("MAX_RATE_LIMIT_WAIT", "60"))
+# Run-17 audit fix #12: bumped 60 → 120. The previous 60s cap aborted
+# the whole run on a 61-90s retry-after, which is common mid-batch on the
+# Groq free tier even when subsequent jobs would have succeeded. 120s
+# rides through routine throttles while still aborting on true daily-
+# budget exhaustion (retry-after 5-15 minutes).
+MAX_RATE_LIMIT_WAIT: int = int(os.getenv("MAX_RATE_LIMIT_WAIT", "120"))
 
 
 def handle_rate_limit(wait_seconds: float, agent: str = "") -> None:

@@ -30,7 +30,20 @@ import fitz  # PyMuPDF
 # the file changes. This is safe for single-process usage; for
 # multi-process, a Redis or file-based cache would be needed.
 
-_outline_cache: Dict[str, tuple] = {}  # cache_key -> (outline, mtime, size)
+# Run-17 audit fix #13: cap the cache at 32 entries with simple FIFO
+# eviction. The previous unbounded dict grew per upload on long-running
+# Streamlit Cloud instances where the same process serves many users.
+# Outlines are ~5-50KB each, so 32 entries = 160KB-1.6MB worst case.
+_OUTLINE_CACHE_MAX = 32
+_outline_cache: Dict[tuple, tuple] = {}  # cache_key -> (outline, mtime, size)
+
+
+def _evict_outline_cache_if_full() -> None:
+    """FIFO eviction when the cache grows past _OUTLINE_CACHE_MAX."""
+    while len(_outline_cache) > _OUTLINE_CACHE_MAX:
+        # Pop the oldest entry. Python 3.7+ dicts preserve insertion order.
+        oldest_key = next(iter(_outline_cache))
+        _outline_cache.pop(oldest_key, None)
 
 
 def _get_cache_key(pdf_path: str) -> tuple:
@@ -68,9 +81,10 @@ def build_outline_cached(pdf_path: str) -> Dict[str, Any]:
     try:
         stat = os.stat(pdf_path)
         _outline_cache[cache_key] = (outline, stat.st_mtime, stat.st_size)
+        _evict_outline_cache_if_full()
     except OSError:
         pass  # Still cache the outline even if we can't get stats
-    
+
     return outline
 
 
@@ -1554,8 +1568,17 @@ def _insert_fitted(
     # to land the text within the original block's natural footprint.
     work_rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1)
 
-    # More aggressive shrinkage ladder (floor of 6pt enforced below).
-    sizes = [base_size - 0.5 * i for i in range(10)]
+    # Run-17 audit fix #15: cap shrinkage at 1.0pt (was 4.5pt). The
+    # previous ladder allowed each bullet to independently shrink up to
+    # 4.5pt, producing visibly inconsistent font sizes across bullets in
+    # the same role (10pt / 9.5pt / 9pt depending on each one's overflow).
+    # Now any rewrite that doesn't fit within 1pt of shrinkage will return
+    # 0, which signals the caller to revert this bullet to original —
+    # keeping the role's typography homogeneous. The 1.50× length ceiling
+    # in cv_diff_tailor._rewrite_is_safe already ensures rewrites should
+    # fit within a small shrink budget; this guard catches the rare cases
+    # where they don't.
+    sizes = [base_size, base_size - 0.5, base_size - 1.0]
 
     # ── Attempt 1: original embedded font (preserves look + unicode) ──
     if doc is not None and font_cache is not None:
