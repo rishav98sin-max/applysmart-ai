@@ -27,6 +27,14 @@ from agents.pdf_editor import (
     build_outline_cached as _build_outline,
     detect_replica_compatibility as _detect_replica_compatibility,
 )
+# May 13, 2026: DOCX path router. Activated via env DOCX_PATH_ENABLED=1
+# (or automatically when the user uploads a `.docx` directly). Falls
+# back to the PDF replica path on any failure — never raises.
+from agents.cv_docx_pipeline import (
+    try_route_docx       as _try_route_docx,
+    apply_diff_and_render as _docx_apply_and_render,
+    CVDocxRoute,
+)
 from agents.reviewer    import review_tailored_cv, ACCEPT_THRESHOLD as REVIEWER_ACCEPT_THRESHOLD
 from agents.cover_letter_generator import generate_cover_letter
 from agents.cv_style_agent import build_style_profile
@@ -1257,8 +1265,34 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
             best_diff:   Optional[Dict[str, Any]] = None
             best_review: Optional[Dict[str, Any]] = None
 
+            # May 13 (DOCX path): route this job through the DOCX pipeline
+            # iff (a) the user uploaded a .docx OR (b) DOCX_PATH_ENABLED=1
+            # AND the PDF converts cleanly. Any failure leaves docx_route
+            # = None and the rest of this closure runs the legacy PDF path
+            # unchanged. Never raises.
+            docx_route: Optional[CVDocxRoute] = None
             try:
-                outline_cache = shared_outline or _build_outline(state["cv_path"])
+                docx_route = _try_route_docx(state["cv_path"], out_dir)
+            except Exception as _route_err:
+                # Defensive: the router promises "never raises", but if a
+                # future contributor breaks that contract we still want
+                # the PDF path to handle the job.
+                print(
+                    f"   ⚠️  {tag} DOCX router raised "
+                    f"({type(_route_err).__name__}: {_route_err}); "
+                    f"falling back to PDF path."
+                )
+                docx_route = None
+
+            try:
+                # When we have a DOCX route, use ITS outline (which has
+                # the paragraph anchors `cv_docx_editor` needs at apply
+                # time). Otherwise build the PDF outline as before.
+                outline_cache = (
+                    docx_route.outline
+                    if docx_route is not None
+                    else (shared_outline or _build_outline(state["cv_path"]))
+                )
                 feedback_in = ""
                 prev_diff: Optional[Dict[str, Any]] = None
 
@@ -1270,7 +1304,15 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                 # the broader try/except block from catching the signal as
                 # an error and printing a misleading "Replica+review failed"
                 # log line.
-                replica_check = _detect_replica_compatibility(state["cv_path"])
+                #
+                # The DOCX route bypasses this check — convertibility was
+                # already gated by `cv_pdf_to_docx` and the parser's role
+                # count, which together cover the same "is this editable
+                # in place" question for the DOCX pipeline.
+                if docx_route is not None:
+                    replica_check = {"compatible": True, "reason": "docx_route"}
+                else:
+                    replica_check = _detect_replica_compatibility(state["cv_path"])
                 replica_skipped = not replica_check.get("compatible", True)
                 if replica_skipped:
                     reason = replica_check.get("reason", "unknown")
@@ -1543,7 +1585,40 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     prev_diff   = diff
 
                 if best_diff and (best_diff.get("summary") or best_diff.get("bullets") or best_diff.get("skills_order")):
-                    report = apply_pdf_edits(state["cv_path"], best_diff, replica_path)
+                    if docx_route is not None:
+                        # DOCX path: apply diff to the source DOCX and
+                        # render via mammoth → WeasyPrint. On any failure
+                        # we leave `cv_pdf` as None so the post-loop
+                        # block falls through to the rebuild path with
+                        # the same `tcv_text` flattened from the diff.
+                        ok_docx, reason_docx = _docx_apply_and_render(
+                            route       = docx_route,
+                            diff        = best_diff,
+                            output_pdf  = replica_path,
+                        )
+                        # Synthesise a `report` dict with the same shape
+                        # apply_pdf_edits returns so the downstream
+                        # tables-detected / event-tracking code keeps
+                        # working unchanged. The DOCX path doesn't have
+                        # table protection (it edits paragraphs directly),
+                        # so we surface zeros — they're informational, not
+                        # safety-critical.
+                        report = {
+                            "applied": (
+                                {"docx_path": True}
+                                if ok_docx
+                                else {}
+                            ),
+                            "tables": {"detected": 0, "lines_filtered": 0},
+                            "_docx_reason": reason_docx,
+                        }
+                        if not ok_docx:
+                            print(
+                                f"   ⚠️  {tag} DOCX apply+render failed "
+                                f"({reason_docx}) — falling back to rebuild."
+                            )
+                    else:
+                        report = apply_pdf_edits(state["cv_path"], best_diff, replica_path)
                     # Stash table-protection stats onto best_review so the UI
                     # job-card can show "N tables protected" in the insight
                     # expander — same plumbing-free strategy as _bullet_reverts.
@@ -1579,10 +1654,11 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         pass
                     if os.path.exists(replica_path) and os.path.getsize(replica_path) > 0:
                         cv_pdf = replica_path
-                        rmode = "in_place"
+                        rmode = "docx_path" if docx_route is not None else "in_place"
                         print(
                             f"   ✅ {tag} Replica CV written "
-                            f"(applied={list(report.get('applied', {}).keys())}, "
+                            f"(mode={rmode}, "
+                            f"applied={list(report.get('applied', {}).keys())}, "
                             f"review={best_review['score']}/100, "
                             f"tables_protected={(report.get('tables') or {}).get('detected', 0)})"
                         )
