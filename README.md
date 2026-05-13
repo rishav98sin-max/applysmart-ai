@@ -423,36 +423,71 @@ python scripts/test_pdf_fix.py         # PDF editor regression suite
 ## Project layout
 
 ```
+app.py                        # Streamlit UI — sidebar inputs, match cards, bulk-send, privacy consent
+
 agents/
-  runtime.py             # session dirs, budget, rate-limit cap, snapshots, secrets
-  llm_client.py          # centralised LLM routing — DeepSeek, Groq, Gemini with key rotation
-  preflight.py           # startup config checks (GROQ_API_KEY, etc.)
-  cv_validator.py        # pre-flight CV compatibility checker
-  cv_parser.py           # PDF → text
-  cv_embeddings.py       # ChromaDB + MiniLM retrieval layer (e3)
-  planner.py             # keyword bundles + quality bar
-  job_scraper.py         # LinkedIn / Indeed / Glassdoor / Builtin / JobsIE
-  job_matcher.py         # CV ↔ JD scoring (vector-aware)
-  tailor_strategist.py   # bullet-level strategy generation (promote/rewrite/drop)
-  cv_tailor.py           # surgical CV edits (legacy full-text path)
-  cv_diff_tailor.py      # diff-based tailor (outline-aware)
-  cover_letter_generator.py
-  cover_letter_reviewer.py  # fabrication grading
-  reviewer.py            # tailored-CV quality review
-  pdf_editor.py          # in-place PDF edits via PyMuPDF
-  pdf_formatter.py       # rebuild router — tries WeasyPrint first, then ReportLab
-  pdf_formatter_weasy.py # HTML+CSS rebuild via WeasyPrint (ATS-safe)
-  templates/             # Jinja2 HTML templates for WeasyPrint
-  cv_docx_parser.py      # DOCX → outline (same shape as pdf_editor.build_outline)
-  cv_docx_editor.py      # apply tailor diff to DOCX in-place
-  cv_pdf_to_docx.py      # PDF → DOCX via pdf2docx + convertibility score
-  cv_docx_to_pdf.py      # DOCX → PDF via LibreOffice headless
-  cv_docx_pipeline.py    # public API: try_route_docx, apply_diff_and_render
-  email_agent.py         # Gmail SMTP delivery
-  job_agent.py           # LangGraph supervisor + nodes
-app.py                   # Streamlit UI
-scripts/                 # smoke tests + batch CV validator
-docs/                    # CV compatibility notes
+  ── Orchestration ───────────────────────────────────────────────────────────
+  job_agent.py                # LangGraph supervisor + all worker nodes (entry: run_agent())
+  runtime.py                  # LLM budget, rate-limit cap, crash-safe snapshots, secrets
+  preflight.py                # Startup config check — blocks launch if GROQ_API_KEY missing
+
+  ── LLM routing ─────────────────────────────────────────────────────────────
+  llm_client.py               # Centralised routing: chat_deepseek() → chat_fast()/chat_quality()
+                              #   (Groq) → chat_gemini(); key rotation; GEMINI_BYPASS support
+
+  ── CV ingestion ────────────────────────────────────────────────────────────
+  cv_validator.py             # Pre-flight: rejects scanned/locked/<500-char/non-English CVs
+  cv_parser.py                # PDF → plain text (column-aware); also parses .docx text
+  cv_embeddings.py            # ChromaDB + MiniLM-L6 vector index; retrieve() for RAG matching
+
+  ── Job sourcing ────────────────────────────────────────────────────────────
+  planner.py                  # LLM → 2-4 keyword bundles + quality bar
+  job_scraper.py              # Multi-board scraper: LinkedIn / Indeed / Glassdoor / Builtin / JobsIE
+  job_matcher.py              # CV ↔ JD scoring 0-100; RAG; YOE early-exit; level-gap penalty
+
+  ── CV tailoring ────────────────────────────────────────────────────────────
+  tailor_strategist.py        # LLM → per-role bullet strategy (promote / rewrite / drop)
+  cv_diff_tailor.py           # LLM → structured JSON diff {summary, bullets, skills_order};
+                              #   10+ fabrication guardrails; DeepSeek primary → Groq fallback
+  cv_tailor.py                # Legacy full-CV rewrite path (unused in main pipeline)
+
+  ── PDF editing & rendering ─────────────────────────────────────────────────
+  pdf_editor.py               # In-place PDF edits via PyMuPDF (coordinate-level text swap)
+  cv_style_agent.py           # Extracts font/size/margin/colour style profile from CV PDF
+                              #   for use by ReportLab rebuild path
+  pdf_formatter.py            # Rebuild router: tries WeasyPrint → falls back to ReportLab
+  pdf_formatter_weasy.py      # HTML+CSS → PDF via WeasyPrint (ATS-safe, page-count-preserving)
+  templates/                  # Jinja2 HTML templates for WeasyPrint rebuild
+
+  ── DOCX path (v1.4) ────────────────────────────────────────────────────────
+  cv_pdf_to_docx.py           # PDF → DOCX via pdf2docx; 0-100 convertibility score
+  cv_docx_parser.py           # DOCX → outline (same structure as pdf_editor.build_outline)
+  cv_docx_editor.py           # Applies tailor diff to DOCX at paragraph/run level
+  cv_docx_to_pdf.py           # DOCX → PDF via LibreOffice headless (preserves fonts/layout)
+  cv_docx_pipeline.py         # Public API: try_route_docx(), apply_diff_and_render()
+
+  ── Review & quality ────────────────────────────────────────────────────────
+  reviewer.py                 # Grades tailored CV 0-100; triggers retry if score < 72
+  cover_letter_generator.py   # 3-paragraph cover letter; DeepSeek primary → Groq fallback
+  cover_letter_reviewer.py    # Grades fabrication 0-100; retries generator if score < 70
+
+  ── Delivery ────────────────────────────────────────────────────────────────
+  email_agent.py              # Gmail SMTP delivery with PDF attachments; preview-mode gate
+  application_tracker.py      # Per-user applied-job history (file-backed JSON, thread-safe);
+                              #   skips re-scoring/re-tailoring jobs already marked applied
+
+  ── Cross-cutting ───────────────────────────────────────────────────────────
+  prompt_safety.py            # Fenced <<<UNTRUSTED>>> blocks + sanitiser for all JD/CV inputs
+  privacy.py                  # PII redaction, LangSmith consent gate, snapshot anonymiser
+  analytics.py                # Mixpanel event tracking (fail-safe no-op without token)
+
+diagnostics/
+  instrumentation.py          # Monkey-patches LLM clients for per-call telemetry (opt-in)
+  analyzer.py                 # Parses telemetry JSONL into per-agent stats
+  telemetry.py                # JSONL telemetry store
+
+scripts/                      # Smoke tests + batch utilities (no LLM cost unless noted)
+docs/                         # PRDs, privacy statement, supported CV formats, KPI plan
 ```
 
 ---
