@@ -67,27 +67,38 @@ The first sentence MUST NOT begin with "I" or "My" or the candidate's
 name. The hiring manager should be 1-2 sentences in before they realise
 this is a cover letter. Use ONE of these THREE opening patterns:
 
-  PATTERN A — INDUSTRY / DOMAIN OBSERVATION (preferred default):
-    Open with a one-sentence observation about the company's
-    industry, market, or problem-space — the kind of opinion a
-    practitioner would have. Sentence 2 transitions to the
-    candidate's CV experience as the lived solution.
-    Example SHAPE ONLY (adapt to the actual industry — do NOT copy
-    vocabulary from this example if the CV is not in tech):
-      "[One-sentence opinion about this industry's defining tension,
-       drawn from the JD or the sector itself — not a generic platitude.]
-       [Second sentence that sharpens the tension or names where it
-       usually goes wrong.] [Third short sentence landing the
-       candidate's years/specialism as the lived solution.]"
-    The example demonstrates the STRUCTURE (observation → sharpening →
-    candidate-as-solution). A nurse writing to a clinic, a lawyer to
-    a chambers, and a marketer to a brand should all follow the same
-    structure but use their own domain's vocabulary and tensions.
+  PATTERN A — COMPANY/PRODUCT-SPECIFIC OBSERVATION:
+    Open with a one-sentence observation about THIS COMPANY'S specific
+    product, market position, or challenge — drawn directly from the JD
+    (product name, stated goal, specific problem the role is hired to solve).
+    Sentence 2 sharpens the tension or names where this type of work usually
+    goes wrong. Sentence 3 lands the candidate as the person who has solved it.
+    CRITICAL: the observation must be specific to THIS company and THIS role.
+    If it could apply to any company in the sector, rewrite it.
+    BANNED OPENER SHAPES (these are LinkedIn-post clichés, not practitioner
+    insight — any one is an instant fail for this pattern):
+      "The shift from X to Y is transforming how...",
+      "As the industry moves toward...",
+      "In today's [adjective] landscape...",
+      "The rise of X is changing how...",
+      "X is evolving rapidly...",
+      "[Industry] is at an inflection point...".
+    Use this pattern only when the JD names a specific product, mission, or
+    challenge that you can make a pointed observation about. If the JD is
+    generic, use Pattern B instead.
 
-  PATTERN B — ROLE-INSIGHT OPENER:
-    Open with a sharp insight into what THIS role actually needs to
-    succeed (drawn from the JD), then land the candidate as the fit.
-    Useful when the JD signals an unusual or hard-to-fill blend.
+  PATTERN B — DIRECT RELEVANCE OPENER (preferred default):
+    Open with a direct statement that the candidate has done this exact
+    work before. Name the specific type of problem the role is hired to
+    solve (from the JD), then immediately establish the candidate's
+    relevant experience — two or three concrete capability areas in one
+    sentence. Do NOT begin with "I"; frame the problem or work-type first,
+    then land the candidate as the person who has lived it.
+    Use this pattern as the default for product, tech, API, and operations
+    roles where the JD has a clear, specific mandate.
+    Example shape: "[The type of work this role requires] is something I
+    have done from [angle 1], [angle 2], and [angle 3] — [one-line
+    credential that earns the right to say so]."
 
   PATTERN C — CONCRETE ACHIEVEMENT OPENER:
     Lead with ONE specific CV achievement that maps directly to the
@@ -135,6 +146,25 @@ PARAGRAPH 2 — EXPERIENCE & PROOF (4-6 sentences):
          proof with a second concrete achievement.
     D) If the CV has no projects section at all:
        → Do NOT reference projects in any paragraph. Do not invent or imply.
+- ROLE-ADAPTIVE PROJECT FRAMING: when describing a personal project, pick
+  the angle that best demonstrates the capability THIS JD is actually hiring
+  for. Read the JD's core requirement first, then select the project fact
+  that speaks to it directly — not the default consumer-metric angle:
+    • API / developer-facing / platform product roles: describe the
+      integration architecture, authentication handling, rate-limit design,
+      data pipeline, or technical infrastructure the project runs on.
+    • Data / analytics / insights roles: describe the clustering logic,
+      data pipeline, or insight-generation mechanism.
+    • Consumer product / growth roles: describe the user-facing metric
+      (time saved, adoption, retention) — this is the ONE case where the
+      end-user outcome is the right angle.
+    • Operations / process / automation roles: describe the workflow
+      automation logic or efficiency gain.
+  Example: for a role building an API gateway, "ApplySmart AI scrapes job
+  boards via a multi-API integration layer with auth handling and rate-limit
+  ceilings" is the right angle. "Cut application time 80%" is the wrong one
+  — a hiring manager building APIs cares that you designed integration
+  infrastructure, not that end users saved time.
 - AWARDS HANDLING: if the CV lists awards, recognitions, scholarships, or
   named honours AND one is JD-relevant, weave it naturally into this
   paragraph as a credibility signal — never force it.
@@ -206,6 +236,18 @@ PARAGRAPH 4 — CTA + CLOSE (2-3 sentences):
   enthusiasm, or paraphrasing paragraph 1. Add NEW information instead
   (availability, willingness to relocate, specific format preference, or
   one forward-looking observation about the role).
+- WORK AUTHORISATION + AVAILABILITY (contract/fixed-term roles ONLY):
+  If the JD specifies a contract, fixed-term, temporary, or 12-month
+  engagement: scan the CV for any visa, work permit, or work authorisation
+  statement (e.g. "Stamp 1G", "right to work", "work authorisation", "EU
+  citizen", "open work permit"). If found, you MUST include ONE sentence
+  in this paragraph stating the candidate's work-authorisation status and
+  availability. This sentence eliminates the #1 early-stage rejection reason
+  for contract applications and must not be omitted.
+  Format: "[Authorisation status], available [timeframe/start date]."
+  Example: "I hold a Stamp 1G visa and am available immediately."
+  If the JD is a permanent/perm role OR the CV contains no visa/auth info,
+  omit this sentence entirely.
 
 ═══════════════════════════════════════════════════════════════════════
 STRICT RULES (each is a critical failure if broken)
