@@ -27,6 +27,16 @@ sentence-transformers>=2.2
 weasyprint>=60
 jinja2>=3
 
+# ── DOCX path (May 2026): edit CVs as DOCX (flow-based, format-safe) ──
+# When the user uploads a .docx OR when a .pdf converts cleanly to .docx,
+# the tailor edits the DOCX tree (paragraph/run level — zero font shrinkage,
+# no 130% length cap) and renders back to PDF via mammoth → WeasyPrint.
+# All free; total install delta ≈ 13 MB. See agents/cv_docx_*.py for the
+# parser, editor, and PDF↔DOCX converters.
+python-docx>=1.1            # read/write Word document XML tree
+pdf2docx>=0.5               # PDF → DOCX (built on PyMuPDF — already installed)
+mammoth>=1.6                # DOCX → HTML (preserves styles, paragraph structure)
+
 # ── Diagnostics layer (optional; activated via DIAGNOSTICS_ENABLED=1) ──
 # Per-call LLM telemetry. JSONL works without this dep; Langfuse adds the
 # pretty UI + remote persistence. See diagnostics/README.md.
