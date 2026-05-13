@@ -1,8 +1,104 @@
 # ApplySmart AI — Complete Handoff Summary
 
 **Generated:** April 20, 2026
-**Last updated:** May 5, 2026 (v1.3: CV tailoring pipeline robustness fixes, strategist module, comprehensive guardrails)
+**Last updated:** May 13, 2026 (v1.4: DOCX path — accept .docx uploads, optional PDF→DOCX conversion, mammoth+WeasyPrint render)
 **Purpose:** Full context handoff to Cursor for continued development
+
+---
+
+## 0. What's new in v1.4 — DOCX path (May 13, 2026)
+
+The CV tailoring pipeline now supports a **DOCX-based editing path** as
+an alternative to the existing PDF in-place editor and rebuild path.
+This addresses two long-standing limitations:
+
+1. **PDF replica path is fragile** for CVs with complex visual layouts
+   (multi-column, custom fonts, image-heavy designer templates). Editing
+   PDF coordinates directly often produced mis-aligned text.
+2. **Word users had to convert to PDF first**, losing structural fidelity
+   and forcing the rebuild path.
+
+### How it works
+
+```
+User upload (.pdf or .docx)
+        │
+        ▼
+   try_route_docx()
+   ┌────────────────────────────────────┐
+   │ .docx?  → use directly (score=100) │
+   │ .pdf?   → pdf2docx + score gate    │
+   │           (DOCX_PATH_ENABLED flag) │
+   └────────────────────────────────────┘
+        │
+   ┌────┴────┐
+   │ DOCX    │  ← cv_docx_pipeline.apply_diff_and_render()
+   │ route?  │
+   └────┬────┘
+        ├── yes ──► python-docx edits → mammoth → WeasyPrint → PDF
+        └── no  ──► existing PDF replica path → ReportLab fallback
+```
+
+### Modules added
+
+| File | Purpose |
+|------|---------|
+| `agents/cv_docx_parser.py`   | Parse DOCX → outline (same shape as `pdf_editor.build_outline`) with paragraph anchors |
+| `agents/cv_docx_editor.py`   | Apply tailor diff to DOCX in-place; preserves bullet glyphs, blanks continuation paragraphs |
+| `agents/cv_pdf_to_docx.py`   | PDF→DOCX conversion via `pdf2docx`; computes 0–100 convertibility score |
+| `agents/cv_docx_to_pdf.py`   | DOCX→HTML via `mammoth`, HTML→PDF via WeasyPrint; promotes glyph paragraphs to proper `<ul><li>` |
+| `agents/cv_docx_pipeline.py` | Public API: `try_route_docx`, `apply_diff_and_render`, `CVDocxRoute` |
+
+### Feature flag
+
+The router is gated by `DOCX_PATH_ENABLED` env var:
+- **DOCX upload**: ALWAYS uses the DOCX path (flag ignored — there's no
+  sensible alternative for native Word input).
+- **PDF upload**: Uses DOCX path ONLY when `DOCX_PATH_ENABLED=1` AND the
+  `pdf2docx` conversion scores ≥ `DOCX_CONVERTIBILITY_THRESHOLD` (default 60).
+- Any failure → graceful fallback to existing PDF replica/rebuild path.
+
+### Convertibility scoring (cv_pdf_to_docx)
+
+| Signal | Points |
+|---|---|
+| ≥80% of source PDF text preserved in DOCX | +60 |
+| ≥2 known section headers detected | +20 |
+| No multi-column tables in body | +10 |
+| DOCX size <3× PDF size | +10 |
+
+CVs scoring <60 fall back to the PDF rebuild path. Tested on the project
+owner's base CV: scored 90/100, parsed into 3 roles correctly, all 3
+bullet rewrites verified end-to-end.
+
+### Known limitations
+
+- **WeasyPrint native deps**: requires libpango/libcairo at runtime.
+  Already declared in `packages.txt` (Streamlit Cloud). Local Windows
+  dev returns `ok=False` from `render_pdf_from_docx` → router falls back
+  to PDF replica path automatically.
+- **VoC second project header in pdf2docx output**: when a designer CV
+  uses non-bold project subheadings, they get absorbed into the previous
+  role's bullets. Acceptable degradation — full project content is
+  preserved, just merged.
+- **No table protection in DOCX edits**: the editor rewrites paragraphs
+  directly. The PDF replica path's table-protection logic doesn't
+  apply. CVs with critical tabular data should stay on the PDF path.
+
+### Smoke tests
+
+- `tmp_smoke_docx_editor.py` — synthetic DOCX edit round-trip
+- `tmp_smoke_pdf_to_docx.py` — real PDF→DOCX conversion + scoring
+- `tmp_smoke_full_pdf_path.py` — full PDF→DOCX→edit→re-parse verification
+- `tmp_smoke_router.py` — all three router cases (DOCX, PDF flag-off, PDF flag-on)
+- `tmp_smoke_step9_e2e.py` — end-to-end via `cv_docx_pipeline` public API
+
+### Git checkpoints
+
+- Tag `v1.3-stable-pre-docx` on main — clean rollback point.
+- Branch `feature/docx-path` — full DOCX path implementation
+  (commits: dependency setup → validator → parser → editor → PDF→DOCX →
+   DOCX→PDF → router → uploader → docs).
 
 ---
 
