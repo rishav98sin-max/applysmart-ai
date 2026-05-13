@@ -311,6 +311,16 @@ def apply_diff_to_docx(
                     edits_skipped += 1
                     continue
                 _replace_paragraph_text(target_para, new_text.strip())
+                # Blank any continuation paragraphs the parser folded into
+                # this bullet's text. Without this the rendered PDF shows
+                # the NEW bullet followed by the ORIGINAL wrap-line text
+                # below it (e.g. "[New rewrite] ... [original wrap-text]"
+                # leaks through). See cv_docx_parser._continuation_anchors.
+                cont_anchors = bullet_obj.get("_continuation_anchors") or []
+                for cont_idx in cont_anchors:
+                    cont_para = paragraphs.get(cont_idx)
+                    if cont_para is not None:
+                        _blank_paragraph(cont_para)
                 edits_applied += 1
 
     # ── 3. Save ─────────────────────────────────────────────

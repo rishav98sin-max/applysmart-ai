@@ -484,9 +484,17 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
                         "_anchor": idx,
                     }
                 current_role["bullets"].append({
-                    "text":    text,
-                    "length":  len(text),
-                    "_anchor": idx,
+                    "text":          text,
+                    "length":        len(text),
+                    "_anchor":       idx,
+                    # `_continuation_anchors` lists the paragraph indices
+                    # whose text was merged into this bullet by the
+                    # wrap-line continuation logic below. The editor
+                    # uses this to blank those continuations whenever
+                    # the bullet is rewritten (otherwise the new text
+                    # would be followed by the ORIGINAL wrap-text on
+                    # the next render).
+                    "_continuation_anchors": [],
                 })
                 in_bullet_streak = True
                 continue
@@ -536,6 +544,7 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
                     last = current_role["bullets"][-1]
                     last["text"]   = (last["text"].rstrip() + " " + text).strip()
                     last["length"] = len(last["text"])
+                    last["_continuation_anchors"].append(idx)
             continue
 
         if current_section == "skills":
