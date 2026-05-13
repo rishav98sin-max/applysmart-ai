@@ -409,13 +409,12 @@ RULES (strict):
    - Prefer concrete over abstract: "authored 12 PRDs" not "produced many documents".
    - Length: STRICT 90-120% of the original bullet's character length.
      Count characters before submitting. The post-processor REJECTS any
-     rewrite outside 50%-130% of the original — there is no tolerance
-     beyond 130% because longer rewrites force font shrinkage that makes
-     the rendered PDF look inconsistent. The visible-quality band is even
-     tighter at 90-120%; aim for that.
-     EXAMPLE: original is 180 chars → target 162-216 chars; HARD CAP at 234 chars (130%).
-     EXAMPLE: original is 95 chars → target 85-114 chars; HARD CAP at 123 chars (130%).
-     If you cannot land within 130% while keeping every number and proper
+     rewrite outside 50%-150% of the original. The visible-quality band is
+     tighter at 90-120%; aim for that. Going above 120% is acceptable when
+     needed to fit JD keywords, but never exceed 150%.
+     EXAMPLE: original is 180 chars → target 162-216 chars; HARD CAP at 270 chars (150%).
+     EXAMPLE: original is 95 chars → target 85-114 chars; HARD CAP at 142 chars (150%).
+     If you cannot land within 150% while keeping every number and proper
      noun verbatim, return text=null (revert) instead of submitting an
      overlong rewrite that will be silently reverted to the original.
 
