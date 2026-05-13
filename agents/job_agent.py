@@ -1417,6 +1417,7 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         job_description = jd,
                         job_title       = title,
                         company         = company,
+                        do_not_inject   = (job_strategy or {}).get("do_not_inject") or [],
                     )
 
                     if best_review is None or review["score"] > best_review["score"]:

@@ -31,7 +31,12 @@ from agents.runtime import track_llm_call
 from agents.llm_client import chat_fast
 
 # When reviewer score < this, the tailor node will retry (once).
-ACCEPT_THRESHOLD = int(os.getenv("REVIEWER_ACCEPT_THRESHOLD", "72"))
+# Lowered from 72 → 65: the old 72 threshold caused unnecessary retries
+# when the tailor made real rewrites against borderline-match jobs (60-70%
+# match score). A job that matched at 60% can't be tailored to 72+ because
+# the structural gap is real — the reviewer correctly identifies it. Retrying
+# just burns tokens without improving the output.
+ACCEPT_THRESHOLD = int(os.getenv("REVIEWER_ACCEPT_THRESHOLD", "65"))
 
 
 def _extract_json(text: str) -> dict:
@@ -142,6 +147,8 @@ Title  : {job_title}
 Company: {company}
 
 {job_description_block}
+
+{do_not_inject_block}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TAILORED CV (as the candidate would see it after the diff was applied)
@@ -273,12 +280,20 @@ def review_tailored_cv(
     job_description:  str,
     job_title:        str = "",
     company:          str = "",
+    do_not_inject:    Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Score the tailored CV (original + diff applied) against the JD. Returns
     a validated review dict. Never raises: on LLM failure, returns
     `{score: 100, verdict: 'accept', feedback: '(reviewer unavailable)'}`
     so downstream retry logic doesn't loop.
+
+    do_not_inject: list of JD terms the tailor was instructed NOT to add
+    (because they don't appear in the CV — fabrication risk). When provided,
+    the reviewer is told not to penalise their absence. Without this, the
+    reviewer sees "field sales", "GMV", "Dineout platform" missing from the
+    tailored CV and scores it 60, triggering a retry that can't possibly fix
+    the gap because those terms were correctly excluded.
     """
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
     tailored_cv = _render_diff_for_review(outline, diff)
@@ -286,13 +301,32 @@ def review_tailored_cv(
         (job_description or "").strip() or "(no description)",
         label="JOB_DESCRIPTION",
     )
+
+    # Build the do_not_inject advisory block for the reviewer prompt.
+    # This prevents the reviewer from penalising correctly-excluded terms.
+    do_not_inject_block = ""
+    if do_not_inject:
+        terms = ", ".join(f'"{t}"' for t in do_not_inject[:20])
+        do_not_inject_block = (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "TERMS CORRECTLY EXCLUDED FROM THE CV\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "The tailor was explicitly instructed NOT to add the following\n"
+            "JD-specific terms because they do NOT appear in the candidate's\n"
+            "original CV. Their absence is intentional (fabrication prevention),\n"
+            "NOT a tailoring failure. Do NOT penalise or mention missing any of\n"
+            "these terms in your score, weaknesses, or feedback:\n"
+            f"  {terms}"
+        )
+
     prompt = _PROMPT.format(
-        safety_preamble      = untrusted_block_preamble(["JOB_DESCRIPTION"]),
-        job_title            = job_title or "(unspecified)",
-        company              = company   or "(unspecified)",
+        safety_preamble       = untrusted_block_preamble(["JOB_DESCRIPTION"]),
+        job_title             = job_title or "(unspecified)",
+        company               = company   or "(unspecified)",
         job_description_block = jd_block,
-        tailored_cv          = tailored_cv,
-        threshold            = ACCEPT_THRESHOLD,
+        do_not_inject_block   = do_not_inject_block,
+        tailored_cv           = tailored_cv,
+        threshold             = ACCEPT_THRESHOLD,
     )
 
     text = _call_llm(prompt)

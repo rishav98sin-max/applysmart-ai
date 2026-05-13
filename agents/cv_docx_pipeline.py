@@ -62,8 +62,15 @@ from agents.cv_pdf_to_docx   import convert_pdf_to_docx, CONVERTIBILITY_THRESHOL
 # no sensible alternative path exists for native DOCX input.
 
 def _is_docx_path_enabled() -> bool:
-    """True when env DOCX_PATH_ENABLED is a truthy value."""
-    raw = os.getenv("DOCX_PATH_ENABLED", "0").strip().lower()
+    """True when env DOCX_PATH_ENABLED is a truthy value.
+
+    Default is ON ("1") — the DOCX path (pdf2docx → LibreOffice) is the
+    correct path for format preservation. Set DOCX_PATH_ENABLED=0 only to
+    force the legacy PyMuPDF in-place path for debugging or on hosts without
+    LibreOffice. The original default of "0" was a deployment oversight that
+    silently kept everyone on the in-place path (font shrinkage on rewrites).
+    """
+    raw = os.getenv("DOCX_PATH_ENABLED", "1").strip().lower()
     return raw not in ("", "0", "false", "no", "off")
 
 
