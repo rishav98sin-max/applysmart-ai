@@ -1960,6 +1960,7 @@ def tailor_cv_diff(
     previous_diff:   Optional[Dict[str, Any]] = None,
     outline:         Optional[Dict[str, Any]] = None,
     strategy:        Optional[Dict[str, Any]] = None,
+    cv_full_text:    str = "",
 ) -> Dict[str, Any]:
     """
     Produce a validated structured diff for the CV at `cv_pdf_path` targeting
@@ -1974,14 +1975,28 @@ def tailor_cv_diff(
                       plan instead of inventing one. When omitted, the tailor
                       falls back to the legacy "rewrite N% of relevant bullets"
                       heuristic.
+      cv_full_text  : raw CV text (any format). When the caller already has
+                      extracted text (e.g. from a .docx upload), pass it
+                      here. Falls back to PDF parsing for legacy PDF paths.
+                      Required for `_check_do_not_inject` to run on DOCX
+                      uploads where `parse_cv` would return empty.
     """
     if outline is None:
         outline = build_outline_cached(cv_pdf_path)
 
     # May 2026 fix (Claude spec): extract full CV text for do_not_inject guard
     # to reduce false positives when strategist mis-classifies CV terms.
-    from agents.cv_parser import parse_cv
-    cv_text = parse_cv(cv_pdf_path)
+    # Run 17 follow-up: if the caller provided cv_full_text, use it. The PDF
+    # parser is PDF-only and silently returns empty on .docx uploads — that
+    # would silently disable the do_not_inject guard.
+    if cv_full_text:
+        cv_text = cv_full_text
+    else:
+        from agents.cv_parser import parse_cv
+        try:
+            cv_text = parse_cv(cv_pdf_path) or ""
+        except Exception:
+            cv_text = ""
 
     # Reset the per-call bullet-revert tracker so counts reflect THIS job.
     _LAST_BULLET_REVERTS.clear()

@@ -1100,6 +1100,24 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
         jd      = job.get("description", "")
         tag     = f"[{title[:20]}@{company[:15]}]"
 
+        # May 13 (DOCX path): hoist the DOCX router above the strategist
+        # call so the strategist sees the SAME outline the tailor will use.
+        # The previous order ran the strategist on the PDF outline before
+        # the DOCX route was decided — when DOCX was active (now default),
+        # the tailor switched to docx_route.outline and the strategist's
+        # bullet_strategy keys (built from PDF role headers) didn't match
+        # the DOCX role headers, silently discarding the entire strategy.
+        job_docx_route: Optional[CVDocxRoute] = None
+        try:
+            job_docx_route = _try_route_docx(state["cv_path"], out_dir)
+        except Exception as _route_err:
+            print(
+                f"   ⚠️  {tag} DOCX router raised "
+                f"({type(_route_err).__name__}: {_route_err}); "
+                f"falling back to PDF path."
+            )
+            job_docx_route = None
+
         # ── Strategist call (May 1, single Groq call per job) ────────
         # Run the strategist once between the matcher and the tailor/
         # cover-letter so both downstream artifacts share ONE narrative
@@ -1109,13 +1127,22 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
         job_strategy: Dict[str, Any] = {}
         try:
             from agents.tailor_strategist import build_tailor_strategy
-            strategist_outline = shared_outline
-            if strategist_outline is None:
-                # Lazy build if the shared one wasn't pre-computed.
-                try:
-                    strategist_outline = _build_outline(state["cv_path"])
-                except Exception:
-                    strategist_outline = None
+            # Strategist outline selection:
+            #   - DOCX route active → use docx_route.outline (matches tailor)
+            #   - PDF route (legacy) → use shared PDF outline
+            #   - .docx upload but no route → no outline available (lazy
+            #     _build_outline is PDF-only and would fail silently)
+            if job_docx_route is not None:
+                strategist_outline = job_docx_route.outline
+            else:
+                strategist_outline = shared_outline
+                if strategist_outline is None:
+                    ext = os.path.splitext(state["cv_path"])[1].lower()
+                    if ext == ".pdf":
+                        try:
+                            strategist_outline = _build_outline(state["cv_path"])
+                        except Exception:
+                            strategist_outline = None
             if strategist_outline:
                 job_strategy = build_tailor_strategy(
                     outline         = strategist_outline,
@@ -1265,24 +1292,9 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
             best_diff:   Optional[Dict[str, Any]] = None
             best_review: Optional[Dict[str, Any]] = None
 
-            # May 13 (DOCX path): route this job through the DOCX pipeline
-            # iff (a) the user uploaded a .docx OR (b) DOCX_PATH_ENABLED=1
-            # AND the PDF converts cleanly. Any failure leaves docx_route
-            # = None and the rest of this closure runs the legacy PDF path
-            # unchanged. Never raises.
-            docx_route: Optional[CVDocxRoute] = None
-            try:
-                docx_route = _try_route_docx(state["cv_path"], out_dir)
-            except Exception as _route_err:
-                # Defensive: the router promises "never raises", but if a
-                # future contributor breaks that contract we still want
-                # the PDF path to handle the job.
-                print(
-                    f"   ⚠️  {tag} DOCX router raised "
-                    f"({type(_route_err).__name__}: {_route_err}); "
-                    f"falling back to PDF path."
-                )
-                docx_route = None
+            # May 13 (DOCX path): reuse the job-scoped docx_route resolved
+            # before the strategist call (so both agents see the same outline).
+            docx_route: Optional[CVDocxRoute] = job_docx_route
 
             try:
                 # When we have a DOCX route, use ITS outline (which has
@@ -1357,6 +1369,7 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         previous_diff   = prev_diff,
                         outline         = outline_cache,
                         strategy        = job_strategy,
+                        cv_full_text    = state.get("cv_text") or "",
                     )
                     if not (diff.get("summary") or diff.get("bullets") or diff.get("skills_order")):
                         # B1: Empty diff is NOT a 100/100 success. It means
