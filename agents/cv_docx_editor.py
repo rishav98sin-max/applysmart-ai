@@ -62,7 +62,19 @@ caller can fall back to the rebuild path.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
+
+
+# Bullet glyphs that may sit at the start of a paragraph's text (vs being
+# rendered by Word's list numbering machinery). When the original
+# paragraph uses an in-text glyph (common in pdf2docx-converted CVs), we
+# must preserve it on rewrite — otherwise the parser doesn't recognise
+# the rewritten paragraph as a bullet on the next pass.
+_LEADING_GLYPH_RX = re.compile(
+    r"^(\s*[\u2022\u00b7\u25aa\u25cb\u25a0\u2043\u2219\u25b8\u25b6]\s*"
+    r"|\s*[\-\*]\s+)"
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -110,6 +122,17 @@ def _replace_paragraph_text(paragraph: Any, new_text: str) -> None:
         # Empty paragraph — add a single run with the new text.
         paragraph.add_run(new_text)
         return
+    # Preserve any leading bullet glyph from the original text. This
+    # matters for paragraphs where the bullet rendering comes from an
+    # in-text glyph rather than Word's list numbering (typical of
+    # pdf2docx output: "•Started from a problem…"). Stripping the glyph
+    # would make the parser treat the rewritten paragraph as prose on
+    # the next pass, losing its bullet identity entirely.
+    original_text = paragraph.text or ""
+    glyph_match = _LEADING_GLYPH_RX.match(original_text)
+    if glyph_match and not _LEADING_GLYPH_RX.match(new_text):
+        new_text = glyph_match.group(1) + new_text
+
     primary_idx = _first_non_empty_run_index(runs)
     runs[primary_idx].text = new_text
     for i, r in enumerate(runs):
@@ -129,20 +152,46 @@ def _blank_paragraph(paragraph: Any) -> None:
 def _index_paragraphs(doc: Any) -> Dict[int, Any]:
     """
     Build {global_paragraph_index → paragraph_object} matching the same
-    walk order used by `cv_docx_parser._iter_body_paragraphs`. Used to
-    look up paragraphs by their outline `_anchor` value.
+    walk order used by `cv_docx_parser._iter_body_paragraphs` — i.e.
+    TRUE document order with table-cell paragraphs interleaved at the
+    position the table appears in the body.
+
+    The two walks MUST be in lock-step. Any divergence (e.g. one walks
+    paragraphs-then-tables, the other walks document-order) silently
+    misaligns anchors and the editor rewrites the wrong paragraph.
     """
+    from docx.oxml.ns import qn   # late import
+
+    try:
+        from docx.text.paragraph import Paragraph as _Paragraph
+        from docx.table import Table as _Table
+    except Exception:
+        _Paragraph = _Table = None   # type: ignore
+
+    P_TAG  = qn("w:p")
+    TBL_TAG = qn("w:tbl")
+
     out: Dict[int, Any] = {}
     idx = 0
-    for p in doc.paragraphs:
-        out[idx] = p
-        idx += 1
-    for tbl in doc.tables:
-        for row in tbl.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    out[idx] = p
-                    idx += 1
+
+    def _walk(parent_element: Any, container_obj: Any) -> None:
+        nonlocal idx
+        for child in parent_element.iterchildren():
+            tag = child.tag
+            if tag == P_TAG:
+                if _Paragraph is not None:
+                    p = _Paragraph(child, container_obj)
+                else:
+                    p = doc.paragraphs[0].__class__(child, container_obj)
+                out[idx] = p
+                idx += 1
+            elif tag == TBL_TAG and _Table is not None:
+                tbl = _Table(child, container_obj)
+                for row in tbl.rows:
+                    for cell in row.cells:
+                        _walk(cell._tc, cell)
+
+    _walk(doc.element.body, doc)
     return out
 
 

@@ -56,40 +56,79 @@ from typing import Any, Dict, List, Optional, Tuple
 # Section / heading detection
 # ─────────────────────────────────────────────────────────────
 
-# Reuse the same section regex the validator and PDF outline parser use,
-# so a CV that converts cleanly between formats gets the same section
-# boundaries regardless of source. Kept locally rather than imported to
-# avoid a circular dependency.
+# Section header detection. We tolerate four shapes:
+#
+#   1.  "Summary"                              (whole line is the keyword)
+#   2.  "Summary:"                             (keyword followed by colon)
+#   3.  "Professional Summary"                 (optional adjective + keyword)
+#   4.  "Skills\nProduct: ..."                 (keyword on first line, body
+#                                               follows after a line break;
+#                                               we check only the first line)
+#
+# `pdf2docx` output frequently uses shape #3 ("Professional Summary",
+# "Professional Experience") and shape #4 (skills inline with categorised
+# body). Both are real-world CV writing styles, not pdf2docx artefacts.
 _SECTION_RX = re.compile(
-    r"^\s*(summary|profile|objective|about(\s+me)?|"
-    r"experience|professional\s+experience|work\s+experience|employment\s*history|"
-    r"education|academic(\s+achievements?|\s+background)?|"
-    r"skills?|technical\s+skills?|core\s+competenc(?:y|ies)|"
-    r"projects?|featured\s+projects?|portfolio|"
-    r"certifications?|awards?|publications?|languages?)\s*:?\s*$",
+    r"^\s*"
+    # Optional adjective prefix. "personal" covers "Personal Projects",
+    # "Personal Statement". "side" covers "Side Projects".
+    r"(?:professional\s+|technical\s+|work\s+|core\s+|featured\s+|"
+    r"academic\s+|personal\s+|side\s+|relevant\s+|key\s+|selected\s+)?"
+    r"(summary|profile|objective|about(?:\s+me)?|statement|"
+    r"experience|employment(?:\s*history)?|history|"
+    r"education|achievements?|background|"
+    r"skills?|competenc(?:y|ies)|expertise|"
+    r"projects?|portfolio|"
+    r"certifications?|awards?|publications?|languages?)"
+    r"\s*:?\s*$",
     re.IGNORECASE,
 )
 
-# Map matched section keyword → canonical section type used by the
-# downstream pipeline. `pdf_editor.build_outline` emits these same labels.
+# Max length for a paragraph to even be considered as a section header.
+# A real header is short ("Skills", "Professional Experience"); a long
+# paragraph that happens to mention "experience" is prose, not a section
+# break.
+_MAX_SECTION_HEADER_CHARS = 60
+
+# Map matched section keyword (group 1 of `_SECTION_RX`) → canonical
+# section type used by the downstream pipeline. `pdf_editor.build_outline`
+# emits these same labels.
+#
+# Note: the regex's optional prefix ("professional ", "technical ", etc.)
+# is stripped from group 1, so we map only the bare keyword.
 _SECTION_CANONICAL: Dict[str, str] = {
-    "summary": "summary", "profile": "summary",
-    "objective": "summary", "about": "summary", "about me": "summary",
-    "experience": "experience",
-    "professional experience": "experience",
-    "work experience": "experience",
+    "summary":         "summary",
+    "profile":         "summary",
+    "objective":       "summary",
+    "about":           "summary",
+    "about me":        "summary",
+    "statement":       "summary",
+    "experience":      "experience",
+    "employment":      "experience",
     "employment history": "experience",
-    "projects": "projects", "featured projects": "projects",
-    "portfolio": "projects",
-    "skills": "skills", "technical skills": "skills",
-    "core competency": "skills", "core competencies": "skills",
-    "education": "education",
-    "academic achievements": "education",
-    "academic background": "education",
-    "certifications": "certifications", "certification": "certifications",
-    "awards": "awards", "award": "awards",
-    "publications": "publications", "publication": "publications",
-    "languages": "languages", "language": "languages",
+    "history":         "experience",
+    "projects":        "projects",
+    "project":         "projects",
+    "portfolio":       "projects",
+    "skills":          "skills",
+    "skill":           "skills",
+    "competency":      "skills",
+    "competencies":    "skills",
+    "expertise":       "skills",
+    # "achievements" and "background" only count as a section when the
+    # paragraph also had an "academic " prefix (regex catches both with
+    # the same group). Map both to education.
+    "education":       "education",
+    "achievements":    "education",
+    "background":      "education",
+    "certifications":  "certifications",
+    "certification":   "certifications",
+    "awards":          "awards",
+    "award":           "awards",
+    "publications":    "publications",
+    "publication":     "publications",
+    "languages":       "languages",
+    "language":        "languages",
 }
 
 # A paragraph is a "list / bullet" paragraph when any of these hold.
@@ -109,7 +148,15 @@ _DATE_HINT_RX = re.compile(
 
 # Bullet glyphs that may appear inside paragraph text (some templates
 # embed the bullet character rather than using list numbering).
-_BULLET_GLYPH_RX = re.compile(r"^\s*[\u2022\u00b7\u25aa\u25cb\u25a0\u2043\u2219\u25b8\u25b6\-\*]\s+")
+# Trailing whitespace is OPTIONAL: pdf2docx output produces `•Started…`
+# with no space; native Word output usually has `• Started…`. Both must
+# match. We require either trailing whitespace OR a non-alphanumeric
+# follower (so we don't false-match a hyphen in "data-driven").
+_BULLET_GLYPH_RX = re.compile(
+    r"^\s*[\u2022\u00b7\u25aa\u25cb\u25a0\u2043\u2219\u25b8\u25b6]\s*"
+    r"|"
+    r"^\s*[\-\*]\s+",
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -152,14 +199,29 @@ def _is_section_header(text: str) -> Optional[str]:
     Return the canonical section type ("summary"/"experience"/...) if `text`
     looks like a section header line. Otherwise None.
 
-    The match is intentionally strict: the WHOLE paragraph must be the
-    section label (optionally with trailing punctuation). Otherwise a
-    sentence like "I have strong skills in Python" would falsely trigger
-    a "skills" section break mid-prose.
+    Match rules:
+      - Only consider paragraphs whose first non-empty line is short
+        (≤_MAX_SECTION_HEADER_CHARS) — otherwise it's prose that happens
+        to contain a section keyword.
+      - The first line must MATCH _SECTION_RX (whole line is the keyword,
+        optionally with a "professional " / "technical " / etc. prefix
+        and a trailing colon).
+      - Multi-line paragraphs are checked on the first line only. This
+        handles pdf2docx's "Skills\nProduct: ..." pattern where the
+        section keyword sits on its own line.
     """
     if not text:
         return None
-    m = _SECTION_RX.match(text.strip())
+    # First non-empty line only.
+    first_line = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if s:
+            first_line = s
+            break
+    if not first_line or len(first_line) > _MAX_SECTION_HEADER_CHARS:
+        return None
+    m = _SECTION_RX.match(first_line)
     if not m:
         return None
     keyword = m.group(1).lower().strip()
@@ -201,29 +263,67 @@ def _paragraph_is_bold_heading(paragraph: Any) -> bool:
 
 def _iter_body_paragraphs(doc: Any) -> List[Tuple[int, Any]]:
     """
-    Return `[(global_index, paragraph), ...]` in document order. Includes
-    paragraphs inside top-level table cells (but NOT nested tables — those
-    are extremely rare in CVs and the rebuild path handles them).
+    Return `[(global_index, paragraph), ...]` in TRUE document order
+    (body paragraphs and table-cell paragraphs interleaved as they
+    appear in the document tree).
 
-    The global_index is a stable identifier the editor uses to locate the
-    same paragraph on re-open.
+    Why this matters: `pdf2docx` reconstructs CV layout using tables for
+    multi-column blocks (a one-row-by-two-column table is how it models
+    a "role header LEFT | dates RIGHT" line). If we walked `doc.paragraphs`
+    first and `doc.tables` second (the obvious python-docx approach), the
+    table content would clump at the end of the parse out of order with
+    the prose around it — every role header inside a table would land
+    AFTER every body paragraph, breaking the section state machine.
+
+    The fix is to walk `doc.element.body` in raw element order and yield
+    paragraphs / table-cell-paragraphs as they appear. The global_index
+    is a stable monotonic id the editor uses to relocate the same
+    paragraph on re-open.
+
+    NOTE: the editor's `_index_paragraphs` MUST mirror this walk shape
+    exactly. Both functions live in the same module pair on purpose.
     """
+    from docx.oxml.ns import qn   # late import — avoids hard dep at module load
+
     out: List[Tuple[int, Any]] = []
     idx = 0
-    # python-docx exposes doc.element.body.iter() which gives us paragraphs
-    # in true document order (paragraphs nested in tables included). But
-    # mixing tables/paragraphs is fragile; instead we walk
-    # doc.paragraphs then doc.tables — this matches the order MOST simple
-    # CVs use (body text first, sidebar tables second).
-    for p in doc.paragraphs:
-        out.append((idx, p))
-        idx += 1
-    for tbl in doc.tables:
-        for row in tbl.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    out.append((idx, p))
-                    idx += 1
+
+    # Late-import lookups so `cv_docx_parser` stays importable even when
+    # docx is missing (the build_outline call already guards that).
+    try:
+        from docx.text.paragraph import Paragraph as _Paragraph
+        from docx.table import Table as _Table, _Cell
+    except Exception:
+        # Fallback: pre-1.0 python-docx layout. The walk below still works
+        # via element tags, just without typed wrappers.
+        _Paragraph = _Table = _Cell = None   # type: ignore
+
+    P_TAG  = qn("w:p")
+    TBL_TAG = qn("w:tbl")
+
+    def _walk_block_container(parent_element: Any, container_obj: Any) -> None:
+        nonlocal idx
+        for child in parent_element.iterchildren():
+            tag = child.tag
+            if tag == P_TAG:
+                if _Paragraph is not None:
+                    p = _Paragraph(child, container_obj)
+                else:
+                    # Last-resort: use python-docx's known paragraph proxy.
+                    p = doc.paragraphs[0].__class__(child, container_obj)
+                out.append((idx, p))
+                idx += 1
+            elif tag == TBL_TAG:
+                if _Table is not None:
+                    tbl = _Table(child, container_obj)
+                    for row in tbl.rows:
+                        for cell in row.cells:
+                            # Walk the cell's element to recover paragraph
+                            # AND nested table order. CVs rarely nest more
+                            # than one level deep; this handles two.
+                            _walk_block_container(cell._tc, cell)
+
+    _walk_block_container(doc.element.body, doc)
     return out
 
 
@@ -328,20 +428,37 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
     # never has an explicit Summary header, we'll use them.
     pre_section_prose: List[Tuple[int, str]] = []   # (anchor, text)
 
+    # Refactored state machine (May 2026 audit follow-up). pdf2docx output
+    # produces three artefacts the naive walk above doesn't handle:
+    #
+    #   (a) ROLE FRAGMENTS — a single role header gets split across multiple
+    #       paragraphs (company name on one line, dates on the next, client
+    #       on the third). Treat consecutive header_like / short-prose
+    #       paragraphs as fragments of ONE header until a bullet shows up.
+    #
+    #   (b) BULLET CONTINUATIONS — when a bullet's text wraps, pdf2docx
+    #       emits the continuation as a plain (unstyled) prose paragraph.
+    #       Append it to the most recent bullet rather than treating it
+    #       as a new header.
+    #
+    #   (c) EMPTY BULLETS — pdf2docx sometimes emits a bullet-styled
+    #       paragraph with no text (the cell that holds just "•"). Skip.
+    in_bullet_streak = False   # True after we've seen a bullet in this role
     for entry in classified:
         kind = entry["kind"]
         text = entry["text"]
-        idx = entry["idx"]
+        idx  = entry["idx"]
 
         if kind == "section":
             _flush_role()
             current_section = entry["section"] or "other"
+            in_bullet_streak = False
             continue
 
         if current_section == "preamble":
             # Skip name/email-style top-of-CV header lines (short, often
-            # contain "@" or phone numbers). Save short prose lines as
-            # possible summary candidates.
+            # contain "@" or phone numbers). Save longer prose as a
+            # possible summary candidate when the CV omits a header.
             if len(text) > 40 and "@" not in text and not re.search(r"\+?\d[\d\s().-]{6,}", text):
                 pre_section_prose.append((idx, text))
             continue
@@ -353,40 +470,13 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
             continue
 
         if current_section in ("experience", "projects"):
-            if kind == "header_like":
-                _flush_role()
-                current_role = {
-                    "header":  text,
-                    "section": current_section,
-                    "bullets": [],
-                    "_anchor": idx,
-                }
-            elif kind == "prose":
-                # A prose paragraph in an experience section may be a
-                # role header that wasn't styled bold (especially after
-                # PDF→DOCX conversion). Use date-presence as the tell.
-                if _DATE_HINT_RX.search(text):
-                    _flush_role()
-                    current_role = {
-                        "header":  text,
-                        "section": current_section,
-                        "bullets": [],
-                        "_anchor": idx,
-                    }
-                # Otherwise: orphan prose. Attach to current role's
-                # header as a sub-line (rare; templates with location/
-                # description lines between header and bullets). We do
-                # NOT treat it as a bullet because it'd confuse the
-                # tailor's bullet count.
-                elif current_role is not None:
-                    current_role["header"] = (
-                        current_role["header"].rstrip() + " " + text
-                    ).strip()
-            elif kind == "bullet":
+            if kind == "bullet":
+                # Skip empty bullets — pdf2docx artifacts from blank
+                # table cells used as layout separators.
+                if not text:
+                    continue
                 if current_role is None:
                     # Bullet without a header — synthesise a placeholder.
-                    # This shouldn't happen on well-formed CVs but we
-                    # prefer "salvage what we can" to "drop everything".
                     current_role = {
                         "header":  "(role)",
                         "section": current_section,
@@ -398,6 +488,54 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
                     "length":  len(text),
                     "_anchor": idx,
                 })
+                in_bullet_streak = True
+                continue
+
+            # Non-bullet content (header_like / prose). Interpretation
+            # depends on whether we're mid-bullet-streak.
+
+            if not in_bullet_streak:
+                # Pre-bullets phase: this is part of the role header (or
+                # the role hasn't started yet). Merge into current role's
+                # header — these are role-header FRAGMENTS, not bullets.
+                if current_role is None:
+                    current_role = {
+                        "header":  text,
+                        "section": current_section,
+                        "bullets": [],
+                        "_anchor": idx,
+                    }
+                else:
+                    current_role["header"] = (
+                        current_role["header"].rstrip() + " " + text
+                    ).strip()
+                continue
+
+            # Mid-bullet-streak. Conservative rule: only flush + start a
+            # new role when the paragraph is STRONGLY signalled as a new
+            # role header. Signals are bold-heavy formatting OR a date
+            # hint (e.g. "Aug 2023 – Jan 2024"). Plain prose paragraphs
+            # are bullet-text continuations from pdf2docx text wrap, not
+            # new headers. Anything else gets appended to the most recent
+            # bullet's text so we don't lose CV content.
+            is_strong_new_role = (
+                kind == "header_like"
+                or _DATE_HINT_RX.search(text) is not None
+            )
+            if is_strong_new_role:
+                _flush_role()
+                current_role = {
+                    "header":  text,
+                    "section": current_section,
+                    "bullets": [],
+                    "_anchor": idx,
+                }
+                in_bullet_streak = False
+            else:
+                if current_role and current_role["bullets"]:
+                    last = current_role["bullets"][-1]
+                    last["text"]   = (last["text"].rstrip() + " " + text).strip()
+                    last["length"] = len(last["text"])
             continue
 
         if current_section == "skills":
