@@ -29,20 +29,24 @@ sees them.
   on the Groq fallback path.
 - **Deterministic filters before LLM spend** — YOE + experience-level
   checks skip ~30-50% of LLM calls on broad scrapes.
-- **Dual-provider key rotation** — up to 3 Gemini keys + 3 Groq keys
-  rotate on 429 / quota / auth errors, multiplying the daily envelope
-  without a paid tier.
+- **Multi-provider key rotation** — up to 8 Groq keys rotate on 429 /
+  quota / auth errors, multiplying the daily free-tier envelope.
+  **DeepSeek V4-Flash** is the primary writing LLM (CV tailoring, cover
+  letters, strategy); Groq handles fast structured tasks and acts as the
+  automatic writing fallback.
 - **Crash-safe, budgeted, observable** — consent-gated LangSmith tracing
   (PII-masked), live Mixpanel product-analytics dashboard with a
   refresh-proof anonymous id, run-snapshot-on-crash, and hard per-run
   LLM call ceilings.
 
-Built on **LangGraph + Groq (Llama-3.3 70B) + Gemini 2.5 Flash + Streamlit + ChromaDB + PyMuPDF + WeasyPrint**.
-Designed to run end-to-end on free-tier API quotas. Uses a dual-LLM
-architecture: Groq for fast structured tasks (matching, planning,
-reviewers, supervisor), Gemini for writing tasks (CV summary rewrite,
-bullet tailoring, cover letters). Either provider can fall back to the
-other when all keys in its rotation pool are exhausted.
+Built on **LangGraph + DeepSeek V4-Flash + Groq (Llama-3.3 70B) + Streamlit + ChromaDB + PyMuPDF + WeasyPrint + LibreOffice**.
+Designed to run end-to-end on near-free-tier API quotas. Uses a
+multi-LLM architecture: **DeepSeek V4-Flash** (primary) for writing tasks
+(CV strategy, bullet tailoring, cover letters) with **Groq Llama-3.3-70B**
+as the fast/fallback path for structured tasks (matching, planning,
+reviewers, supervisor) and automatic writing fallback when DeepSeek is
+unavailable. Gemini 2.5 Flash is wired but bypassed by default
+(`GEMINI_BYPASS=1`).
 
 ### Preview
 
@@ -124,10 +128,10 @@ node.
 | 3 | **Planner** | `agents/planner.py` | Generates 2-4 keyword bundles from CV + target role | Groq | LLM decides search strategy; not hard-coded |
 | 4 | **Scraper** | `agents/job_scraper.py` | Pulls live JDs from LinkedIn / Indeed / Glassdoor / Builtin / JobsIE | — | Multi-source fan-out with per-board fallback |
 | 5 | **Matcher** | `agents/job_matcher.py` | Scores every JD vs. the CV (0-100) | Groq | Vector retrieval (ChromaDB + MiniLM-L6) fused with LLM judgment |
-| 6 | **Strategist** | `agents/tailor_strategist.py` | Generates bullet-level strategy (promote/rewrite/drop) | Groq | LLM decides strategic narrative; reduces cosmetic edits |
-| 7 | **CV Tailor** | `agents/cv_diff_tailor.py` | Rewrites CV per JD, preserving original layout | Groq/Gemini | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
+| 6 | **Strategist** | `agents/tailor_strategist.py` | Generates bullet-level strategy (promote/rewrite/drop) | DeepSeek → Groq | LLM decides strategic narrative; reduces cosmetic edits |
+| 7 | **CV Tailor** | `agents/cv_diff_tailor.py` | Rewrites CV per JD, preserving original layout | DeepSeek → Groq | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
 | 8 | **CV Reviewer** | `agents/reviewer.py` | Grades the tailored CV (0-100) against JD + original CV | Groq | Triggers retry cycles if score < 72 |
-| 9 | **Cover-Letter Generator** | `agents/cover_letter_generator.py` | 3-paragraph letter tied to the top-scoring CV signals | Gemini 2.5 Flash | Consumes matcher scores + tailored-CV highlights |
+| 9 | **Cover-Letter Generator** | `agents/cover_letter_generator.py` | 3-paragraph letter tied to the top-scoring CV signals | DeepSeek → Groq | Consumes matcher scores + tailored-CV highlights |
 | 10 | **Cover-Letter Reviewer** | `agents/cover_letter_reviewer.py` | Grades fabrication (0-100) | Groq | Retries the generator with feedback if score < 70 |
 | 11 | **Email Agent** | `agents/email_agent.py` | Gmail SMTP delivery with PDF attachments | — | Preview mode gates sending; per-card manual send |
 
@@ -193,17 +197,32 @@ First run downloads the MiniLM-L6 embedder (~80 MB) into
 
 | Variable | Purpose |
 |---|---|
-| `GROQ_API_KEY` | Fast LLM tasks (matcher, planner, reviewers, supervisor). Optional companions `GROQ_API_KEY_2` through `GROQ_API_KEY_8` enable auto-rotation |
-| `GEMINI_API_KEY` | Writing tasks (CV tailoring, cover letters) — get one at https://aistudio.google.com/app/apikey. Optional companions `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3` enable auto-rotation |
+| `GROQ_API_KEY` | Fast LLM tasks (matcher, planner, reviewers, supervisor) and writing fallback. Optional companions `GROQ_API_KEY_2` through `GROQ_API_KEY_8` enable auto-rotation (ceiling ≈ 800K tokens/day with all 8 slots populated) |
 | `EMAIL_ADDRESS` | Gmail account used as sender for SMTP delivery |
 | `EMAIL_APP_PASSWORD` | Gmail App Password (16-char; generate at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), requires 2FA) |
+
+### Writing LLM — strongly recommended
+
+| Variable | Purpose |
+|---|---|
+| `DEEPSEEK_API_KEY` | **Primary writing LLM** — DeepSeek V4-Flash for CV strategy, bullet tailoring, and cover letters. ~$0.001/call. Get a key at [platform.deepseek.com](https://platform.deepseek.com). Without this key, writing falls back to Groq automatically. |
+| `DEEPSEEK_MODEL` | Override model (default: `deepseek-chat` = V4-Flash non-thinking). Use `deepseek-v4-pro` for stronger reasoning (~12× cost). |
+| `LLM_PROVIDER` | `direct` (default) routes writing calls to DeepSeek API directly. Set `nvidia` to use NVIDIA NIM free-tier hosting instead (slower but no API cost). |
+| `NVIDIA_API_KEY` | Required only when `LLM_PROVIDER=nvidia`. Get at [build.nvidia.com](https://build.nvidia.com) (free, prefix `nvapi-`). |
+
+### Gemini — optional (bypassed by default)
+
+| Variable | Purpose |
+|---|---|
+| `GEMINI_API_KEY` | Gemini 2.5 Flash is wired in but bypassed by default. Set `GEMINI_BYPASS=0` to re-enable. Optional companions `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3` enable auto-rotation. |
+| `GEMINI_BYPASS` | `1` (default) — routes all `chat_gemini()` calls directly to Groq. Set `0` to use Gemini. |
+| `GEMINI_MODEL` | `gemini-2.5-flash` (default). Only used when `GEMINI_BYPASS=0`. |
 
 ### Runtime knobs — all optional
 
 | Variable | Default | Effect |
 |---|---|---|
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Base model for fast tasks |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Model for writing tasks (CV tailoring, cover letters) |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Base model for fast tasks and writing fallback |
 | `GROQ_SUPERVISOR_MODEL` | inherits `GROQ_MODEL` | Override supervisor only |
 | `GROQ_PLANNER_MODEL` | inherits `GROQ_MODEL` | Override planner only |
 | `GROQ_REVIEWER_MODEL` | inherits `GROQ_MODEL` | Override CV reviewer only |
@@ -221,7 +240,8 @@ First run downloads the MiniLM-L6 embedder (~80 MB) into
 | `APPLYSMART_SESSIONS_ROOT` | `sessions` | Root for per-session work dirs |
 | `APPLYSMART_MAX_RUNS_PER_SESSION` | `3` | Per-session run limit (browser session). Set `0` for unlimited |
 | `GROQ_TOKENS_PER_KEY_PER_DAY` | `100000` | Per-key daily token budget (free tier cap) |
-| `APPLYSMART_TOKENS_PER_RUN` | `20000` | Estimated tokens per full run (for "runs left" display) |
+| `APPLYSMART_TOKENS_PER_RUN` | `110000` | Estimated tokens per full run (for "runs left" display) |
+| `DOCX_PATH_ENABLED` | `1` | Enable PDF → DOCX → LibreOffice PDF path for format-safe tailoring. Set `0` to force the legacy PyMuPDF in-place path. Native `.docx` uploads always use this path regardless. |
 | `MIXPANEL_TOKEN` | _(unset)_ | Optional product analytics (events: runs, sends, downloads, applied). See `docs/MIXPANEL_DASHBOARD.md` |
 | `MIXPANEL_REGION` | `US` | Set to `EU` if your Mixpanel project was created with EU data residency |
 
@@ -233,12 +253,14 @@ reads from both.
 ## Known limits
 
 - **Groq free tier.** 100K tokens/day per key + per-minute rate cap. With
-  eight keys rotated on 429 the daily envelope is ~800K tokens. If every
+  up to eight keys rotated on 429 the daily envelope is ~800K tokens. If every
   key is exhausted the app shows a clear banner instead of hanging.
-- **Gemini 2.5 Flash free tier.** ~250 requests/day per key on the Flash
-  tier at the time of writing. Configure up to three keys
-  (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`) to triple
-  the envelope. Any failure falls back to Groq automatically.
+- **DeepSeek V4-Flash.** ~$0.001 per writing call. Without a key the app
+  falls back to Groq for writing tasks automatically, with no behaviour change.
+- **Gemini 2.5 Flash** is wired in but bypassed by default (`GEMINI_BYPASS=1`).
+  Set `GEMINI_BYPASS=0` and provide `GEMINI_API_KEY` to re-enable. Configure
+  up to three keys (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`)
+  for auto-rotation. Any failure falls back to Groq automatically.
 - **Rate-limit cap.** Any wait longer than `MAX_RATE_LIMIT_WAIT` aborts the
   run instead of hanging for 10-35 min.
 - **Scrape boards.** LinkedIn scraping is anti-bot-aggressive; Indeed /
@@ -403,6 +425,7 @@ python scripts/test_pdf_fix.py         # PDF editor regression suite
 ```
 agents/
   runtime.py             # session dirs, budget, rate-limit cap, snapshots, secrets
+  llm_client.py          # centralised LLM routing — DeepSeek, Groq, Gemini with key rotation
   preflight.py           # startup config checks (GROQ_API_KEY, etc.)
   cv_validator.py        # pre-flight CV compatibility checker
   cv_parser.py           # PDF → text
@@ -410,7 +433,7 @@ agents/
   planner.py             # keyword bundles + quality bar
   job_scraper.py         # LinkedIn / Indeed / Glassdoor / Builtin / JobsIE
   job_matcher.py         # CV ↔ JD scoring (vector-aware)
-  tailor_strategist.py    # bullet-level strategy generation (promote/rewrite/drop)
+  tailor_strategist.py   # bullet-level strategy generation (promote/rewrite/drop)
   cv_tailor.py           # surgical CV edits (legacy full-text path)
   cv_diff_tailor.py      # diff-based tailor (outline-aware)
   cover_letter_generator.py
@@ -420,6 +443,11 @@ agents/
   pdf_formatter.py       # rebuild router — tries WeasyPrint first, then ReportLab
   pdf_formatter_weasy.py # HTML+CSS rebuild via WeasyPrint (ATS-safe)
   templates/             # Jinja2 HTML templates for WeasyPrint
+  cv_docx_parser.py      # DOCX → outline (same shape as pdf_editor.build_outline)
+  cv_docx_editor.py      # apply tailor diff to DOCX in-place
+  cv_pdf_to_docx.py      # PDF → DOCX via pdf2docx + convertibility score
+  cv_docx_to_pdf.py      # DOCX → PDF via LibreOffice headless
+  cv_docx_pipeline.py    # public API: try_route_docx, apply_diff_and_render
   email_agent.py         # Gmail SMTP delivery
   job_agent.py           # LangGraph supervisor + nodes
 app.py                   # Streamlit UI

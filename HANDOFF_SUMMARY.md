@@ -1,7 +1,7 @@
 # ApplySmart AI — Complete Handoff Summary
 
 **Generated:** April 20, 2026
-**Last updated:** May 13, 2026 (v1.4: DOCX path — accept .docx uploads, optional PDF→DOCX conversion, mammoth+WeasyPrint render)
+**Last updated:** May 13, 2026 (v1.4: DOCX path — accept .docx uploads, optional PDF→DOCX conversion, LibreOffice headless render; DeepSeek V4-Flash as primary writing LLM; GEMINI_BYPASS=True default; tailor prompt + guard fixes)
 **Purpose:** Full context handoff to Cursor for continued development
 
 ---
@@ -35,7 +35,7 @@ User upload (.pdf or .docx)
    │ DOCX    │  ← cv_docx_pipeline.apply_diff_and_render()
    │ route?  │
    └────┬────┘
-        ├── yes ──► python-docx edits → mammoth → WeasyPrint → PDF
+        ├── yes ──► python-docx edits → LibreOffice headless → PDF
         └── no  ──► existing PDF replica path → ReportLab fallback
 ```
 
@@ -46,7 +46,7 @@ User upload (.pdf or .docx)
 | `agents/cv_docx_parser.py`   | Parse DOCX → outline (same shape as `pdf_editor.build_outline`) with paragraph anchors |
 | `agents/cv_docx_editor.py`   | Apply tailor diff to DOCX in-place; preserves bullet glyphs, blanks continuation paragraphs |
 | `agents/cv_pdf_to_docx.py`   | PDF→DOCX conversion via `pdf2docx`; computes 0–100 convertibility score |
-| `agents/cv_docx_to_pdf.py`   | DOCX→HTML via `mammoth`, HTML→PDF via WeasyPrint; promotes glyph paragraphs to proper `<ul><li>` |
+| `agents/cv_docx_to_pdf.py`   | DOCX→PDF via **LibreOffice headless** (`libreoffice --headless --convert-to pdf`); preserves Word fonts, tables, and layout exactly |
 | `agents/cv_docx_pipeline.py` | Public API: `try_route_docx`, `apply_diff_and_render`, `CVDocxRoute` |
 
 ### Feature flag
@@ -73,10 +73,10 @@ bullet rewrites verified end-to-end.
 
 ### Known limitations
 
-- **WeasyPrint native deps**: requires libpango/libcairo at runtime.
-  Already declared in `packages.txt` (Streamlit Cloud). Local Windows
-  dev returns `ok=False` from `render_pdf_from_docx` → router falls back
-  to PDF replica path automatically.
+- **LibreOffice required**: `cv_docx_to_pdf.py` calls `libreoffice --headless`.
+  Declared in `packages.txt` for Streamlit Cloud. On local Windows dev where
+  LibreOffice is not in PATH, `render_pdf_from_docx` returns `(False, reason)`
+  and the router falls back to the PDF replica path automatically.
 - **VoC second project header in pdf2docx output**: when a designer CV
   uses non-bold project subheadings, they get absorbed into the previous
   role's bullets. Acceptable degradation — full project content is
@@ -115,15 +115,23 @@ ApplySmart AI is an **automated job application system** that:
 - Python 3.10+
 - Streamlit (UI)
 - LangGraph (multi-agent orchestration)
-- Groq Llama-3.3-70B (fast tasks — matching, planning, review)
-  - Up to 3 API keys rotated automatically on 429/401 (≈300K tokens/day ceiling)
-- Gemini 2.5 Flash (writing tasks — CV tailoring, cover letters)
-  - 1,500 requests/day, 1M tokens/min on free tier
+- **DeepSeek V4-Flash** (primary writing LLM — CV strategy, bullet tailoring, cover letters)
+  - ~$0.001/call; falls back to Groq automatically on any failure
+  - Configured via `DEEPSEEK_API_KEY` + `LLM_PROVIDER=direct`
+  - NVIDIA NIM free-tier hosting alternative: set `LLM_PROVIDER=nvidia`
+- **Groq Llama-3.3-70B** (fast structured tasks — matching, planning, reviewers, supervisor; also writing fallback)
+  - Up to **8** API keys rotated automatically on 429/401 (≈800K tokens/day ceiling with all 8 slots)
+- Gemini 2.5 Flash (wired in but **bypassed by default** — `GEMINI_BYPASS=True`)
+  - `chat_gemini()` routes to Groq when `GEMINI_BYPASS=True`. Set `GEMINI_BYPASS=0` to re-enable.
 - ChromaDB + Sentence-Transformers (vector retrieval)
 - PyMuPDF (fitz) (PDF parsing and editing)
-- Resend (email delivery)
+- LibreOffice headless (DOCX → PDF rendering in DOCX path)
+- Gmail SMTP (email delivery via `EMAIL_ADDRESS` + `EMAIL_APP_PASSWORD`)
 
-**Dual-LLM architecture (April 21 2026):** Uses Groq for fast structured tasks (matching, planning, reviewers, supervisor) and Gemini 2.5 Flash for creative writing tasks (CV tailoring, cover letter generation). This split optimizes both quality and latency — Gemini excels at writing with long context windows, while Groq provides faster inference for structured tasks. All LLM calls route through centralized `agents/llm_client.py` with `chat_quality`/`chat_fast` (Groq) and `chat_gemini` (Gemini) functions.
+**Multi-LLM architecture (current):** `agents/llm_client.py` centralises all LLM routing:
+- `chat_fast()` / `chat_quality()` → Groq Llama-3.3-70B (structured tasks)
+- `chat_deepseek()` → DeepSeek V4-Flash (writing tasks); falls back to Groq on any failure
+- `chat_gemini()` → Gemini 2.5 Flash when `GEMINI_BYPASS=0`; otherwise routes to Groq directly
 
 **Key Design Principles:**
 - Crash-safe snapshots for observability
@@ -290,7 +298,7 @@ class AgentState(TypedDict):
 - **Purpose:** Generate per-job bullet rewrites, reordering, and drops (AGGRESSIVE mode)
 - **Input:** CV outline, job title, company, job description, previous diff
 - **Output:** Diff dict with summary, bullets (NEW schema), skills_order
-- **Model:** Groq Llama-3.3-70B (logic task, not creative)
+- **Model:** DeepSeek V4-Flash via `chat_deepseek()` → Groq fallback
 - **NEW Schema (backward-compatible):**
   ```json
   {
@@ -306,9 +314,10 @@ class AgentState(TypedDict):
   }
   ```
 - **Fabrication Guardrails:**
-  - Rewrite length must be 60%-180% of original
+  - Rewrite length must be 45%–150% of original (`_REWRITE_LEN_MIN_RATIO=0.45`, `_REWRITE_LEN_MAX_RATIO=1.50`)
   - All numeric tokens from original must appear in rewrite
   - At least 2 bullets per role must be kept
+  - `_check_do_not_inject`: blocks JD-only terms absent from the CV; skips gracefully when CV text is unavailable
 - **Legacy format still supported:** `bullets: {"Role Header": [2, 0, 1]}`
 
 ### 4.6 CV Tailor (`agents/cv_tailor.py`)
@@ -322,7 +331,9 @@ class AgentState(TypedDict):
 - **Purpose:** Generate tailored cover letter per job
 - **Input:** CV text, job title, company, job description
 - **Output:** Cover letter text
-- **Model:** Gemini 2.5 Flash via `chat_gemini()`
+- **Model:** DeepSeek V4-Flash via `chat_deepseek()` → Groq fallback
+  (Note: `chat_gemini()` call in the code routes to Groq when `GEMINI_BYPASS=True`,
+  which is the default. Net result: DeepSeek primary, Groq fallback.)
 - **Key Logic:** 3-4 paragraphs, professional tone, references CV and JD
 
 ### 4.8 PDF Editor (`agents/pdf_editor.py`)
@@ -364,12 +375,16 @@ class AgentState(TypedDict):
 ### 4.12 LLM Client (`agents/llm_client.py`)
 - **Purpose:** Centralized model routing with throttling and retry logic
 - **Models:**
-  - `chat_fast()` → Groq Llama-3.3-70B (logic/scoring)
+  - `chat_fast()` → Groq Llama-3.3-70B (logic/scoring/fast structured tasks)
   - `chat_quality()` → Groq Llama-3.3-70B (quality tasks)
-  - `chat_gemini()` → Gemini 2.5 Flash (creative writing: CV tailoring, cover letters)
+  - `chat_deepseek()` → DeepSeek V4-Flash primary (writing: CV strategy, tailor, cover letter); falls back to Groq on any failure
+  - `chat_gemini()` → when `GEMINI_BYPASS=True` (default), routes directly to Groq; when `GEMINI_BYPASS=0`, calls Gemini 2.5 Flash
 - **Key Config:**
-  - Groq key rotation: up to 3 keys via `GROQ_API_KEY`, `GROQ_API_KEY_2`, `GROQ_API_KEY_3`
-  - Gemini model: `gemini-2.5-flash` (configurable via `GEMINI_MODEL`)
+  - Groq key rotation: up to **8** keys via `GROQ_API_KEY` through `GROQ_API_KEY_8` (ceiling ~800K tokens/day)
+  - DeepSeek: `DEEPSEEK_API_KEY` + `DEEPSEEK_MODEL` (default `deepseek-chat`)
+  - `LLM_PROVIDER`: `direct` (default, DeepSeek API) or `nvidia` (NVIDIA NIM free-tier)
+  - `GEMINI_BYPASS`: `True` by default — `chat_gemini()` routes to Groq; set `False` to use actual Gemini
+  - `APPLYSMART_TOKENS_PER_RUN`: default `110000` (used for "runs left" budget display)
   - Secret retrieval: `secret_or_env()` for Streamlit Cloud compatibility
 
 ---
@@ -753,36 +768,59 @@ with `•`, (d) Accenture awards present, (e) no gap at role-block bottom.
 ## 8. Environment Variables (.env)
 
 ```bash
-# Groq (fast structured tasks — matching, planning, reviewers, supervisor)
+# ── Required ──────────────────────────────────────────────────────────────────
+# Groq (fast structured tasks + writing fallback)
 GROQ_API_KEY=...
-# Optional: up to 2 more Groq keys. Auto-rotated on 429 / quota / auth.
+# Optional: up to 7 more Groq keys. Auto-rotated on 429 / quota / auth.
+# Ceiling ≈ 800K tokens/day with all 8 slots populated.
 GROQ_API_KEY_2=...
 GROQ_API_KEY_3=...
+GROQ_API_KEY_4=...
+GROQ_API_KEY_5=...
+GROQ_API_KEY_6=...
+GROQ_API_KEY_7=...
+GROQ_API_KEY_8=...
 GROQ_MODEL=llama-3.3-70b-versatile
-
-# Gemini (writing tasks — CV summary, bullets, cover letters)
-GEMINI_API_KEY=...
-# Optional: up to 2 more Gemini keys. Auto-rotated on 429 / quota / auth.
-GEMINI_API_KEY_2=...
-GEMINI_API_KEY_3=...
-GEMINI_MODEL=gemini-2.5-flash
-
-# LangSmith (tracing, opt-in via in-app consent gate)
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=...
-LANGCHAIN_PROJECT=applysmart-ai
 
 # Gmail SMTP (outgoing email; app password, not Gmail login)
 EMAIL_ADDRESS=you@gmail.com
 EMAIL_APP_PASSWORD=...
 
-# Job search APIs
+# ── Writing LLM — strongly recommended ────────────────────────────────────────
+# DeepSeek V4-Flash (primary writing LLM — strategy, tailor, cover letter)
+# Without a key, writing falls back to Groq automatically.
+DEEPSEEK_API_KEY=...
+# DEEPSEEK_MODEL=deepseek-chat        # default; V4-Flash non-thinking (cheapest)
+# DEEPSEEK_MODEL=deepseek-v4-pro      # stronger reasoning, ~12× cost
+
+# LLM routing provider for writing calls
+LLM_PROVIDER=direct                   # direct (DeepSeek API) or nvidia (NVIDIA NIM free-tier)
+# NVIDIA_API_KEY=nvapi-...            # required only when LLM_PROVIDER=nvidia
+
+# ── Gemini — optional, bypassed by default ────────────────────────────────────
+# GEMINI_BYPASS=1 (default) routes chat_gemini() calls to Groq instead.
+# Set GEMINI_BYPASS=0 and provide GEMINI_API_KEY to re-enable Gemini.
+GEMINI_BYPASS=1
+GEMINI_API_KEY=...
+GEMINI_API_KEY_2=...
+GEMINI_API_KEY_3=...
+GEMINI_MODEL=gemini-2.5-flash
+
+# ── Feature flags ─────────────────────────────────────────────────────────────
+DOCX_PATH_ENABLED=1     # Enable PDF→DOCX→LibreOffice PDF path (format-safe tailoring)
+
+# ── LangSmith (tracing, opt-in via in-app consent gate) ──────────────────────
+LANGCHAIN_TRACING_V2=false
+LANGCHAIN_API_KEY=...
+LANGCHAIN_PROJECT=applysmart-ai
+
+# ── Job search APIs ───────────────────────────────────────────────────────────
 SERPAPI_KEY=...
 JSEARCH_API_KEY=...
 ADZUNA_APP_ID=...
 ADZUNA_API_KEY=...
 
-# Mixpanel (optional analytics — no-op when absent)
+# ── Mixpanel (optional analytics — no-op when absent) ────────────────────────
 MIXPANEL_TOKEN=...
 MIXPANEL_REGION=EU   # or US (default); must match your project's residency
 ```
@@ -868,8 +906,9 @@ streamlit run app.py
 
 ## 13. Rate-Limit Guardrails
 
-- **Groq:** Capped wait at 60s via `handle_rate_limit()`; 3-key rotation on 429/401
-- **Gemini:** 3-key rotation on 429/401; falls back to Groq when all keys exhausted
+- **Groq:** Capped wait at 60s via `handle_rate_limit()`; up to 8-key rotation on 429/401
+- **DeepSeek:** Falls back to Groq on any failure (rate-limit, auth, parse error)
+- **Gemini:** 3-key rotation on 429/401; bypassed by default (`GEMINI_BYPASS=True` → routes to Groq)
 - **Scrape rounds:** Limited to 3 per planner
 - **LLM budget:** Configurable via env var, tracked per run
 

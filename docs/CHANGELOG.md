@@ -9,6 +9,43 @@
 
 ---
 
+## v1.4.1 — Tailor Prompt & Guard Fixes (13 May 2026)
+
+**Bet under test:** Will fixing the per-bullet budget ceiling and `_check_do_not_inject` guard eliminate the zero-rewrite failure mode that was producing PDFs identical to the original?
+
+### Shipped
+
+- **Per-bullet character budget raised** (`cv_diff_tailor.py`): `int(orig_len * 1.10)` → `int(orig_len * 1.40)`. The old +10% ceiling made the LLM believe it had no room for meaningful rewrites, causing all `text: null` responses.
+- **Mandatory rewrite banner** added to top of `_PROMPT_TEMPLATE`: a `╔══╗` block explicitly telling the model that returning `text=null` for every bullet is a failure, with a minimum of 3 rewrites required.
+- **Zero-rewrite escape hatch strengthened**: the `enforce_rewrites` addendum now names the exact behaviour that was rejected and provides concrete instructions (pick a role, lead with strong JD verbs, fallback to verbatim original rather than null).
+- **Retry feedback addendum corrected**: "50–130%" → "50–150%" to match `_REWRITE_LEN_MAX_RATIO = 1.50`. Models were over-compressing because they read the addendum cap, not the code.
+- **`_check_do_not_inject` bugfix**: when `cv_full_text=""` (PDF parse failure), the old guard `if cv_l and term in cv_l` always evaluated `False`, blocking every rewrite. Added `if not cv_full_text: return None` early-exit so injection checks are skipped entirely when there is no CV text to compare against.
+
+### Why
+
+End-to-end runs were producing PDFs byte-identical to the input despite the tailor running successfully — the diff had 0 rewrites. Root cause trace: Groq (fallback LLM) produced `text: null` for all bullets → escape hatch retried → still 0 → `job_agent` retry with feedback → still 0 → accepted best_diff with trivial summary → `apply_pdf_edits` short-circuit → nothing applied → identical PDF.
+
+---
+
+## v1.4 — DOCX Path + LibreOffice Render (13 May 2026)
+
+**Bet under test:** Will editing CVs as DOCX (flow-based, paragraph-level) eliminate the coordinate-drift and font-shrinkage problems that plagued the PDF in-place editor for complex layouts?
+
+### Shipped
+
+- **Native `.docx` upload support**: users can upload Word documents directly; no PDF conversion required.
+- **PDF → DOCX conversion path** (`agents/cv_pdf_to_docx.py`): `pdf2docx`-based conversion with a 0–100 convertibility score. PDFs scoring ≥60 use the DOCX path; lower scores fall back to the existing PDF replica/rebuild path.
+- **DOCX tailor editor** (`agents/cv_docx_editor.py`): applies the `cv_diff_tailor` JSON diff at paragraph/run level — preserves bullet glyphs, blanks continuation paragraphs, zero font shrinkage.
+- **LibreOffice headless render** (`agents/cv_docx_to_pdf.py`): replaces the previous `mammoth → WeasyPrint` approach. LibreOffice preserves Word fonts, tables, and layout exactly. Requires `libreoffice` in `packages.txt` (Streamlit Cloud) or PATH (local).
+- **Router** (`agents/cv_docx_pipeline.py`): `try_route_docx()` + `apply_diff_and_render()` public API. Gated by `DOCX_PATH_ENABLED=1` env var for PDF uploads; `.docx` uploads always use this path.
+- **Feature flag**: `DOCX_PATH_ENABLED=1` (default on). Set `0` to force legacy PyMuPDF in-place path.
+
+### Why
+
+The PDF in-place editor (`pdf_editor.py`) worked well for standard single-column CVs but produced misaligned text and font-size drift for designer templates and multi-column layouts. Editing at the DOCX paragraph level bypasses coordinate calculations entirely, and LibreOffice renders the result faithfully. Tested on the project owner's base CV: convertibility score 90/100, 3 roles parsed correctly, 3 bullet rewrites verified end-to-end.
+
+---
+
 ## v1.3 — CV Tailoring Pipeline Robustness (5 May 2026)
 
 **Bet under test:** Will comprehensive guardrails and edge-case handling make the CV tailoring pipeline robust enough to handle diverse CV formats and job descriptions without manual intervention?
@@ -46,6 +83,8 @@
   - Number guard tightened to enforce only magnitude-marked tokens
   - CV embeddings: coerce dict-shaped bullets to text
   - LangFuse telemetry improvements for DeepSeek
+  - **DeepSeek V4-Flash integration** — `chat_deepseek()` added to `llm_client.py` as primary writing LLM for CV strategy, bullet tailoring, and cover letters. `DEEPSEEK_API_KEY` + `DEEPSEEK_MODEL` env vars. Falls back to Groq automatically on any failure. `LLM_PROVIDER=nvidia` alternative path via NVIDIA NIM free-tier.
+  - **`GEMINI_BYPASS=True` default** — `chat_gemini()` routes to Groq instead of Gemini by default. Removes the Gemini dependency for users who haven't set `GEMINI_API_KEY`. Set `GEMINI_BYPASS=0` to re-enable Gemini.
 
 ### Why
 
