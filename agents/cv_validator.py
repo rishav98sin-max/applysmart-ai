@@ -216,6 +216,149 @@ def _detect_column_layout(doc: "fitz.Document") -> Dict[str, Any]:
 # Validator
 # ─────────────────────────────────────────────────────────────
 
+def _validate_docx(cv_path: str, report: ValidationReport) -> ValidationReport:
+    """
+    DOCX branch of `validate_cv` (May 2026 / DOCX path).
+
+    DOCX validation is structurally simpler than PDF because text extraction
+    is byte-reliable (no scanned-image case, no rendered-glyph mismatch).
+    We still run the same content-quality checks as the PDF path (section
+    detection, length floor, language heuristic) so downstream tailoring
+    sees a familiar `details` blob.
+
+    `report.details['source_format']` is set to "docx" so the run snapshot
+    captures which path the CV took.
+    """
+    report.details["source_format"] = "docx"
+    try:
+        import docx as _docx_lib  # python-docx
+    except Exception as e:
+        report.errors.append(
+            f"DOCX support is unavailable in this build (python-docx missing): "
+            f"{type(e).__name__}: {e}. Please upload a PDF instead."
+        )
+        report.ok = False
+        report.score = 0
+        return report
+
+    try:
+        doc = _docx_lib.Document(cv_path)
+    except Exception as e:
+        report.errors.append(
+            f"DOCX is unreadable (corrupt, password-protected, or "
+            f"not a real Word document): {type(e).__name__}: {e}"
+        )
+        report.ok = False
+        report.score = 0
+        return report
+
+    # Flatten body paragraphs + table cell paragraphs into one text string.
+    paragraph_texts: List[str] = []
+    for p in doc.paragraphs:
+        t = (p.text or "").strip()
+        if t:
+            paragraph_texts.append(t)
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    t = (p.text or "").strip()
+                    if t:
+                        paragraph_texts.append(t)
+    full_text = "\n".join(paragraph_texts)
+    char_count = len(full_text)
+    report.details["char_count"] = char_count
+    report.details["paragraph_count"] = len(paragraph_texts)
+    # Page count is unknown for DOCX (flow-based). Record None rather than 0
+    # so downstream consumers can distinguish "we didn't measure" from
+    # "actually zero pages".
+    report.details["page_count"] = None
+
+    if char_count < MIN_TEXT_CHARS:
+        report.errors.append(
+            "No readable text found in this DOCX. Make sure the document "
+            "contains text (not just images / shapes) and try again."
+        )
+        report.ok = False
+        report.score = 0
+        return report
+
+    if char_count < ADVISED_TEXT_CHARS:
+        report.warnings.append(
+            f"CV is very short ({char_count} chars). The tailor agent "
+            f"works best on a full-length CV with measurable outcomes."
+        )
+        report.score -= 15
+
+    # Language heuristic — same threshold as PDF path.
+    ascii_chars = sum(1 for c in full_text if ord(c) < 128)
+    ascii_ratio = ascii_chars / max(1, len(full_text))
+    report.details["ascii_ratio"] = round(ascii_ratio, 3)
+    if ascii_ratio < MIN_ASCII_RATIO:
+        report.warnings.append(
+            "This CV contains a lot of non-ASCII characters — it may be "
+            "in a language other than English. Expect degraded output."
+        )
+        report.score -= 20
+
+    # Section detection — reuse the PDF-path regex.
+    section_hits = len(set(
+        m.group(0).lower() for m in _SECTION_RX.finditer(full_text)
+    ))
+    report.details["section_hits"] = section_hits
+    if section_hits < MIN_SECTION_HITS:
+        report.warnings.append(
+            f"Only {section_hits} standard CV section header(s) detected. "
+            f"The agent may rebuild the CV from text (visual layout will change)."
+        )
+        report.score -= 15
+
+    # DOCX-specific: count paragraphs styled as bullets. This is the
+    # equivalent of the PDF bullet-glyph check.
+    bullet_paragraphs = 0
+    for p in doc.paragraphs:
+        try:
+            style_name = (p.style.name or "").lower() if p.style else ""
+        except Exception:
+            style_name = ""
+        if style_name.startswith("list") or "bullet" in style_name:
+            bullet_paragraphs += 1
+            continue
+        # Also check explicit numbering definitions (numPr).
+        try:
+            if p._p.pPr is not None and p._p.pPr.numPr is not None:
+                bullet_paragraphs += 1
+        except Exception:
+            pass
+    report.details["bullet_count"] = bullet_paragraphs
+    if bullet_paragraphs < 3:
+        report.warnings.append(
+            "Few bulleted paragraphs detected. The tailor's bullet reorder "
+            "step will be skipped; only the summary will be rewritten."
+        )
+        report.score -= 10
+
+    # Columns / sidebar detection is harder in DOCX (would require parsing
+    # section properties). For now: if the document uses multiple tables
+    # at the top level with at least 2 cells per row, flag as a probable
+    # designer template. This catches Canva-style "left sidebar in a table"
+    # layouts that don't convert cleanly back to PDF.
+    multi_col_tables = sum(
+        1 for tbl in doc.tables if len(tbl.columns) >= 2
+    )
+    report.details["multi_col_tables"] = multi_col_tables
+    if multi_col_tables >= 1:
+        report.warnings.append(
+            "DOCX contains multi-column tables — looks like a designer "
+            "template. The agent will rebuild the CV via WeasyPrint "
+            "instead of editing in-place (visual layout will simplify)."
+        )
+        report.score -= 10
+
+    report.score = max(0, min(100, report.score))
+    return report
+
+
 def validate_cv(cv_path: str) -> ValidationReport:
     """
     Run the compatibility check. Never raises.
@@ -224,6 +367,9 @@ def validate_cv(cv_path: str) -> ValidationReport:
       - `ok` is False iff the file is unusable (errors present).
       - `score` is a heuristic 0..100 — 100 = ideal, 60-90 = degraded but
         usable, <60 = expect noticeable quality drop.
+
+    Branches by extension: `.docx` → `_validate_docx`, anything else
+    (`.pdf` default) → the PyMuPDF path below.
     """
     report = ValidationReport()
 
@@ -251,6 +397,14 @@ def validate_cv(cv_path: str) -> ValidationReport:
         report.ok = False
         report.score = 0
         return report
+
+    # Route by file extension. DOCX uses a completely different parser
+    # (python-docx) so we branch here before any PyMuPDF work.
+    ext = os.path.splitext(cv_path)[1].lower()
+    if ext == ".docx":
+        return _validate_docx(cv_path, report)
+
+    report.details["source_format"] = "pdf"
 
     # ── 2. Open with PyMuPDF ─────────────────────────────────
     doc: Optional[fitz.Document] = None
