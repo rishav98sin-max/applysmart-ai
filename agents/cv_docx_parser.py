@@ -632,18 +632,39 @@ def _outline_quality_ok(outline: Dict[str, Any]) -> bool:
     """
     roles = outline.get("roles") or []
     if not roles:
+        # Run 18 audit: log explicit reason so we can diagnose DOCX
+        # rejections in production instead of guessing.
+        print(
+            "   🔍 _outline_quality_ok: FAIL — outline has 0 roles "
+            "(pdf2docx likely produced unstructured text; parser couldn't "
+            "identify any experience/projects section)"
+        )
         return False
 
     total_anchored_bullets = 0
+    roles_with_zero_bullets = 0
     for role in roles:
-        for b in role.get("bullets") or []:
+        role_bullets = role.get("bullets") or []
+        if not role_bullets:
+            roles_with_zero_bullets += 1
+            continue
+        for b in role_bullets:
             if isinstance(b, dict) and isinstance(b.get("_anchor"), int):
                 total_anchored_bullets += 1
             elif isinstance(b, dict) and b.get("text"):
-                # Legacy: bullet dicts without explicit anchors still count
-                # — the editor falls back to text matching for those.
                 total_anchored_bullets += 1
     if total_anchored_bullets == 0:
+        print(
+            f"   🔍 _outline_quality_ok: FAIL — {len(roles)} role(s) found "
+            f"but 0 anchored bullets ({roles_with_zero_bullets} role(s) with "
+            f"empty bullet lists). pdf2docx likely failed to preserve bullet "
+            f"glyphs or list-paragraph styling. Sample role headers: "
+            f"{[r.get('header','')[:60] for r in roles[:3]]!r}"
+        )
         return False
 
+    print(
+        f"   ✅ _outline_quality_ok: PASS — {len(roles)} role(s), "
+        f"{total_anchored_bullets} anchored bullet(s)"
+    )
     return True

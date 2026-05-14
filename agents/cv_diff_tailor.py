@@ -1253,6 +1253,28 @@ _PROJECT_FABRICATION_PHRASES: tuple = (
     "drove alignment across",
     "aligned stakeholders",
     "managing stakeholders",
+    # Run 18 audit (Perplexity-flagged): "collaborating with stakeholders"
+    # appeared in a solo-project bullet for ApplySmart AI on the Nike CV.
+    # The existing list had "stakeholder alignment / aligned stakeholders /
+    # managing stakeholders" but missed the "collaborating with" wording.
+    "collaborating with stakeholders",
+    "collaborated with stakeholders",
+    "collaborating with the team",
+    "collaborated with the team",
+    "collaborating with engineering",
+    "collaborated with engineering",
+    "collaborating with cross-functional",
+    "collaborated with cross-functional",
+    "worked with engineering",
+    "working with engineering",
+    "worked with stakeholders",
+    "working with stakeholders",
+    "coordinating with",
+    "coordinated with",
+    "led a team",
+    "managed a team",
+    "leading a team",
+    "managing a team",
 )
 
 
@@ -1496,6 +1518,46 @@ def _check_banned_suffix_in_bullet(
     return None
 
 
+def _strip_banned_suffix_from_bullet(
+    rewrite: str,
+    suffix:  str,
+) -> str:
+    """
+    Run 18 audit fix: instead of reverting the whole bullet when a banned
+    suffix is detected, strip just the offending suffix and any leading
+    connective ("and", "while", ", and", " — "). The rewritten content
+    before the suffix is usually fine; only the cliché tail is bad.
+
+    Returns the cleaned rewrite. If the strip would empty the bullet,
+    returns the original rewrite unchanged so the caller can fall back
+    to revert.
+    """
+    if not rewrite or not suffix:
+        return rewrite
+
+    rx = re.compile(
+        # match optional leading connector before the suffix
+        rf"(?:\s*[,;:]?\s*(?:and|while|by|through|whilst)\s+)?{re.escape(suffix)}",
+        re.IGNORECASE,
+    )
+    stripped = rx.sub("", rewrite).strip()
+    # Tidy trailing punctuation artefacts (", ." → ".", " ." → ".")
+    stripped = re.sub(r"\s+([.,;:!?])", r"\1", stripped)
+    stripped = re.sub(r"[,;:]\s*$", ".", stripped)
+    # Ensure terminal punctuation
+    if stripped and stripped[-1] not in ".!?":
+        stripped = stripped + "."
+
+    # If strip collapsed the bullet to almost nothing, give up — caller
+    # will revert. Threshold: must be at least 25 chars or ≥30% of original
+    # rewrite length, whichever is smaller.
+    min_keep = min(25, int(len(rewrite) * 0.30))
+    if len(stripped) < min_keep:
+        return rewrite
+
+    return stripped
+
+
 def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int] = None) -> tuple:
     """
     Guardrail: reject rewrites that look like fabrications or truncations.
@@ -1549,16 +1611,18 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
         # Direct verbatim presence (covers percentages, currency, K/M/B scale).
         if tok in new_text_l:
             continue
-        # Audit fix #3: count-with-plus tokens like "200+" / "3+" accept
-        # natural English paraphrases that preserve the digit AND the
-        # "at-least" floor. "over 200", "more than 200", "200 or more"
-        # all mean exactly "200+" to a recruiter. Without this, DeepSeek
-        # rewrites get reverted for legitimate paraphrasing (Run 13
-        # bullet 6: "over 200 events" → guard rejected for losing the
-        # literal '+'). The digit core MUST still survive — "many" or
-        # "several" does NOT pass.
+        # Run 18 audit fix: count-with-plus tokens like "200+" / "3+" are
+        # SCALE markers (descriptive context), not credentials. Allow them
+        # to be dropped entirely when the rewrite reframes the bullet — the
+        # core claim survives and "Led 3+ initiatives" → "Led multiple
+        # initiatives" is honest compression, not fabrication. Recruiters
+        # don't reject a CV for losing "3+" so neither should our guard.
+        # Credentials (% and $) are still strictly preserved below.
         m = re.fullmatch(r"(\d+)\+", tok)
         if m:
+            # Audit fix #3 (kept): also accept natural English paraphrases
+            # — "over 200", "more than 200", etc. — so if the LLM does
+            # preserve the floor in prose form, we don't penalise it.
             n = m.group(1)
             paraphrases = (
                 f"over {n}",
@@ -1569,6 +1633,16 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
             )
             if any(p in new_text_l for p in paraphrases):
                 continue
+            # Drop-without-paraphrase is OK for count-with-plus tokens.
+            # The bullet's core verb + outcome claim is what matters.
+            continue
+        # Run 18 audit fix: bare scale tokens without "+" (e.g. "600K",
+        # "5M") are credential-class when paired with currency ($5M) but
+        # descriptive when standalone (600K users). Currency-attached
+        # scale is already matched by the first orig_nums check above —
+        # if we're here with a bare K/M/B token, accept dropping it.
+        if re.fullmatch(r"\d+[kmb]", tok, re.IGNORECASE):
+            continue
         return False, f"number token {tok!r} missing"
     return True, ""
 
@@ -1732,19 +1806,50 @@ def _normalise_bullet_list(
                             text = None
                         else:
                             # Banned filler-suffix guard.
+                            # Run 18 audit: strip the suffix instead of
+                            # reverting the whole bullet. The rewrite body is
+                            # usually fine; only the cliché tail is bad.
                             bs = _check_banned_suffix_in_bullet(text, orig_text)
                             if bs:
-                                print(
-                                    f"   ⚠️  rewrite rejected (bullet {idx}, "
-                                    f"banned filler suffix {bs!r}): "
-                                    f"{text[:80]!r} — reverting"
-                                )
-                                _LAST_BULLET_REVERTS.append({
-                                    "bullet_index": idx,
-                                    "reason": f"banned_suffix:{bs}",
-                                    "rewrite_preview": text[:120],
-                                })
-                                text = None
+                                stripped = _strip_banned_suffix_from_bullet(text, bs)
+                                if stripped != text and stripped.strip():
+                                    # Re-validate the stripped rewrite
+                                    # against length + number guards.
+                                    ok2, reason2 = _rewrite_is_safe(
+                                        orig_text, stripped, original_length=orig_len
+                                    )
+                                    if ok2:
+                                        print(
+                                            f"   🧹 stripped banned suffix "
+                                            f"{bs!r} from bullet {idx} "
+                                            f"(kept {len(stripped)}/{len(text)} chars)"
+                                        )
+                                        text = stripped
+                                    else:
+                                        print(
+                                            f"   ⚠️  rewrite rejected (bullet {idx}, "
+                                            f"banned filler suffix {bs!r}, strip "
+                                            f"failed length check): {text[:80]!r} "
+                                            f"— reverting"
+                                        )
+                                        _LAST_BULLET_REVERTS.append({
+                                            "bullet_index": idx,
+                                            "reason": f"banned_suffix:{bs}",
+                                            "rewrite_preview": text[:120],
+                                        })
+                                        text = None
+                                else:
+                                    print(
+                                        f"   ⚠️  rewrite rejected (bullet {idx}, "
+                                        f"banned filler suffix {bs!r}, strip "
+                                        f"collapsed bullet): {text[:80]!r} — reverting"
+                                    )
+                                    _LAST_BULLET_REVERTS.append({
+                                        "bullet_index": idx,
+                                        "reason": f"banned_suffix:{bs}",
+                                        "rewrite_preview": text[:120],
+                                    })
+                                    text = None
                             else:
                                 # P1-2 (May 2026): Wrong-language detection for bullets.
                                 # If the LLM produces a bullet rewrite in a non-English
@@ -2365,33 +2470,55 @@ def tailor_cv_diff(
     # 95%, which reverted too many legitimate rewrites. If the retry is
     # still short, fall back to the ORIGINAL summary (no shortening).
     new_words = len((diff.get("summary") or "").split())
-    _SUMMARY_MIN_RATIO = 0.85
-    _SUMMARY_MAX_RATIO = 1.15
+    # Run 18 audit fix: loosened the floor from 0.85 → 0.75 with a +3 word
+    # grace band. Previous floor rejected 78-word rewrites of 93-word
+    # originals (78/93 = 0.84, floor was 0.85, fails). Asking DeepSeek to
+    # pad to a tighter word count generally produces filler, not real
+    # content. A tailored 78-word summary is BETTER than reverting to the
+    # 93-word original verbatim.
+    _SUMMARY_MIN_RATIO = 0.75
+    _SUMMARY_MAX_RATIO = 1.20
+    _SUMMARY_MIN_WORD_GRACE = 3  # accept up to 3 words below the ratio floor
     # H3: suppress the length-retry on reviewer-driven retries. The reviewer
     # already triggered a re-tailor; cascading another inner retry on top
     # multiplies token use without adding signal (the LLM saw the directive
     # in the reviewer feedback already). Only run length-retry on first pass.
     on_retry_pass = bool(feedback or previous_diff)
-    if (not on_retry_pass) and orig_words >= 20 and new_words and new_words < int(orig_words * _SUMMARY_MIN_RATIO):
-        low  = int(orig_words * _SUMMARY_MIN_RATIO)
+    # Run 18 audit fix: apply the grace band so 78w → 79w floor passes.
+    _effective_min_words = max(
+        1,
+        int(orig_words * _SUMMARY_MIN_RATIO) - _SUMMARY_MIN_WORD_GRACE,
+    )
+    if (not on_retry_pass) and orig_words >= 20 and new_words and new_words < _effective_min_words:
+        low  = _effective_min_words
         high = int(orig_words * _SUMMARY_MAX_RATIO)
         print(
             f"   ↻  summary too short ({new_words}/{orig_words} words, "
             f"need ≥{low}) — retrying with hard target {low}-{high}."
         )
+        # Run 18 audit fix (Perplexity-flagged): the previous instruction
+        # said "Rewrite ... to fall strictly within range" which DeepSeek
+        # interpreted as "be more concise" and produced an even shorter
+        # output. Explicitly tell it to EXPAND the existing summary, not
+        # rewrite it, by appending CV-grounded detail.
+        words_short = max(1, low - new_words)
         enforce = (
             f"YOUR PREVIOUS SUMMARY WAS TOO SHORT ({new_words} words; "
-            f"original was {orig_words}). The target is {low}-{high} words "
-            f"(95%-115% of original). Rewrite the summary to fall strictly "
-            f"within that range. You MAY add more CV-grounded detail "
-            f"(specific outcomes, years, platforms, methodologies) but you "
-            f"MUST NOT invent anything that is not in the CV."
+            f"target {low}-{high}, original was {orig_words}). Do NOT rewrite "
+            f"the summary from scratch. KEEP the existing sentences and EXPAND "
+            f"by adding approximately {words_short}-{words_short + 8} more words "
+            f"of CV-grounded detail — specific outcomes, platform names, "
+            f"methodologies, or technologies that already appear elsewhere in "
+            f"the candidate's CV. You MUST NOT invent anything that is not in "
+            f"the CV. The expansion should read as natural additions to the "
+            f"existing prose, not a new draft."
         )
         raw_text2 = _call_llm(_render_prompt(extra=enforce))
         raw_json2 = _extract_json(raw_text2)
         diff2     = _sanitise_diff(raw_json2, outline, do_not_inject=strategy_dni, cv_text=cv_text)
         new_sum2  = (diff2.get("summary") or "").strip()
-        if new_sum2 and len(new_sum2.split()) >= int(orig_words * _SUMMARY_MIN_RATIO):
+        # Run 18 audit fix: apply grace band on retry too.
+        if new_sum2 and len(new_sum2.split()) >= _effective_min_words:
             # May 1 fix: re-run the credential-preservation guard on the
             # length-retry summary. Yesterday's run produced a length-retry
             # rewrite that dropped "(2.1)" because this branch never

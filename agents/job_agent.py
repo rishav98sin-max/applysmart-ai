@@ -1323,6 +1323,28 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                 # in place" question for the DOCX pipeline.
                 if docx_route is not None:
                     replica_check = {"compatible": True, "reason": "docx_route"}
+                elif os.getenv("PREFER_REBUILD_OVER_INPLACE", "1").strip() not in ("0", "false", "no", "off", ""):
+                    # Run 18 audit fix: when DOCX route fails AND PDF upload
+                    # is being processed, prefer the rebuild path over PyMuPDF
+                    # in-place editing. In-place editing causes visible font
+                    # shrinkage on bullets where the rewrite is longer than
+                    # the original — even with the 1pt shrinkage cap, the
+                    # result is visibly inconsistent ("format got fucked").
+                    # Rebuild produces clean consistent formatting; loses
+                    # exact pixel-fidelity to the original PDF but the result
+                    # looks professional and respects the candidate's style
+                    # profile (fonts, margins, colours). Set
+                    # PREFER_REBUILD_OVER_INPLACE=0 to restore legacy in-place
+                    # fallback behaviour for debugging.
+                    print(
+                        f"   ℹ️  {tag} DOCX route unavailable AND "
+                        f"PREFER_REBUILD_OVER_INPLACE is on — routing to "
+                        f"rebuild path (cleaner output than in-place editing)."
+                    )
+                    replica_check = {
+                        "compatible": False,
+                        "reason": "docx_route_failed_preferring_rebuild",
+                    }
                 else:
                     replica_check = _detect_replica_compatibility(state["cv_path"])
                 replica_skipped = not replica_check.get("compatible", True)

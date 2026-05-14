@@ -144,6 +144,16 @@ HARD RULES — non-negotiable
 - JD-only terminology (skills, certifications, frameworks, domains the
   CV does not contain) goes in `do_not_inject`. Do NOT route them into
   any other field.
+- DO_NOT_INJECT CROSS-CHECK (critical — Run 18 fix): BEFORE adding any
+  term to `do_not_inject`, scan EVERY section of the CV — including the
+  Skills / Tools / Technologies block, bullets, summary, projects, and
+  any sub-headers. If the term appears ANYWHERE in the CV, it is NOT a
+  JD-only term and MUST NOT be in `do_not_inject`. Common false-positive
+  pattern: a skill like "JIRA", "Confluence", or "Python" is listed in
+  the CV's Tools row but absent from any bullet text — the strategist
+  must still treat it as a CV-known term. Putting it in do_not_inject
+  silently reverts every tailored summary that legitimately surfaces it,
+  defeating the whole point of the tailoring.
 - Do not invent metrics, percentages, headcounts, or revenue numbers.
 - Do not invent job titles, company names, or certifications.
 - CREDENTIAL GROUNDING (critical — May 2026 fix): Years-of-experience,

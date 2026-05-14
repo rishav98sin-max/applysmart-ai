@@ -224,6 +224,24 @@ STRICT RULES
   to match the JD's language", NOT "make it more tailored").
 - Keep feedback short — 1 to 3 sentences max.
 
+- MANDATORY SCORING DEDUCTIONS (apply BEFORE finalising the score):
+  These deductions catch the silent-failure modes where the rubric above
+  would otherwise score a partially-tailored CV at 85+.
+    * Tailored SUMMARY is byte-identical to original (no rewrite at all):
+      DEDUCT 15 points. The summary is the most-read section; an
+      untailored summary means the tailor effectively didn't run.
+    * More than 3 bullets across the whole CV are NOT marked [REWRITTEN]
+      when at least 8 bullets exist and the JD has specific responsibilities
+      the bullets could have been re-framed around: DEDUCT 10 points.
+      Pure reorder-without-rewrite is not real tailoring.
+    * Any [REWRITTEN] bullet under section=projects contains relational
+      fabrication ("collaborating with stakeholders", "partnered with
+      engineering", "cross-functional team", "led a team", etc.) that
+      the original bullet does NOT contain: DEDUCT 20 points and list
+      the offending phrase as the #1 weakness.
+  These deductions stack. Apply all that fire, then clamp to [0, 100].
+  Floor for "accept" verdict remains the configured ACCEPT_THRESHOLD.
+
 OUTPUT (JSON only, no prose, no markdown fences):
 {{
   "score":      <int 0-100>,
