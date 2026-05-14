@@ -1492,7 +1492,15 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     # reviewer would score a summary-only change and accept it
                     # while the body of the CV is verbatim original.
                     body_reverted = bool((diff.get("_debug") or {}).get("body_reverted"))
-                    if (all_reverted or body_reverted) and attempt < MAX_TAILOR_RETRIES:
+                    # Run 19 audit fix #44: also retry when the tailor logged
+                    # `unmatched_keys` — those are LLM-intended rewrites that
+                    # the diff sanitiser silently dropped because the bullet-
+                    # dict key didn't match any real role header. Without this
+                    # retry trigger, partial body losses ship silently with a
+                    # high reviewer score on the surviving sections.
+                    unmatched_keys = (diff.get("_debug") or {}).get("unmatched_keys") or []
+                    has_unmatched = bool(unmatched_keys) and attempt < MAX_TAILOR_RETRIES
+                    if (all_reverted or body_reverted or has_unmatched) and attempt < MAX_TAILOR_RETRIES:
                         print(
                             f"   🛡️  {tag} all-revert detected — "
                             f"forcing retry with stricter prompt"
@@ -1609,6 +1617,47 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         break
 
                     if attempt >= MAX_TAILOR_RETRIES:
+                        # Run 19 audit fix #43: refuse to ship genuinely bad
+                        # output. If "best" is below MIN_SHIP_SCORE AND the
+                        # body is reverted/unmatched, the user gets a CV
+                        # that fails the contract on both axes (poor
+                        # tailoring AND unchanged body). Better to discard
+                        # this diff and let the supervisor route to rebuild
+                        # path (or surface a UI warning) than ship a
+                        # diff that has score=30 with body verbatim.
+                        try:
+                            from agents.reviewer import ACCEPT_THRESHOLD
+                            _MIN_SHIP = max(50, int(ACCEPT_THRESHOLD) - 15)
+                        except Exception:
+                            _MIN_SHIP = 50
+                        _best_score = int((best_review or {}).get("score", 0) or 0)
+                        _best_dbg = (best_diff or {}).get("_debug") or {}
+                        _best_body_bad = bool(
+                            _best_dbg.get("body_reverted")
+                            or _best_dbg.get("all_reverted")
+                        )
+                        if _best_score < _MIN_SHIP and _best_body_bad:
+                            print(
+                                f"   ⛔ {tag} best diff (score={_best_score}, "
+                                f"body_reverted={_best_dbg.get('body_reverted')}) "
+                                f"is below MIN_SHIP={_MIN_SHIP} — discarding "
+                                f"diff. Supervisor will route to rebuild path "
+                                f"(cleaner than shipping a deceptive partial "
+                                f"diff)."
+                            )
+                            best_diff = {}
+                            best_review = {
+                                "score": _best_score,
+                                "verdict": "rebuild_fallback",
+                                "feedback": (
+                                    "Tailoring failed quality bar — body "
+                                    "was reverted by guards or LLM did not "
+                                    "rewrite. Routing to rebuild for clean "
+                                    "output."
+                                ),
+                                "strengths": [], "weaknesses": [],
+                            }
+                            break
                         print(
                             f"   ⚠️  {tag} reviewer still unhappy after "
                             f"{attempt+1} attempt(s) (best={best_review['score']}) — "

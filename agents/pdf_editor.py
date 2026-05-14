@@ -34,12 +34,24 @@ import fitz  # PyMuPDF
 # eviction. The previous unbounded dict grew per upload on long-running
 # Streamlit Cloud instances where the same process serves many users.
 # Outlines are ~5-50KB each, so 32 entries = 160KB-1.6MB worst case.
+#
+# Run 19 audit fix #35: add threading.Lock + deepcopy on cache hit. The
+# previous unlocked dict allowed RuntimeError during concurrent iteration
+# (TAILOR_JOB_CONCURRENCY=2). Worse: returned outlines were shared by
+# reference — when one thread attached _megabullet_subidx etc. to bullets,
+# a concurrent job parsing the same source PDF saw the mutated outline.
+import copy as _copy
+import threading as _threading
 _OUTLINE_CACHE_MAX = 32
 _outline_cache: Dict[tuple, tuple] = {}  # cache_key -> (outline, mtime, size)
+_outline_cache_lock = _threading.Lock()
 
 
 def _evict_outline_cache_if_full() -> None:
-    """FIFO eviction when the cache grows past _OUTLINE_CACHE_MAX."""
+    """FIFO eviction when the cache grows past _OUTLINE_CACHE_MAX.
+
+    MUST be called with _outline_cache_lock held.
+    """
     while len(_outline_cache) > _OUTLINE_CACHE_MAX:
         # Pop the oldest entry. Python 3.7+ dicts preserve insertion order.
         oldest_key = next(iter(_outline_cache))
@@ -62,30 +74,36 @@ def build_outline_cached(pdf_path: str) -> Dict[str, Any]:
     parses the PDF and updates the cache.
     """
     cache_key = _get_cache_key(pdf_path)
-    
-    # Check if we have a cached outline for this file
-    if cache_key in _outline_cache:
-        cached_outline, cached_mtime, cached_size = _outline_cache[cache_key]
-        # Verify the file hasn't changed
+
+    # Run 19 audit fix #35: locked read + deepcopy on hit so concurrent
+    # jobs don't mutate each other's outlines.
+    with _outline_cache_lock:
+        cached = _outline_cache.get(cache_key)
+    if cached is not None:
+        cached_outline, cached_mtime, cached_size = cached
         try:
             stat = os.stat(pdf_path)
             if stat.st_mtime == cached_mtime and stat.st_size == cached_size:
-                # File unchanged, return cached outline
-                return cached_outline
+                # Deep-copy so per-job mutations (e.g. _megabullet_subidx
+                # on bullets, _continuation_anchors blanking) don't leak
+                # into the cached canonical outline shared by other threads.
+                return _copy.deepcopy(cached_outline)
         except OSError:
             pass  # File error, fall through to re-parse
-    
-    # Parse the PDF and cache the result
+
+    # Parse the PDF and cache the result under the lock.
     outline = build_outline(pdf_path)
-    cache_key = _get_cache_key(pdf_path)
+    fresh_key = _get_cache_key(pdf_path)
     try:
         stat = os.stat(pdf_path)
-        _outline_cache[cache_key] = (outline, stat.st_mtime, stat.st_size)
-        _evict_outline_cache_if_full()
+        with _outline_cache_lock:
+            _outline_cache[fresh_key] = (outline, stat.st_mtime, stat.st_size)
+            _evict_outline_cache_if_full()
     except OSError:
-        pass  # Still cache the outline even if we can't get stats
+        pass  # Still return the outline even if we can't get stats
 
-    return outline
+    # Return a deep copy so the caller's mutations don't pollute the cache.
+    return _copy.deepcopy(outline)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1918,12 +1936,40 @@ def apply_edits(
                         [ln for b in bullets for ln in b["lines"]]
                     )
                     _redact_rect(page, rect)
-                    _insert_fitted(
+                    # Run 19 audit fix #34: check _insert_fitted return value.
+                    # Previously the return value was discarded — if the
+                    # rewrite didn't fit even at the 1pt shrinkage cap, the
+                    # rect was already wiped but nothing replaced it, leaving
+                    # a blank rectangle in the output PDF. Now we fall back
+                    # to the ORIGINAL bullet text on overflow so the user
+                    # ships content (even untailored) instead of blank space.
+                    sz_b = _insert_fitted(
                         page, rect, new_text, ref, align=0,
                         line_gap=measured,
                         doc=doc, font_cache=font_cache,
                     )
-                    applied_roles.append(header)
+                    if not sz_b or sz_b <= 0:
+                        # Rewrite didn't fit — restore original.
+                        original_text = "\n".join(
+                            f"{bullet_char}   {b['text']}" for b in bullets
+                        )
+                        _insert_fitted(
+                            page, rect, original_text, ref, align=0,
+                            line_gap=measured,
+                            doc=doc, font_cache=font_cache,
+                        )
+                        report.setdefault("skipped", []).append(
+                            f"bullets/{header}: rewrite did not fit "
+                            f"(restored original {len(bullets)} bullets)"
+                        )
+                        print(
+                            f"   ⚠️  pdf_editor: bullets for {header!r} did "
+                            f"not fit at min font size — restored original "
+                            f"({len(bullets)} bullets, {len(new_text)} chars "
+                            f"requested)"
+                        )
+                    else:
+                        applied_roles.append(header)
             if applied_roles:
                 report["applied"]["bullets"] = {
                     "roles":     applied_roles,
@@ -1957,11 +2003,28 @@ def apply_edits(
                 if ref is not None:
                     reordered = ", ".join(s.strip() for s in skills_order if s.strip())
                     _redact_rect(page, rect)
-                    _insert_fitted(
+                    # Run 19 audit fix #34: also check the return value on
+                    # the skills path. Same fallback pattern.
+                    sz_sk = _insert_fitted(
                         page, rect, reordered, ref, align=0,
                         doc=doc, font_cache=font_cache,
                     )
-                    report["applied"]["skills"] = True
+                    if not sz_sk or sz_sk <= 0:
+                        # Reordered skills didn't fit — restore original.
+                        original_skills = ", ".join(
+                            (ln.get("text") or "").strip()
+                            for ln in sk_sec["lines"]
+                            if (ln.get("text") or "").strip()
+                        )
+                        _insert_fitted(
+                            page, rect, original_skills, ref, align=0,
+                            doc=doc, font_cache=font_cache,
+                        )
+                        report["skipped"].append(
+                            "skills: reorder did not fit (restored original)"
+                        )
+                    else:
+                        report["applied"]["skills"] = True
                 else:
                     report["skipped"].append("skills: no reference span")
             else:

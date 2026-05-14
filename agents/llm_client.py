@@ -1023,13 +1023,23 @@ def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -
 # is preserved verbatim in `_call_gemini()` — only the public wrapper is
 # rewired. Flip the env var, redeploy, no code change needed.
 def _gemini_bypass_enabled() -> bool:
+    """True when Gemini is bypassed (default).
+
+    Run 19 audit fix #40: accept the full set of falsy values for the
+    "disable bypass / re-enable Gemini" toggle. Previously only the
+    literal "0" turned bypass off — setting GEMINI_BYPASS=false / no /
+    off (intuitive falsy values) kept Gemini bypassed despite user
+    intent. Treat any of {0, false, no, off, ''} as "bypass off →
+    re-enable Gemini"; anything else as "bypass on".
+    """
+    _FALSY = {"0", "false", "no", "off", ""}
     val = os.environ.get("GEMINI_BYPASS")
     if val is not None:
-        return val != "0"
+        return val.strip().lower() not in _FALSY
     try:
         import streamlit as st  # local import — non-Streamlit callers don't pay
         if hasattr(st, "secrets") and "GEMINI_BYPASS" in st.secrets:  # type: ignore[attr-defined]
-            return str(st.secrets["GEMINI_BYPASS"]) != "0"            # type: ignore[index]
+            return str(st.secrets["GEMINI_BYPASS"]).strip().lower() not in _FALSY  # type: ignore[index]
     except Exception:
         pass
     return True  # default: bypass ON

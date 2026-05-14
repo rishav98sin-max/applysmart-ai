@@ -543,6 +543,10 @@ def _call_llm(prompt: str, max_tokens: int = 3000) -> str:
         )
 
     # 2) Groq (final fallback)
+    # Run 19 audit fix #39: track the second LLM call. Previously only
+    # the first track_llm_call fired, undercounting budget by 1 per
+    # fallback. BudgetExceeded then triggered later than actual cost.
+    track_llm_call(agent="cv_diff_tailor")
     return chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
 
 
@@ -1996,6 +2000,24 @@ def _sanitise_diff(
     # Bullets
     real_roles = {r["header"].strip().lower(): r for r in outline.get("roles", [])}
     bullets_raw = raw.get("bullets") or {}
+
+    # Run 19 audit fix #37: apply the strategist's section-key normaliser
+    # to the tailor's bullets dict too. Previously the strategist normalised
+    # its bullet_strategy keys (strips trailing metadata like "Tech Stack:
+    # Python", drops META_KEYS like "ROLES:"/"PROJECTS:") but the tailor's
+    # _sanitise_diff matched against raw role headers — if the LLM echoed
+    # back a META key or a noisy header, the bullet entries were silently
+    # dropped via the fuzzy-match fallback. Run 19 logs showed `unmatched=`
+    # warnings that correspond exactly to these silent body losses.
+    if isinstance(bullets_raw, dict) and bullets_raw:
+        try:
+            from agents.tailor_strategist import _normalise_section_keys
+            bullets_raw = _normalise_section_keys(bullets_raw)
+        except Exception:
+            # If the import path drifts, fall back to raw keys — the
+            # fuzzy match below still catches most cases.
+            pass
+
     unmatched_keys: List[str] = []
     if isinstance(bullets_raw, dict):
         for rk, order in bullets_raw.items():
@@ -2056,6 +2078,11 @@ def _sanitise_diff(
             f"did not match any role header. Unmatched={unmatched_keys!r} "
             f"Real headers={real_hdrs!r}"
         )
+        # Run 19 audit fix #44: surface unmatched_keys to the supervisor
+        # via _debug so it can be used as a retry signal. Previously this
+        # was only printed — the supervisor had no way to know that the
+        # tailor silently dropped half the LLM's intended rewrites.
+        out.setdefault("_debug", {})["unmatched_keys"] = list(unmatched_keys)
 
     # Skills — policy: DO NOT reorder skills. The candidate's skills block
     # stays byte-identical to the original CV. Drop any LLM-returned order.
@@ -2687,16 +2714,32 @@ def tailor_cv_diff(
     has_bullet_change  = n_rewrites > 0
     has_skills_change  = bool(diff.get("skills_order"))
 
-    # Run-17 audit fix #3: also flag the case where the SUMMARY survived
-    # but every bullet rewrite was reverted. Previously, a surviving summary
-    # would set has_summary_change=True and mask the bullet-level failure
-    # — the reviewer would then score a CV where only the summary differs
-    # and accept it at 70+, leading the user to ship effectively the
-    # original body. A genuine tailoring run rewrites bullets too; if the
-    # tailor attempted bullet rewrites and ALL got reverted, force retry.
+    # Run-17 audit fix #3 (extended by Run 19 audit fix #33): flag the
+    # case where the SUMMARY survived but the body is unchanged.
+    #
+    # Two failure modes feed into body_reverted now:
+    #   (a) guards reverted every bullet rewrite (_LAST_BULLET_REVERTS > 0
+    #       and n_rewrites == 0) — this was the original check.
+    #   (b) LLM "silent skip": the model produced text=null for every
+    #       bullet (or no entries at all in the diff). No guard fires
+    #       because there's nothing to evaluate, so _LAST_BULLET_REVERTS
+    #       stays empty AND n_rewrites stays 0. The original check missed
+    #       this — supervisor saw "tailor produced nothing" but body_reverted
+    #       was False, no retry triggered.
+    # The extended check fires when the CV had enough bullets to tailor
+    # (>=5 total) but no rewrites landed AND no skills change — that's
+    # body-untouched regardless of guard activity.
+    n_bullets_total_in_outline = sum(
+        len(r.get("bullets") or []) for r in outline.get("roles", [])
+    )
     bullets_attempted_and_all_reverted = (
         len(_LAST_BULLET_REVERTS) > 0
         and n_rewrites == 0
+    )
+    body_silently_untouched = (
+        n_bullets_total_in_outline >= 5
+        and n_rewrites == 0
+        and not has_skills_change
     )
 
     diff["_debug"]["all_reverted"] = (
@@ -2705,12 +2748,16 @@ def tailor_cv_diff(
         and not has_skills_change
         and (summary_reverted or bullets_all_reverted)
     )
-    # New: distinguish "summary worked but bullets all reverted" — this
-    # is the silent-failure case the old check missed.
+    # body_reverted now catches BOTH the guard-reverted case (a) AND the
+    # LLM-silent-skip case (b). Either way the body is untailored.
     diff["_debug"]["body_reverted"] = (
-        bullets_attempted_and_all_reverted
+        (bullets_attempted_and_all_reverted or body_silently_untouched)
         and not has_skills_change
     )
+    # Also surface the silent-skip flag separately so the supervisor can
+    # distinguish "guards over-fired" (recoverable with looser guards)
+    # from "LLM gave up" (needs a stricter retry prompt).
+    diff["_debug"]["body_silently_untouched"] = body_silently_untouched
 
     if diff["_debug"]["all_reverted"]:
         print(
@@ -2719,9 +2766,18 @@ def tailor_cv_diff(
             "stricter prompting or skip the replica path."
         )
     elif diff["_debug"]["body_reverted"]:
-        print(
-            "   🛡️  cv_diff_tailor: every bullet rewrite reverted; summary "
-            "kept. The body of the CV is unchanged — caller should retry "
-            "with sharper JD-aligned bullet prompts."
-        )
+        if body_silently_untouched:
+            print(
+                f"   🛡️  cv_diff_tailor: LLM silent-skip — n_rewrites=0 "
+                f"across {n_bullets_total_in_outline} available bullets and "
+                f"no guards fired. Summary may have changed but the body is "
+                f"verbatim original. Caller MUST retry with explicit "
+                f"bullet-rewrite directive."
+            )
+        else:
+            print(
+                "   🛡️  cv_diff_tailor: every bullet rewrite reverted; summary "
+                "kept. The body of the CV is unchanged — caller should retry "
+                "with sharper JD-aligned bullet prompts."
+            )
     return diff

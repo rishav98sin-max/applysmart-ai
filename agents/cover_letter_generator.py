@@ -915,6 +915,9 @@ def generate_cover_letter(
                             f"   ↪️  Cover letter: DeepSeek incomplete on attempt 1 "
                             f"(len={len(raw)}) — falling back to Groq"
                         )
+                    # Run 19 audit fix #39: track the Groq fallback call so
+                    # budget accounting doesn't undercount.
+                    track_llm_call(agent="cover_letter")
                     raw = chat_quality(prompt, max_tokens=budget, temperature=0.4)
             else:
                 # Retries always go to Groq directly.
@@ -975,6 +978,18 @@ def generate_cover_letter(
                     f"banned filler pattern(s) deterministically "
                     f"(no extra LLM call)."
                 )
+                # Run 19 audit fix #42: re-validate completeness after the
+                # strip. A removed phrase could leave a dangling fragment
+                # at sentence end ("…confidence about ") that reads as
+                # truncated. Retry on this attempt if it does.
+                if not _cover_letter_is_complete(cleaned_raw):
+                    print(
+                        f"   ⚠️  Cover letter: strip left fragment "
+                        f"(len={len(cleaned_raw)}, ends={cleaned_raw[-40:]!r}) "
+                        f"— retrying with stricter prompt"
+                    )
+                    time.sleep(1)
+                    continue
                 raw = cleaned_raw
 
             # Re-check after the strip — rare, but a phrase from the

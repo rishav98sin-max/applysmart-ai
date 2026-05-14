@@ -432,6 +432,44 @@ def apply_diff_to_docx(
                         f"anchor={anchor_k} ({len(joined_lines)} bullets "
                         f"joined, {len(joined_text)} chars)"
                     )
+                    # Run 19 audit fix #36: also process continuation
+                    # anchors collected from EVERY megabullet sibling. The
+                    # atomic-bullet branch handles continuations per bullet,
+                    # but the megabullet branch was missing this — if
+                    # pdf2docx packed wrap-line continuations after a
+                    # megabullet paragraph, the joined rewrite would ship
+                    # AND the stale wrap text would ship below it
+                    # (duplicated content). Collect anchors from all
+                    # siblings, dedupe, and run the same "looks_like_wrap"
+                    # blanking logic.
+                    seen_conts: set = set()
+                    for s_entry in sibling_entries:
+                        s_bullet = s_entry["bullet"]
+                        for c_idx in (s_bullet.get("_continuation_anchors") or []):
+                            if c_idx in seen_conts:
+                                continue
+                            seen_conts.add(c_idx)
+                            cont_para = paragraphs.get(c_idx)
+                            if cont_para is None:
+                                continue
+                            cont_text = (cont_para.text or "").strip()
+                            if not cont_text:
+                                continue
+                            looks_like_wrap = (
+                                len(cont_text) <= 72
+                                or (cont_text[:1].islower() if cont_text else False)
+                                or cont_text.startswith(("•", "-", "·", "*"))
+                            )
+                            if looks_like_wrap:
+                                _blank_paragraph(cont_para)
+                            else:
+                                print(
+                                    f"   🛡️  cv_docx_editor: kept "
+                                    f"megabullet continuation @ anchor="
+                                    f"{c_idx} (looks independent, "
+                                    f"len={len(cont_text)}, preview="
+                                    f"{cont_text[:60]!r})"
+                                )
 
     # ── 3. Save ─────────────────────────────────────────────
     try:

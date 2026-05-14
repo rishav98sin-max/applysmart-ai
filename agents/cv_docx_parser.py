@@ -384,13 +384,25 @@ def _iter_body_paragraphs(doc: Any) -> List[Tuple[int, Any]]:
 
     # Late-import lookups so `cv_docx_parser` stays importable even when
     # docx is missing (the build_outline call already guards that).
+    # Run 19 audit fix #38: import paragraph + table TOGETHER. If only
+    # one succeeds (mid-version python-docx drift), the walker silently
+    # skipped TBL_TAG branches and emitted no anchors for table-cell
+    # paragraphs — breaking lock-step with the editor's `_index_paragraphs`
+    # which walks the same XML. Anchors would then point to wrong
+    # paragraphs and rewrites would land on the wrong content.
+    _Paragraph = _Table = _Cell = None   # type: ignore
     try:
-        from docx.text.paragraph import Paragraph as _Paragraph
-        from docx.table import Table as _Table, _Cell
-    except Exception:
-        # Fallback: pre-1.0 python-docx layout. The walk below still works
-        # via element tags, just without typed wrappers.
-        _Paragraph = _Table = _Cell = None   # type: ignore
+        from docx.text.paragraph import Paragraph as _P_imp
+        from docx.table import Table as _T_imp, _Cell as _C_imp
+        _Paragraph, _Table, _Cell = _P_imp, _T_imp, _C_imp
+    except Exception as _import_err:
+        # Both imports failed together — fall back to element-tag walk
+        # without typed wrappers. This is the legacy/pre-1.0 docx path.
+        print(
+            f"   ⚠️  cv_docx_parser: python-docx typed wrappers unavailable "
+            f"({type(_import_err).__name__}); using element-tag fallback. "
+            f"Anchor lock-step with editor depends on consistent walk."
+        )
 
     P_TAG  = qn("w:p")
     TBL_TAG = qn("w:tbl")
@@ -408,14 +420,28 @@ def _iter_body_paragraphs(doc: Any) -> List[Tuple[int, Any]]:
                 out.append((idx, p))
                 idx += 1
             elif tag == TBL_TAG:
+                # Run 19 audit fix #38: walk table cells via raw XML even
+                # when typed Table wrapper is unavailable. The OLD code
+                # silently skipped tables when _Table was None, producing
+                # an outline with no table-cell paragraphs and breaking
+                # lock-step with the editor. Now we walk row→cell→content
+                # via XML tags regardless of whether typed wrappers exist.
                 if _Table is not None:
                     tbl = _Table(child, container_obj)
                     for row in tbl.rows:
                         for cell in row.cells:
-                            # Walk the cell's element to recover paragraph
-                            # AND nested table order. CVs rarely nest more
-                            # than one level deep; this handles two.
                             _walk_block_container(cell._tc, cell)
+                else:
+                    # Element-tag fallback: walk rows (w:tr) → cells (w:tc)
+                    TR_TAG = qn("w:tr")
+                    TC_TAG = qn("w:tc")
+                    for row_el in child.iterchildren():
+                        if row_el.tag != TR_TAG:
+                            continue
+                        for cell_el in row_el.iterchildren():
+                            if cell_el.tag != TC_TAG:
+                                continue
+                            _walk_block_container(cell_el, container_obj)
 
     _walk_block_container(doc.element.body, doc)
     return out
