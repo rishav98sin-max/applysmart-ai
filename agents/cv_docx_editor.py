@@ -283,6 +283,29 @@ def apply_diff_to_docx(
                 continue
             role_bullets = role.get("bullets") or []
             n_bullets = len(role_bullets)
+
+            # Run 19 audit fix: pre-pass to group megabullet siblings.
+            # When pdf2docx merged multiple bullets into one paragraph, the
+            # parser split them into atomic bullets that share an _anchor.
+            # The editor needs to write back the joined result (mix of new
+            # rewrites for changed bullets + original text for kept ones)
+            # as a single paragraph so the layout doesn't break.
+            megabullet_groups: Dict[int, List[Dict[str, Any]]] = {}
+            for i, b in enumerate(role_bullets):
+                if not isinstance(b, dict):
+                    continue
+                if b.get("_megabullet_count", 1) > 1:
+                    anchor_key = b.get("_anchor")
+                    if isinstance(anchor_key, int):
+                        megabullet_groups.setdefault(anchor_key, []).append(
+                            {"role_index": i, "bullet": b}
+                        )
+            mega_anchors = set(megabullet_groups.keys())
+            # Map role_index → final text after applying diff
+            mega_resolved: Dict[int, Dict[int, str]] = {
+                a: {} for a in mega_anchors
+            }
+
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
@@ -295,7 +318,17 @@ def apply_diff_to_docx(
                     continue
                 new_text = entry.get("text")
                 if not isinstance(new_text, str) or not new_text.strip():
-                    # Caller marked this bullet "keep original" — no-op.
+                    # Caller marked this bullet "keep original" — no-op
+                    # for atomic bullets, but for megabullet siblings we
+                    # still need to record the ORIGINAL text so the joined
+                    # output is complete.
+                    bullet_obj = role_bullets[i]
+                    if isinstance(bullet_obj, dict):
+                        anchor_k = bullet_obj.get("_anchor")
+                        if anchor_k in mega_anchors:
+                            mega_resolved[anchor_k][i] = (
+                                bullet_obj.get("text") or ""
+                            ).strip()
                     continue
                 # Locate the actual DOCX paragraph for bullet i.
                 bullet_obj = role_bullets[i]
@@ -310,6 +343,15 @@ def apply_diff_to_docx(
                 if target_para is None:
                     edits_skipped += 1
                     continue
+
+                # Megabullet path: stash the rewrite, apply later after
+                # collecting all siblings.
+                if anchor in mega_anchors:
+                    mega_resolved[anchor][i] = new_text.strip()
+                    edits_applied += 1
+                    continue
+
+                # Atomic bullet path (unchanged).
                 _replace_paragraph_text(target_para, new_text.strip())
                 # Blank any continuation paragraphs the parser folded into
                 # this bullet's text. Without this the rendered PDF shows
@@ -351,6 +393,45 @@ def apply_diff_to_docx(
                             f"{cont_text[:60]!r})"
                         )
                 edits_applied += 1
+
+            # Run 19 audit fix: write back the megabullet groups now that
+            # we've collected all sibling rewrites. Each group ends up as
+            # a single paragraph with the bullets joined by newlines and
+            # bullet glyphs (preserves the visual list structure).
+            for anchor_k, role_index_to_text in mega_resolved.items():
+                if not role_index_to_text:
+                    continue
+                target_para = paragraphs.get(anchor_k)
+                if target_para is None:
+                    continue
+                # Build the joined text in original sibling order. For any
+                # sibling that wasn't in the diff (no rewrite, no explicit
+                # keep), use its parsed original text so nothing gets lost.
+                sibling_entries = megabullet_groups[anchor_k]
+                # Sort siblings by sub-index (preserves visual order)
+                sibling_entries.sort(
+                    key=lambda e: e["bullet"].get("_megabullet_subidx", 0)
+                )
+                joined_lines: List[str] = []
+                for s_entry in sibling_entries:
+                    s_i = s_entry["role_index"]
+                    s_bullet = s_entry["bullet"]
+                    if s_i in role_index_to_text:
+                        joined_lines.append(role_index_to_text[s_i])
+                    else:
+                        joined_lines.append((s_bullet.get("text") or "").strip())
+                joined_lines = [ln for ln in joined_lines if ln]
+                if joined_lines:
+                    # Join with newline + bullet glyph so LibreOffice renders
+                    # them as visual bullets within the same paragraph.
+                    glyph_sep = "\n• "
+                    joined_text = "• " + glyph_sep.join(joined_lines)
+                    _replace_paragraph_text(target_para, joined_text)
+                    print(
+                        f"   🔗 cv_docx_editor: wrote megabullet @ "
+                        f"anchor={anchor_k} ({len(joined_lines)} bullets "
+                        f"joined, {len(joined_text)} chars)"
+                    )
 
     # ── 3. Save ─────────────────────────────────────────────
     try:

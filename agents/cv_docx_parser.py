@@ -194,6 +194,100 @@ def _strip_leading_bullet_glyph(text: str) -> str:
     return _BULLET_GLYPH_RX.sub("", text, count=1).strip()
 
 
+# Internal bullet split pattern. Detects when pdf2docx has collapsed multiple
+# bullets into a single paragraph by looking for newline + bullet-glyph
+# sequences inside the paragraph text. Run 19 evidence: Rishav's PDF gave
+# pdf2docx output where 4-6 separate bullets ended up concatenated as one
+# 500-700 char "bullet" with internal `\n• ...\n• ...` structure.
+_INTERNAL_BULLET_SPLIT_RX = re.compile(
+    r"\n\s*[•·▪○■⁃∙▸▶\-\*]\s+"
+)
+
+
+def _split_mega_bullet(text: str) -> List[str]:
+    """
+    Split a paragraph that pdf2docx concatenated from multiple bullets back
+    into atomic bullets.
+
+    Returns a list of bullet texts (with leading glyphs stripped). When the
+    paragraph contains no internal bullet boundaries the returned list is
+    `[text]` (single element).
+
+    Splits ONLY when:
+    - The paragraph contains at least one internal `\\n + bullet-glyph`
+      pattern (very strong signal pdf2docx fused bullets)
+    OR
+    - The paragraph is >250 chars AND contains 2+ internal newlines that
+      look like wrap boundaries (fallback heuristic for when pdf2docx
+      stripped glyphs but kept paragraph breaks)
+    """
+    if not text:
+        return []
+    stripped = text.strip()
+    if not stripped:
+        return []
+
+    # Primary split: internal bullet glyphs after newline.
+    parts = _INTERNAL_BULLET_SPLIT_RX.split(stripped)
+    if len(parts) > 1:
+        return [
+            _strip_leading_bullet_glyph(p).strip()
+            for p in parts
+            if p.strip()
+        ]
+
+    # Fallback split A: long paragraph with internal newlines where each
+    # line starts like a bullet (Capitalised verb + space + content). This
+    # catches pdf2docx outputs where bullet glyphs were stripped but the
+    # original line breaks were preserved.
+    if len(stripped) > 250 and "\n" in stripped:
+        # Common CV bullet-starter verbs (past tense). Casing matters.
+        _BULLET_VERB_RX = re.compile(
+            r"^(?:Built|Led|Drove|Delivered|Managed|Owned|Designed|"
+            r"Developed|Implemented|Created|Authored|Defined|Established|"
+            r"Architected|Engineered|Shipped|Launched|Coordinated|"
+            r"Orchestrated|Spearheaded|Partnered|Collaborated|Improved|"
+            r"Reduced|Increased|Achieved|Generated|Identified|Resolved|"
+            r"Negotiated|Facilitated|Conducted|Analysed|Analyzed|"
+            r"Streamlined|Translated|Drafted|Wrote|Researched|Initiated)\b"
+        )
+        line_split = re.split(r"\s*\n\s*", stripped)
+        if len(line_split) >= 2:
+            verb_starters = sum(
+                1 for ln in line_split if _BULLET_VERB_RX.match(ln.strip())
+            )
+            # If ≥50% of the lines start with a bullet-verb, treat as a
+            # merged-bullet paragraph and split.
+            if verb_starters >= max(2, len(line_split) // 2):
+                out: List[str] = []
+                for chunk in line_split:
+                    chunk = chunk.strip()
+                    if not chunk:
+                        continue
+                    out.append(_strip_leading_bullet_glyph(chunk))
+                if len(out) > 1:
+                    return out
+
+    # Fallback split B: long paragraph with sentence-terminated internal
+    # newlines. Catches paragraphs where each bullet was a single sentence
+    # ending with a period and pdf2docx kept them on separate lines.
+    if len(stripped) > 250 and stripped.count("\n") >= 2:
+        sentence_split = re.split(r"\.\s*\n\s*", stripped)
+        if len(sentence_split) >= 2:
+            out: List[str] = []
+            for i, chunk in enumerate(sentence_split):
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                if i < len(sentence_split) - 1 and not chunk.endswith("."):
+                    chunk = chunk + "."
+                out.append(_strip_leading_bullet_glyph(chunk))
+            if len(out) > 1:
+                return out
+
+    return [_strip_leading_bullet_glyph(stripped)]
+
+
 def _is_section_header(text: str) -> Optional[str]:
     """
     Return the canonical section type ("summary"/"experience"/...) if `text`
@@ -385,6 +479,31 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
             })
             continue
         if _is_bullet_paragraph(p):
+            # Run 19 audit fix: detect and split pdf2docx-merged megabullets.
+            # When pdf2docx concatenates 4-6 separate bullets into a single
+            # paragraph (typical for PDF→DOCX round-trips), we need to split
+            # them back into atomic bullets so the tailor can rewrite each one
+            # without the length guard rejecting (rewrite would be way shorter
+            # than the merged original).
+            sub_bullets = _split_mega_bullet(text)
+            if len(sub_bullets) > 1:
+                print(
+                    f"   ✂️  cv_docx_parser: split megabullet at anchor={idx} "
+                    f"into {len(sub_bullets)} atomic bullets "
+                    f"(orig_len={len(text)})"
+                )
+                for sub_idx, sub_text in enumerate(sub_bullets):
+                    if not sub_text:
+                        continue
+                    classified.append({
+                        "idx":     idx,
+                        "sub_idx": sub_idx,
+                        "sub_count": len(sub_bullets),
+                        "text":    sub_text,
+                        "kind":    "bullet",
+                        "section": None,
+                    })
+                continue
             classified.append({
                 "idx": idx,
                 "text": _strip_leading_bullet_glyph(text),
@@ -483,19 +602,22 @@ def build_outline_from_docx(docx_path: str) -> Dict[str, Any]:
                         "bullets": [],
                         "_anchor": idx,
                     }
-                current_role["bullets"].append({
+                bullet_entry = {
                     "text":          text,
                     "length":        len(text),
                     "_anchor":       idx,
                     # `_continuation_anchors` lists the paragraph indices
                     # whose text was merged into this bullet by the
-                    # wrap-line continuation logic below. The editor
-                    # uses this to blank those continuations whenever
-                    # the bullet is rewritten (otherwise the new text
-                    # would be followed by the ORIGINAL wrap-text on
-                    # the next render).
+                    # wrap-line continuation logic below.
                     "_continuation_anchors": [],
-                })
+                }
+                # Run 19 audit fix: carry megabullet sub-index forward so
+                # the editor can group multi-bullet rewrites back into a
+                # single paragraph at apply time.
+                if "sub_idx" in entry:
+                    bullet_entry["_megabullet_subidx"] = entry["sub_idx"]
+                    bullet_entry["_megabullet_count"] = entry.get("sub_count", 1)
+                current_role["bullets"].append(bullet_entry)
                 in_bullet_streak = True
                 continue
 
