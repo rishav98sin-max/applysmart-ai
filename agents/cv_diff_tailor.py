@@ -2242,6 +2242,27 @@ def _strip_banned_suffix_from_bullet(
     return stripped
 
 
+# Well-known acronyms whose spelled-out form is a faithful 1:1 equivalent.
+# A reframe that writes "product requirements document" instead of "PRD"
+# has NOT dropped the concept — only the abbreviation — so the
+# concrete-term guard must accept the expansion. Kept deliberately small
+# and unambiguous: only acronyms a recruiter reads as identical to their
+# expansion. Named frameworks where the acronym IS the recognised form
+# (RICE, MoSCoW) are intentionally NOT here — dropping those loses the
+# specific method, so they stay strict.
+_CONCRETE_TERM_SYNONYMS: Dict[str, List[str]] = {
+    "prd":  ["product requirements document", "product requirement document",
+             "requirements document", "requirements documentation"],
+    "mvp":  ["minimum viable product"],
+    "jtbd": ["jobs to be done", "jobs-to-be-done", "job to be done"],
+    "gtm":  ["go to market", "go-to-market"],
+    "sla":  ["service level agreement", "service-level agreement"],
+    "okr":  ["objectives and key results", "objective and key result"],
+    "roi":  ["return on investment"],
+    "kpi":  ["key performance indicator", "key performance indicators"],
+}
+
+
 def _check_content_preserved(original: str, rewrite: str) -> Optional[str]:
     """
     Preservation-first guard: a tailored bullet must RE-FRAME the original,
@@ -2295,6 +2316,12 @@ def _check_content_preserved(original: str, rewrite: str) -> Optional[str]:
         seen.add(tok)
         # stem-tolerant: accept singular/plural variants
         if tok in new_l or tok.rstrip("s") in new_l:
+            continue
+        # Synonym/expansion tolerance for well-known acronyms: a reframe
+        # that spells "PRD" out as "product requirements document" has
+        # kept the concept — only the abbreviation changed. Accept it.
+        syns = _CONCRETE_TERM_SYNONYMS.get(tok.rstrip("s"))
+        if syns and any(s in new_l for s in syns):
             continue
         return tok
     return None
