@@ -249,46 +249,46 @@ brick the pipeline.
 
 ## Tailoring quality — polish backlog (post v1.4.2)
 
-Batches 10-13 took bullet rewrites from cosmetic reorders → grammatical
-→ JD-vocabulary-integrated (the "reframe" — each bullet weaves in a
-CV-proven JD term). The mechanism works; these three items are the
-remaining gap between "meaningful" and "as good as a careful hand-tailor".
+Batches 10-15 took bullet rewrites from cosmetic reorders → grammatical
+→ JD-vocabulary-integrated → preservation-first. Items 13-16 below all
+**shipped in v1.4.3**.
 
-### 13. Summary credential-drop retry
+### 13. Summary credential-drop retry — ✅ DONE (v1.4.3)
 
-**Problem:** the summary rewrite intermittently drops a credential
-(observed: the "4 years" YoE token). The guard correctly reverts the
-whole summary to the original — so the summary ships un-tailored.
+A one-shot retry now restores a dropped credential before falling back
+to reverting the whole summary.
 
-**Proposed:** a one-shot retry mirroring the existing length retries —
-when `_check_credentials_preserved` flags a drop, re-prompt with
-"your summary dropped '<token>'; restore it verbatim, keep everything
-else" before falling back to revert. Small, same pattern as the
-bullet/length retries.
+### 14. Keyword-quality on the reframe — ✅ DONE (v1.4.3)
 
-### 14. Keyword-quality on the reframe
+A deterministic post-check blanks long role-phrase `jd_keyword` values
+("0-to-1 product ownership") so they cannot bolt onto the verb
+redundantly; the strategist is also biased toward tight-noun keywords.
 
-**Problem:** the strategist sometimes picks a `jd_keyword` that does not
-weave cleanly — a long role-phrase ("0-to-1 product ownership") bolts
-onto the verb redundantly ("Owned 0-to-1 product ownership"). Tight
-nouns ("agentic", "context management") integrate fine; multi-word
-role-phrases do not.
+### 15. Tailor output variance — ✅ DONE (v1.4.3, partial)
 
-**Proposed:** bias the strategist hard toward single tight-noun
-keywords, and/or a deterministic post-check that blanks a `jd_keyword`
-which is a long role-phrase, leaving the bullet a clean verb-led
-rewrite without the awkward bolt-on.
+Tailor temperature lowered 0.2 → 0.1. Run-twice-keep-better and a
+stronger tailor model remain available if variance is still material
+after real-world runs — measure first.
 
-### 15. Tailor output variance
+### 16. Matcher false-misses — ✅ DONE (v1.4.3)
 
-**Problem:** same CV + same JD, run twice, yields 3 vs 5 shipped
-bullets. DeepSeek is not deterministic even at temperature 0.2; output
-quality wobbles run to run.
+The matcher flagged skills "missing" that the CV had under a word-order
+variant ("Automation workflows" vs CV "workflow automation").
+`_drop_false_misses` now recovers them deterministically; the matcher
+prompt also infers domain from named clients/employers.
 
-**Proposed (options, not all):** lower the tailor temperature further;
-or run the tailor twice and keep the diff with more clean rewrites; or
-route the tailor call to a stronger model. Each has a cost trade-off —
-measure before committing.
+### 17. Bloated-bullet handling — OPEN
+
+A very long run-on bullet (ApplySmart i=0, ~400 chars) the LLM wants to
+tighten keeps getting rejected by the same-length floor. Needs a
+strategist signal that a bloated bullet may be tightened below the
+floor. Low priority — affects 1 bullet on 1 CV.
+
+### 18. Optional "extra context" input — OPEN
+
+A UI box where the user can paste current project facts (live URLs,
+updated counts) so the tailor can match a careful hand-tailor on facts
+not in the base CV. See discussion in PM notes.
 
 ---
 

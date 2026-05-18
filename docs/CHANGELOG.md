@@ -9,6 +9,33 @@
 
 ---
 
+## v1.4.3 — Preservation-first tailoring + matcher fixes (18 May 2026)
+
+**Bet under test:** Will a *preservation-first* discipline — a rewrite RE-FRAMES but never REMOVES — stop the pipeline from shipping bullets that are *worse* than the original?
+
+### Shipped
+
+**Tailoring quality (batches 11–15):**
+
+- **Verb-led rewrites** — the strategist told the tailor to literally OPEN a bullet with a noun fact, forcing broken/passive grammar ("Supervisor + workers pattern… scoped the architecture"). Now: open with a strong verb, surface the fact early. A `_rewrite_is_safe` stranded-verb guard rejects the salad.
+- **Reframe** — each bullet action carries a `jd_keyword`: the CV-proven JD term that bullet should weave in. Turns cosmetic reorders into JD-aligned rewrites ("Designed an **agentic** supervisor…").
+- **Preservation guard** (`_check_content_preserved`) — the keystone. A rewrite must keep every concrete fact of the original: acronyms (PRD, MVP, RICE), proper nouns, named methods (sprint-over-sprint). Drop one → revert. Run 22 showed the reframe trading the candidate's specifics for keywords ("Prioritised MVP feature set" → "Made prioritisation decisions"); this stops it.
+- **Summary guards** — absorbed-bullet check widened to all sentences; project-drop check (a tailored summary must keep the named projects the original had); a one-shot credential-restore retry before reverting.
+- **Retries softened** — keeping a strong bullet unchanged is now an explicit *correct* answer, so the identical-rewrite retry no longer manufactures degradations.
+- **`jd_keyword` quality guard** — blanks long role-phrase keywords that bolt onto a verb redundantly ("Owned 0-to-1 product ownership").
+- **Variance** — tailor temperature 0.2 → 0.1 (constrained re-framing, not open writing).
+
+**Matcher semantic matching:**
+
+- `_drop_false_misses` — a "missing skill" the matcher LLM flagged is dropped when the CV actually contains its words within a tight window (Run 22: "Automation workflows" flagged missing while the CV lists "workflow automation"). Recovered skills move to `matched_skills`.
+- Matcher prompt: word-order/variant equivalence + infer domain from named clients/employers (a CV naming a healthcare client demonstrates healthcare-domain experience).
+
+### Why
+
+Run 21/22 traces showed every iteration fixed one defect and surfaced another — because every guard checked "did you ADD something bad", none checked "did you DROP something good". The pipeline was generative-first; the discipline that made hand-tailoring safe — preserve every fact, re-frame only — was never coded. v1.4.3 installs it: tailoring is now *safe* (nothing ships worse than the original) and *meaningful* (JD vocabulary woven in, content intact).
+
+---
+
 ## v1.4.2 — Tailoring Yield + In-Place Render Hardening (18 May 2026)
 
 **Bet under test:** Will removing the strategist's self-imposed volume cap and fixing the broken `lead_with` instruction raise the number of genuinely-tailored bullets per CV — instead of the pipeline shipping 2–3 cosmetic rewrites and reverting the rest?

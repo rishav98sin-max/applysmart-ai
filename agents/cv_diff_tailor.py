@@ -784,8 +784,12 @@ def _call_llm(prompt: str, max_tokens: int = 3000) -> str:
     track_llm_call(agent="cv_diff_tailor")
 
     # 1) DeepSeek (only if DEEPSEEK_API_KEY is configured)
+    # Item 15 (variance): temperature lowered 0.2 → 0.1. Tailoring is a
+    # constrained re-framing task, not open creative writing — lower temp
+    # cuts run-to-run wobble (Run 21/22 swung 3-9 shipped bullets on the
+    # same input) without hurting rewrite quality.
     deepseek_result = chat_deepseek(
-        prompt, max_tokens=max_tokens, temperature=0.2, json_mode=True
+        prompt, max_tokens=max_tokens, temperature=0.1, json_mode=True
     )
     if deepseek_result:
         parsed = _extract_json(deepseek_result)
@@ -807,7 +811,7 @@ def _call_llm(prompt: str, max_tokens: int = 3000) -> str:
     # the first track_llm_call fired, undercounting budget by 1 per
     # fallback. BudgetExceeded then triggered later than actual cost.
     track_llm_call(agent="cv_diff_tailor")
-    return chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
+    return chat_quality(prompt, max_tokens=max_tokens, temperature=0.1)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3282,16 +3286,46 @@ def tailor_cv_diff(
                     flat = ", ".join(
                         f"{k}={v}" for k, v in missing_creds.items()
                     )
+                    # Item 13: one-shot retry to RESTORE the dropped
+                    # credential before discarding the whole tailored
+                    # summary. A revert loses all the JD re-aiming for the
+                    # sake of one missing token — try to fix the token.
                     print(
-                        f"   ⚠️  summary dropped credential tokens ({flat}) — "
-                        f"reverting to original summary to preserve "
-                        f"recruiter-scan signals."
+                        f"   ↻  summary dropped credential(s) ({flat}) — "
+                        f"retrying once to restore them."
                     )
-                    diff["_debug"]["summary_reverts"].append({
-                        "reason":  "credentials_dropped",
-                        "missing": missing_creds,
-                    })
-                    diff["summary"] = orig_summary
+                    _cred_fix = (
+                        f"YOUR PREVIOUS SUMMARY DROPPED a credential the "
+                        f"recruiter scans for: {flat}. Here is your "
+                        f"summary:\n\n\"{new_sum}\"\n\nReturn the summary "
+                        f"again with the dropped credential(s) restored "
+                        f"VERBATIM as written in the original CV. Every "
+                        f"degree grade, years-of-experience figure, "
+                        f"employer and university name from the original "
+                        f"summary MUST be present. Change nothing else and "
+                        f"do not alter the length materially."
+                    )
+                    sum_cf = (_sanitise_diff(
+                        _extract_json(_call_llm(_render_prompt(extra=_cred_fix))),
+                        outline, do_not_inject=strategy_dni, cv_text=cv_text,
+                    ).get("summary") or "").strip()
+                    if (sum_cf
+                            and not _check_credentials_preserved(orig_summary, sum_cf)
+                            and not _summary_absorbed_bullet(sum_cf, outline)):
+                        print("   ✓  credential retry restored the dropped credential(s).")
+                        diff["summary"] = sum_cf
+                        new_sum = sum_cf
+                    else:
+                        print(
+                            "   ↺  credential retry did not restore them — "
+                            "reverting to original summary."
+                        )
+                        diff["_debug"]["summary_reverts"].append({
+                            "reason":  "credentials_dropped",
+                            "missing": missing_creds,
+                        })
+                        diff["summary"] = orig_summary
+                        new_sum = orig_summary
                 else:
                     # P1-2 (May 2026): Wrong-language detection. If the LLM
                     # produces a summary in a non-English language (e.g., Chinese,

@@ -1019,6 +1019,36 @@ def build_tailor_strategy(
             f"pick the buried fact itself for those."
         )
 
+    # Item 14: blank jd_keyword values that are long role-phrases. They
+    # bolt onto a verb redundantly ("Owned 0-to-1 product ownership").
+    # Tight nouns ("agentic", "context management") weave cleanly; long
+    # role-phrases do not — better to drop the forced keyword.
+    _ROLE_NOUNS = {
+        "ownership", "management", "experience", "practice", "skills",
+        "literacy", "expertise", "background", "mindset",
+    }
+    _kw_blanked = 0
+    for _actions in (normalised.get("bullet_strategy") or {}).values():
+        if not isinstance(_actions, list):
+            continue
+        for _a in _actions:
+            if not isinstance(_a, dict):
+                continue
+            _kw = (_a.get("jd_keyword") or "").strip()
+            if not _kw:
+                continue
+            _w = _kw.split()
+            if len(_w) >= 4 or (
+                len(_w) >= 3 and _w[-1].lower().rstrip(".,") in _ROLE_NOUNS
+            ):
+                _a["jd_keyword"] = ""
+                _kw_blanked += 1
+    if _kw_blanked:
+        print(
+            f"   🧹 strategist: blanked {_kw_blanked} over-long jd_keyword(s) "
+            f"that would bolt onto the verb awkwardly."
+        )
+
     angle = (normalised.get("narrative_angle") or "").strip()
     bullet_count = sum(
         len(v or []) for v in (normalised.get("bullet_strategy") or {}).values()

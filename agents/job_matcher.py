@@ -215,6 +215,51 @@ def _call_with_retry(prompt: str, max_tokens: int = 400) -> str:
     return chat_quality(prompt, max_tokens=max_tokens, temperature=0.2)
 
 
+_MM_STOP = {
+    "and", "or", "the", "a", "an", "of", "in", "with", "for", "to", "on",
+    "experience", "experiences", "skills", "skill", "knowledge", "strong",
+    "proven", "using", "etc", "ability", "expertise", "background",
+    # geo qualifiers — a skill/domain is not geo-bound for matching
+    "us", "usa", "uk", "eu", "global", "regional", "international",
+}
+
+
+def _mm_content_words(text):
+    """Lowercased, stem-tolerant content words (stopwords/geo-qualifiers dropped)."""
+    raw = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower()).split()
+    return [w.rstrip("s") for w in raw if w not in _MM_STOP and len(w) > 1]
+
+
+def _drop_false_misses(missing, cv_text):
+    """
+    Remove 'missing' skills whose words actually appear TOGETHER in the CV
+    — catches word-order variants the matcher LLM's literal match missed
+    (JD "Automation workflows" vs CV "workflow automation"). A skill is a
+    false miss only when ALL its content words occur within a tight window
+    of the CV (not merely scattered across it).
+
+    Returns (kept_missing, recovered) — recovered skills can be surfaced
+    as matched instead.
+    """
+    if not missing or not cv_text:
+        return (missing or [], [])
+    cv_words = _mm_content_words(cv_text)
+    kept, recovered = [], []
+    for skill in missing:
+        sw = _mm_content_words(skill)
+        if not sw:
+            kept.append(skill)
+            continue
+        sw_set = set(sw)
+        window = len(sw) + 3
+        hit = any(
+            sw_set <= set(cv_words[i:i + window])
+            for i in range(max(1, len(cv_words)))
+        )
+        (recovered if hit else kept).append(skill)
+    return (kept, recovered)
+
+
 def match_cv_to_job(
     cv_text:         str,
     job_description: str,
@@ -369,12 +414,14 @@ COMPANY: {company}
 {cv_block}
 
 IMPORTANT — Skill classification rules:
-- matched_skills: Skills that appear in BOTH the JD and the CV, OR where the CV has a broader/related term
-- missing_skills: Skills that are EXPLICITLY required by the JD but NOT found in the CV or semantically covered
-- Semantic matching: If CV has "AI", it covers "large language models", "generative AI tools", "machine learning", "prompt design", "agentic AI systems", "multi-agent architecture", "agent-based AI systems orchestration", "automation workflows", "APIs", "SaaS tools", "third-party machine learning products"
+- matched_skills: Skills in BOTH the JD and the CV, OR where the CV has a broader / related / equivalent term.
+- missing_skills: ONLY skills EXPLICITLY required by the JD and genuinely absent from the CV — with NO equivalent anywhere, including the Skills section.
+- WORD-ORDER & VARIANTS ARE THE SAME SKILL: "Automation workflows" = "workflow automation"; "data-driven decision making" = "data-driven decisions"; reordered phrases, plural/singular, and close synonyms are matches, NOT misses. Re-read the CV's Skills section in full before marking anything missing.
+- INFER DOMAIN FROM NAMED CLIENTS / EMPLOYERS: if the CV names a client or employer, the candidate HAS experience in that company's sector and geography. A CV naming a healthcare company as a client demonstrates healthcare-domain experience; naming a US company demonstrates US-market exposure. Do NOT mark a domain or sector "missing" when a named client/employer already establishes it.
+- Semantic matching: If CV has "AI", it covers "large language models", "generative AI tools", "machine learning", "prompt design", "agentic AI systems", "multi-agent architecture", "automation workflows", "APIs", "SaaS tools"
 - Semantic matching: If CV has "product management", it covers "product delivery", "product vision", "roadmap", "stakeholder alignment"
 - Do NOT mark experience requirements (e.g., "5+ years", "team leadership") as "missing skills" — these are not skills
-- Only mark skills as "missing" when they are clearly required by the JD and completely absent from the CV with no semantic equivalent
+- When in doubt, do NOT mark a skill missing — a false "missing" chip misinforms the user. Only flag a skill genuinely and completely absent.
 
 Respond ONLY with a JSON object (no markdown, no extra text):
 {{
@@ -418,6 +465,21 @@ Respond ONLY with a JSON object (no markdown, no extra text):
             result["reasoning"] = f"{note} {existing}".strip() if existing else note
             print(
                 f"   ⚖️  level-gap: {orig_score}→{adjusted}/100 ({note})"
+            )
+
+    # Drop false "missing" skills — ones the CV actually contains under a
+    # word-order variant the matcher LLM's literal match missed (Run 22:
+    # "Automation workflows" flagged missing while the CV lists "workflow
+    # automation"). Recovered skills move to matched_skills.
+    _miss = result.get("missing_skills") or []
+    if _miss:
+        _kept, _recovered = _drop_false_misses(_miss, cv_text)
+        if _recovered:
+            result["missing_skills"] = _kept
+            result["matched_skills"] = (result.get("matched_skills") or []) + _recovered
+            print(
+                f"   🔁 matcher: recovered {len(_recovered)} false-missing "
+                f"skill(s) the CV already has: {_recovered}"
             )
 
     print(f"   ✅ Match score: {result['match_score']}/100 — {job_title} at {company}")
