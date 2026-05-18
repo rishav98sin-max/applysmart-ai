@@ -151,7 +151,7 @@ YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
 
    For every bullet you DO list as "rewrite_verb_led", you do NOT write
    the new sentence — the tailor does that, and it can see the full
-   bullet. Your job is to POINT, surgically, at ONE buried fact.
+   bullet. Your job is to give the tailor TWO things:
 
      • "lead_with" — name ONE specific element (3-8 words) the bullet
        ALREADY contains but does NOT currently open with: a single
@@ -159,6 +159,28 @@ YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
        outcome sitting in the bullet's MIDDLE or END. It is NOT a
        clause, NOT half the bullet, and NEVER the words the bullet
        already starts with.
+
+     • "jd_keyword" — THE REFRAME. Name the ONE CV-proven JD term this
+       specific bullet earns the right to use, so the tailor weaves it
+       in. Pull it from `safe_relabels` (a JD word for something the CV
+       shows under a different word) OR a JD word the bullet genuinely
+       proves. Examples: a bullet describing "a second LLM that grades
+       output for fabrication" earns the JD term "LLM-as-judge eval";
+       a bullet describing "preview-before-send" earns "human-in-the-
+       loop"; a bullet describing a supervisor/router earns "agentic".
+       This is what makes the rewrite MEANINGFUL rather than a reorder.
+       Set jd_keyword to "" only if the bullet honestly proves no JD
+       term — but most hot-zone bullets prove at least one.
+       NEVER put a JD term the CV cannot back up in jd_keyword.
+       PICK CLEAN KEYWORDS. The jd_keyword must (a) be OBVIOUSLY proven
+       by THIS bullet — not a stretch from a neighbouring bullet — and
+       (b) weave in naturally. Prefer a tight noun the sentence can
+       absorb ("agentic", "context management", "guardrails") over a
+       full role-phrase that reads redundantly ("0-to-1 product
+       ownership" bolted onto "Owned…" gives "Owned 0-to-1 product
+       ownership" — clumsy). If the only candidate is a stretch or
+       would read awkwardly, set jd_keyword to "" — a forced keyword is
+       worse than none.
 
    TEST IT before you write it: read the bullet's first 5-6 words, then
    read your lead_with. If your lead_with repeats or paraphrases those
@@ -287,7 +309,8 @@ OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
       {{
         "i": 0,
         "action": "rewrite_verb_led",
-        "lead_with": "<ONE specific buried element, 3-8 words — a metric / platform / project / outcome the bullet contains but does NOT open with>"
+        "lead_with": "<ONE specific buried element, 3-8 words — a metric / platform / project / outcome the bullet contains but does NOT open with>",
+        "jd_keyword": "<the ONE CV-proven JD term this bullet should weave in — a relabel or a JD word the bullet genuinely proves; \"\" if none honestly fits>"
       }}
     ]
   }},
@@ -687,7 +710,7 @@ def _estimate_strategist_token_budget(outline: Dict[str, Any]) -> int:
     # Estimate output JSON size in chars
     fixed_overhead = 1500
     per_role_overhead = 120
-    per_bullet_entry = 220
+    per_bullet_entry = 290  # i + action + lead_with + jd_keyword + JSON syntax
     estimated_chars = (
         fixed_overhead
         + n_roles * per_role_overhead
@@ -1098,6 +1121,7 @@ def render_strategy_for_tailor(strategy: Dict[str, Any]) -> str:
                 idx     = a.get("i")
                 action  = a.get("action") or "rewrite_verb_led"
                 lead    = (a.get("lead_with") or "").strip()
+                kw      = (a.get("jd_keyword") or "").strip()
                 rat     = a.get("rationale") or ""
                 if action == "rewrite_verb_led":
                     if lead:
@@ -1117,6 +1141,18 @@ def render_strategy_for_tailor(strategy: Dict[str, Any]) -> str:
                             f"one grammatical sentence: open with a strong "
                             f"past-tense action verb and surface its most "
                             f"JD-relevant existing fact in the first clause."
+                        )
+                    if kw:
+                        lines.append(
+                            f"           ↳ REFRAME — this bullet MUST weave "
+                            f"in the CV-proven JD term \"{kw}\": name the "
+                            f"thing the bullet describes with the JD's word "
+                            f"(it is pre-cleared, the mechanism is real). "
+                            f"This is what makes the rewrite meaningful — a "
+                            f"rewrite that does not surface \"{kw}\" is just "
+                            f"a reorder. You may also use it as a short "
+                            f"\"{kw}: …\" themed label if the bullet is in a "
+                            f"hot-zone project."
                         )
                 elif action == "promote":
                     lines.append(f"      [{idx}] PROMOTE (keep text, lift earlier). {rat}")

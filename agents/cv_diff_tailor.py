@@ -236,8 +236,31 @@ YOUR THINKING PROCESS (critical — do this BEFORE writing JSON):
              pattern… scoped the architecture, so…"). Word salad. The
              guard discards it. NEVER make a bare noun phrase the first
              word — open with a verb.
-         (2) NEAR-COPY — coming back word-for-word, or with only a comma
-             or article moved. That is not a rewrite either.
+         (2) NEAR-COPY — coming back with only the verb swapped
+             ("Built…"→"Implemented…") or a clause reordered. That is a
+             COSMETIC non-rewrite, not tailoring. A real rewrite re-aims
+             the bullet's LANGUAGE at this JD.
+       ↳ REFRAME (THE KEY MOVE): if the bullet's action carries a
+         "REFRAME — weave in the JD term '<X>'" line, your rewrite MUST
+         surface that exact JD term — name what the bullet describes
+         using the JD's word. The strategist verified '<X>' is CV-proven
+         (the mechanism is real; only the label changes), so it is NOT
+         fabrication and NOT on the FORBIDDEN list. A rewrite of a
+         REFRAME bullet that does not contain its JD term is a FAILED
+         rewrite — it is the cosmetic reorder we are trying to kill.
+         You may also use '<X>' as a short "<X>: …" label opening the
+         bullet. Example: a bullet about "a second LLM that grades
+         output for fabrication", REFRAME term "LLM-as-judge eval" →
+         "Built an LLM-as-judge eval that grades cover letters for
+         fabrication and retries low scorers…".
+         INTEGRATE IT NATURALLY — rephrase the sentence so the term
+         reads as clean English a person would write. Do NOT bolt it on
+         ("Owned 0-to-1 product ownership" is redundant — write "Owned
+         the product 0-to-1"). Do NOT jam it mid-sentence after a colon
+         ("…shipped VoC Insight Hub with eval practice: a live web app"
+         is clumsy). If the term cannot be woven in cleanly at the
+         bullet's fixed length, surface the bullet's own fact well and
+         skip the term — a clean sentence beats a jammed keyword.
        Every rewrite is ONE clean grammatical sentence, verb-first.
      • action=promote → keep the original text (text=null) but place
        this bullet earlier in the role's array.
