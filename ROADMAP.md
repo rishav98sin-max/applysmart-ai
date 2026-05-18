@@ -292,6 +292,40 @@ not in the base CV. See discussion in PM notes.
 
 ---
 
+## Reliability backlog
+
+### R1. Quota counter survives redeploy — OPEN
+
+The deployment-wide "runs left today" counter lives in
+`outputs/.quota_cache.json` on Streamlit Cloud's **ephemeral**
+filesystem. It survives normal process restarts but a redeploy (every
+git push) or a cold wake from inactivity sleep wipes it — the counter
+then jumps back to full and over-reports available Groq quota until the
+header cross-check resyncs (which needs all 8 keys touched first).
+
+**Proposed:** move the counter off the ephemeral file — a tiny external
+KV store (e.g. Upstash Redis free tier), or lean fully on Groq's
+`x-ratelimit-remaining-tokens` response headers as the source of truth.
+
+**Why not P0:** not launch-blocking for a prototype; the dial is a
+soft guide, not a hard gate. Matters once multi-user traffic makes the
+reset visibly wrong mid-day.
+
+### R2. Job-board scraper resilience — OPEN
+
+`python-jobspy` API drift (the `hours_old` kwarg removal) took down
+4 of 5 boards in Run 23. Batch 16 added a retry-without-kwarg guard,
+but the underlying fragility remains: an unpinned scraper dependency
+can break the pipeline silently.
+
+**Proposed:** pin `python-jobspy` to a known-good version, or abstract
+the board layer behind an interface so a single flaky scraper degrades
+gracefully instead of erroring. Apify (paid) is a heavier alternative
+if board reliability becomes a recurring pain — not warranted for a
+one-line kwarg drift.
+
+---
+
 ## Things deliberately **not** on the roadmap
 
 Worth noting because an interviewer may ask:

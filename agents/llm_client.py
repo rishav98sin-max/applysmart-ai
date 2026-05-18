@@ -526,36 +526,32 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
 
 # ── Public quota API (consumed by the sidebar UI) ───────────────────────────
 
-# Rough average of a full agent run (scrape + match + tailor + review +
-# cover-letter + reviewer) with default settings and 3 jobs. Empirical,
-# used only to translate remaining-tokens → "estimated runs left" in the
-# sidebar UI.
+# Average GROQ-ONLY token footprint of a full agent run. This divides the
+# Groq daily budget into "estimated runs left" for the sidebar UI.
 #
-# May 2026 recalibration: bumped from 45,000 to 110,000 to reflect the
-# observed end-to-end Groq+Gemini footprint of a full 3-job run from Run
-# 11 telemetry. The previous 45K figure only counted a subset of Groq
-# stages and ignored Gemini traffic which also consumes the aggregated
-# "runs left" dial the user actually watches. Empirical breakdown of a
-# clean 3-job run (no unexpected retries):
+# CRITICAL: this must be a Groq-only number. `remaining` in
+# get_quota_summary() depletes by `groq_used` alone — Groq's free tier is
+# the only hard daily ceiling. DeepSeek does all the writing (strategist,
+# tailor, cover letter) but is paid and uncapped, so it must NOT be folded
+# into this figure. The earlier 110,000 value wrongly included the DeepSeek
+# footprint, making the dial divide the Groq budget by a number ~5× too
+# large (e.g. 800K // 110K = 7 instead of the real ~36).
 #
-#   strategist (DeepSeek→Groq fallback) : 3 × ~4,500 = 13,500
-#   cv_diff_tailor                      : 3 × ~8,000 = 24,000
-#   cv_reviewer (deterministic gates)   : 3 × ~3,300 =  9,900
-#   cover_letter_generator              : 3 × ~3,500 = 10,500
-#   cover_reviewer (may be skipped)     : 3 × ~3,800 = 11,400
-#   match scorer                        : 3 × ~2,950 =  8,850
-#   supervisor + planner + scrape_rerank: assorted   = 13,000
-#   + reviewer retries / stale-deploy retries        = 15–20K slack
-#                                                      ───────
-#                                                     ~110,000 tokens/run
+# May 2026 measurement — from the Run 22 and Run 23 Langfuse exports, the
+# Groq (llama-3.3-70b) footprint of a full 3-job run:
 #
-# At 110K tokens/run estimate against the default 3-key × 100K daily
-# Groq pool (300K), the UI shows ~2–3 runs/day which matches reality
-# and stops the misleading "~6 runs available" claim.
+#   matcher    : 3 × ~2,900 = ~8,700
+#   supervisor : 4 × ~0,830 = ~3,300
+#   planner    : 1 × ~1,900 = ~1,900
+#   reviewer   : 2 × ~3,700 = ~7,400
+#                              ───────
+#   Run 22 total: 20,730   Run 23 total: 21,539
+#
+# 22,000 ≈ measured mean + modest headroom for reviewer retries.
 #
 # Override via env var if your deployment hits different averages
 # (different number of jobs per run, different reviewer retry rates).
-_TOKENS_PER_RUN_AVG = int(os.getenv("APPLYSMART_TOKENS_PER_RUN", "110000"))
+_TOKENS_PER_RUN_AVG = int(os.getenv("APPLYSMART_TOKENS_PER_RUN", "22000"))
 
 
 def get_quota_summary() -> dict:
