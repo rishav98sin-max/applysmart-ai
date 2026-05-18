@@ -324,6 +324,30 @@ gracefully instead of erroring. Apify (paid) is a heavier alternative
 if board reliability becomes a recurring pain — not warranted for a
 one-line kwarg drift.
 
+### R3. Diff-tailor retry re-sends the whole prompt — OPEN
+
+`cv_diff_tailor` retries 2–3× per job (identical-rewrite retry,
+length-fix retry, restructure-or-omit retry). Each retry re-sends the
+*entire* ~15K-token prompt — full CV outline + compressed JD +
+strategist plan + forbidden-terms list — even though only a handful of
+bullets were rejected.
+
+Measured from the Run 22 / 23 Langfuse exports: DeepSeek burns ~61K
+tokens per application, of which `cv_diff_tailor` is ~46K (~76%). A
+clean single-pass tailor would be ~30K/application — so the retry
+re-send is roughly 2× overhead. Cost today is trivial (~1–2¢ per
+application), so this is an efficiency item, not a cost emergency.
+
+**Proposed:** on a retry, send only the rejected bullets + their
+drafts + the fit-to-slot directive — not the whole CV+JD prompt again.
+Estimated saving ~20–30K tokens/application. DeepSeek context caching
+already softens the repeat-input cost somewhat; a delta retry would
+make it explicit and provider-independent.
+
+**Why not P0:** at ~1–2¢/application the spend is immaterial for a
+prototype. Worth doing if volume grows or if the writing LLM moves to a
+pricier tier.
+
 ---
 
 ## Things deliberately **not** on the roadmap
