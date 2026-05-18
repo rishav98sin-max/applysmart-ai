@@ -247,6 +247,51 @@ brick the pipeline.
 
 ---
 
+## Tailoring quality — polish backlog (post v1.4.2)
+
+Batches 10-13 took bullet rewrites from cosmetic reorders → grammatical
+→ JD-vocabulary-integrated (the "reframe" — each bullet weaves in a
+CV-proven JD term). The mechanism works; these three items are the
+remaining gap between "meaningful" and "as good as a careful hand-tailor".
+
+### 13. Summary credential-drop retry
+
+**Problem:** the summary rewrite intermittently drops a credential
+(observed: the "4 years" YoE token). The guard correctly reverts the
+whole summary to the original — so the summary ships un-tailored.
+
+**Proposed:** a one-shot retry mirroring the existing length retries —
+when `_check_credentials_preserved` flags a drop, re-prompt with
+"your summary dropped '<token>'; restore it verbatim, keep everything
+else" before falling back to revert. Small, same pattern as the
+bullet/length retries.
+
+### 14. Keyword-quality on the reframe
+
+**Problem:** the strategist sometimes picks a `jd_keyword` that does not
+weave cleanly — a long role-phrase ("0-to-1 product ownership") bolts
+onto the verb redundantly ("Owned 0-to-1 product ownership"). Tight
+nouns ("agentic", "context management") integrate fine; multi-word
+role-phrases do not.
+
+**Proposed:** bias the strategist hard toward single tight-noun
+keywords, and/or a deterministic post-check that blanks a `jd_keyword`
+which is a long role-phrase, leaving the bullet a clean verb-led
+rewrite without the awkward bolt-on.
+
+### 15. Tailor output variance
+
+**Problem:** same CV + same JD, run twice, yields 3 vs 5 shipped
+bullets. DeepSeek is not deterministic even at temperature 0.2; output
+quality wobbles run to run.
+
+**Proposed (options, not all):** lower the tailor temperature further;
+or run the tailor twice and keep the diff with more clean rewrites; or
+route the tailor call to a stronger model. Each has a cost trade-off —
+measure before committing.
+
+---
+
 ## Things deliberately **not** on the roadmap
 
 Worth noting because an interviewer may ask:
