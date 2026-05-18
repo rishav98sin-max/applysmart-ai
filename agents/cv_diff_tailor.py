@@ -1735,6 +1735,13 @@ _REWRITE_LEN_MIN_RATIO = 0.45  # rewrite must be at least 45% of original length
 # every accepted rewrite fitting its slot. The prompt budget shows 1.0×
 # (original length) as the target; this guard is the safety net.
 _REWRITE_LEN_MAX_RATIO = 1.08
+# Small absolute grace on the ceiling (chars). A rewrite a few characters
+# over the ratio ceiling (observed: 147 vs a 146 ceiling — a 1-char miss)
+# almost always still word-wraps into the same slot. The apply-time slot
+# check in pdf_editor does the EXACT word-wrap and reverts cleanly if a
+# rewrite genuinely overflows — so this grace only lets true near-misses
+# past the crude char-count pre-filter; it never ships an overflow.
+_REWRITE_LEN_CEIL_GRACE = 4
 
 
 # H4: thread-local revert tracker. Reset at the start of every
@@ -2179,7 +2186,11 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
     #     an extra wrapped line that overflows the slot. A small absolute
     #     ceiling (95 chars) gives very short bullets room to JD-align.
     lo = max(45, round(orig_len * 0.78))
-    hi = max(95, round(orig_len * _REWRITE_LEN_MAX_RATIO))
+    # Ceiling carries a small absolute grace — a few chars over the ratio
+    # still wraps into the same slot, and the apply-time slot check is the
+    # real overflow gate. The floor stays strict (a short rewrite leaves a
+    # visible gap, which the apply step cannot fix).
+    hi = max(95, round(orig_len * _REWRITE_LEN_MAX_RATIO)) + _REWRITE_LEN_CEIL_GRACE
     # Guard against a degenerate band on tiny originals.
     if lo > hi:
         lo = min(lo, hi)
