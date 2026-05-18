@@ -777,93 +777,101 @@ with st.sidebar:
         )
         st.session_state["_tracked_cv_upload"] = True
 
-    st.markdown('<div class="sidebar-h">You</div>', unsafe_allow_html=True)
-    candidate_name = st.text_input(
-        "Full name", placeholder="Your full name", label_visibility="collapsed",
-    )
-    user_email = st.text_input(
-        "Email", placeholder="name@example.com", label_visibility="collapsed",
-    )
-    # Register current user's PII with the LangSmith anonymizer so any
-    # traced state (CV text, JD text, prompts) has name/email masked
-    # before upload. No-op if tracing consent is disabled. Idempotent.
-    set_session_pii(name=candidate_name, email=user_email)
-
-    st.markdown('<div class="sidebar-h">Target Role</div>', unsafe_allow_html=True)
-    job_title = st.text_input(
-        "Job title", placeholder="Desired job title", label_visibility="collapsed",
-    )
-    location = st.text_input(
-        "Location", placeholder="City or country", label_visibility="collapsed",
-        key="location_input",
-    )
-
-    selected_source = st.selectbox(
-        "Primary job board",
-        options = ["LinkedIn", "Indeed", "Glassdoor", "Jobs.ie", "Builtin", "All"],
-        index   = 0,
-        help    = (
-            "Tried first. If empty, other boards are searched in order. "
-            "Pick 'All' to query every board at once."
-        ),
-    )
-
-    experience_level = st.selectbox(
-        "Your experience level",
-        options = [
-            "Fresher (0-1 yrs)",
-            "Entry / Associate (1-3 yrs)",
-            "Mid-level (3-6 yrs)",
-            "Senior (6-10 yrs)",
-            "Lead / Manager (8+ yrs)",
-            "Director / VP+ (12+ yrs)",
-        ],
-        index   = 2,  # Mid-level by default
-        help    = (
-            "Matcher uses this to filter out roles that are a bad seniority fit. "
-            "For example, a Fresher applying to a VP role gets a heavy score "
-            "penalty even if the JD keywords match."
-        ),
-    )
-
-    st.markdown('<div class="sidebar-h">Run Settings</div>', unsafe_allow_html=True)
-    num_jobs = st.slider("Jobs to scrape", 1, 20, 3)
-    if num_jobs > 3:
-        st.warning(
-            "For a trial run, we recommend **3 jobs**. Higher counts may "
-            "exhaust the daily LLM quota — if that happens, please try again "
-            "tomorrow or reduce the job count.",
-            icon=None,
-        )
-    match_threshold = st.slider(
-        "Minimum match score (JD vs CV %)",
-        10, 95, 60, step=5,
-        help="Only show jobs with at least this score. Lower = more jobs, higher = better matches."
-    )
-
-    preview_mode = st.checkbox(
-        "Preview before sending",
-        value = True,
-        help  = "When on, the agent generates the tailored CV + cover letter "
-                "PDFs but does NOT send them automatically. You'll get a "
-                "'Send now' button on each matched role.",
-    )
-
-    # ─── Primary CTA: Run button (pinned above the fold) ───────────────
-    # Moved here from below the collapsed sections so it's always visible
-    # without scrolling. Per-session run count hint sets expectations.
-    st.markdown(" ")
+    # All run inputs live inside a single st.form. A form commits the
+    # current value of every widget atomically when the submit button is
+    # pressed — which fixes the browser-autofill bug: an autofilled field
+    # (e.g. "Ireland") that the user never focused used to lose its value
+    # in the blur-vs-button-click race and pass empty/stale. The form
+    # gathers all widget values on submit, so autofilled text is captured
+    # without the user having to retype a character to "wake" the field.
     _max_runs_hint = int(secret_or_env("APPLYSMART_MAX_RUNS_PER_SESSION", "3") or "3")
     _runs_used_hint = int(st.session_state.get("_runs_used", 0))
     _runs_left_hint = max(0, _max_runs_hint - _runs_used_hint)
     _at_cap = _max_runs_hint > 0 and _runs_used_hint >= _max_runs_hint
 
-    run_button = st.button(
-        "Run agent" if not _at_cap else "Runs exhausted for this session",
-        use_container_width=True,
-        type="primary",
-        disabled=_at_cap,
-    )
+    with st.form("run_settings_form", border=False, clear_on_submit=False):
+        st.markdown('<div class="sidebar-h">You</div>', unsafe_allow_html=True)
+        candidate_name = st.text_input(
+            "Full name", placeholder="Your full name", label_visibility="collapsed",
+        )
+        user_email = st.text_input(
+            "Email", placeholder="name@example.com", label_visibility="collapsed",
+        )
+
+        st.markdown('<div class="sidebar-h">Target Role</div>', unsafe_allow_html=True)
+        job_title = st.text_input(
+            "Job title", placeholder="Desired job title", label_visibility="collapsed",
+        )
+        location = st.text_input(
+            "Location", placeholder="City or country", label_visibility="collapsed",
+            key="location_input",
+        )
+
+        selected_source = st.selectbox(
+            "Primary job board",
+            options = ["LinkedIn", "Indeed", "Glassdoor", "Jobs.ie", "Builtin", "All"],
+            index   = 0,
+            help    = (
+                "Tried first. If empty, other boards are searched in order. "
+                "Pick 'All' to query every board at once."
+            ),
+        )
+
+        experience_level = st.selectbox(
+            "Your experience level",
+            options = [
+                "Fresher (0-1 yrs)",
+                "Entry / Associate (1-3 yrs)",
+                "Mid-level (3-6 yrs)",
+                "Senior (6-10 yrs)",
+                "Lead / Manager (8+ yrs)",
+                "Director / VP+ (12+ yrs)",
+            ],
+            index   = 2,  # Mid-level by default
+            help    = (
+                "Matcher uses this to filter out roles that are a bad seniority fit. "
+                "For example, a Fresher applying to a VP role gets a heavy score "
+                "penalty even if the JD keywords match."
+            ),
+        )
+
+        st.markdown('<div class="sidebar-h">Run Settings</div>', unsafe_allow_html=True)
+        num_jobs = st.slider("Jobs to scrape", 1, 20, 3)
+        # Static advice: inside a form the slider value isn't known until
+        # submit, so a conditional (num_jobs > 3) warning would always lag
+        # one run behind. An always-visible caption sets the expectation
+        # up-front instead.
+        st.caption(
+            "Recommended: **3 jobs** for a trial run. Higher counts may "
+            "exhaust the daily LLM quota."
+        )
+        match_threshold = st.slider(
+            "Minimum match score (JD vs CV %)",
+            10, 95, 60, step=5,
+            help="Only show jobs with at least this score. Lower = more jobs, higher = better matches."
+        )
+
+        preview_mode = st.checkbox(
+            "Preview before sending",
+            value = True,
+            help  = "When on, the agent generates the tailored CV + cover letter "
+                    "PDFs but does NOT send them automatically. You'll get a "
+                    "'Send now' button on each matched role.",
+        )
+
+        # ─── Primary CTA: form submit (pinned above the fold) ──────────
+        st.markdown(" ")
+        run_button = st.form_submit_button(
+            "Run agent" if not _at_cap else "Runs exhausted for this session",
+            use_container_width=True,
+            type="primary",
+            disabled=_at_cap,
+        )
+
+    # Register current user's PII with the LangSmith anonymizer so any
+    # traced state (CV text, JD text, prompts) has name/email masked
+    # before upload. No-op if tracing consent is disabled. Idempotent.
+    set_session_pii(name=candidate_name, email=user_email)
     if _max_runs_hint > 0:
         st.caption(
             f"{_runs_used_hint}/{_max_runs_hint} runs used this session"
