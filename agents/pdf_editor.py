@@ -154,35 +154,58 @@ def _is_subset_font(basefont: str) -> bool:
 
 def _find_font_xref(doc: fitz.Document, wanted_name: str) -> Optional[int]:
     """
-    Find the xref of a full (non-subsetted) embedded TTF whose PostScript/base
-    name matches `wanted_name`. Subset fonts (e.g. 'BAAAAA+LiberationSans') are
-    skipped because their glyph tables only contain characters that already
-    appeared in the original document; inserting new characters with them
-    produces .notdef / NULL glyphs.
+    Find the xref of an embedded TTF whose PostScript/base name matches
+    `wanted_name`.
+
+    Preference order:
+      1. Exact NON-subset match (full font — safest, has all glyphs).
+      2. Substring NON-subset match.
+      3. Exact SUBSET match (e.g. 'BAAAAA+Calibri').
+      4. Substring SUBSET match.
+
+    Subset fonts (May 2026 — Shrestha CV fix): previously skipped
+    entirely because their glyph tables only cover characters that
+    appeared in the original document. But Word / Google Docs / "Print
+    to PDF" exports subset EVERY font — so for those CVs (the majority)
+    skipping subsets meant we ALWAYS fell back to Base14 Helvetica,
+    visibly changing the body font. In practice a tailored rewrite is a
+    paraphrase that reuses the same character set as the original, so
+    the subset font usually CAN render it. We now return subset xrefs
+    too; the caller (`_install_original_font`) runs `_font_can_render`
+    on the actual new text and falls back to Base14 only when the
+    subset genuinely lacks a needed glyph.
     """
     w = (wanted_name or "").lower()
     if not w:
         return None
-    # Prefer exact, non-subset match on base-clean; never use subsets.
-    exact_hit: Optional[int] = None
-    sub_hit:   Optional[int] = None
+    exact_full: Optional[int] = None
+    sub_full:   Optional[int] = None
+    exact_subset: Optional[int] = None
+    sub_subset:   Optional[int] = None
     for pi in range(doc.page_count):
         for entry in doc.get_page_fonts(pi):
             # entry: (xref, ext, type, basefont, refname, encoding)
             xref = entry[0]
             base = str(entry[3] or "")
-            if _is_subset_font(base):
-                continue  # subset — can't safely reuse
+            is_subset = _is_subset_font(base)
             base_l = base.lower()
             base_clean = base_l.split("+")[-1]
             if w == base_clean or w == base_l:
-                exact_hit = xref
-                break
-            if w in base_clean and sub_hit is None:
-                sub_hit = xref
-        if exact_hit is not None:
+                if is_subset:
+                    if exact_subset is None:
+                        exact_subset = xref
+                else:
+                    exact_full = xref
+                    break
+            elif w in base_clean:
+                if is_subset:
+                    if sub_subset is None:
+                        sub_subset = xref
+                elif sub_full is None:
+                    sub_full = xref
+        if exact_full is not None:
             break
-    return exact_hit if exact_hit is not None else sub_hit
+    return exact_full or sub_full or exact_subset or sub_subset
 
 
 # Cache of (doc_id, xref) -> installed font alias on each page.
@@ -336,6 +359,92 @@ def _install_original_font(
         return None
 
 
+# ─────────────────────────────────────────────────────────────
+# Bundled metric-compatible clone fonts (agents/fonts/)
+# ─────────────────────────────────────────────────────────────
+# When the CV's own embedded font cannot be reused, a clone matched to the
+# original family beats Base14: Base14 already approximates Arial / Times /
+# Courier acceptably, but does NOT resemble Calibri or Cambria — the two
+# common Word fonts. Each entry maps an original-family keyword to
+# (clone basename, the ORIGINAL family's ascender). The ascender matters
+# because a clone shares glyph WIDTHS with the original (text wraps the
+# same) but NOT vertical metrics — the original's ascender must drive
+# baseline placement so re-inserted text lands where the original sat.
+
+_FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+
+_CLONE_FONTS: Dict[str, Tuple[str, float]] = {
+    "calibri": ("Carlito", 0.75),   # Carlito — metric-compatible with Calibri
+    "cambria": ("Caladea", 0.95),   # Caladea — metric-compatible with Cambria
+}
+
+
+def _bundled_clone_font(
+    span:  dict,
+    text:  str,
+    cache: Optional[Dict[Any, Any]] = None,
+) -> Optional[Tuple["fitz.Font", float]]:
+    """
+    Return (clone fitz.Font, original-family ascender) for `span`'s font
+    family, or None when no bundled clone covers it. The clone is a full
+    font, so it also rescues a subset original that lacked a glyph.
+    """
+    name = str(span.get("font") or "").lower()
+    entry = next((v for k, v in _CLONE_FONTS.items() if k in name), None)
+    if entry is None:
+        return None
+    base, orig_ascender = entry
+    flags  = int(span.get("flags", 0) or 0)
+    bold   = bool(flags & 16) or "bold" in name
+    italic = bool(flags & 2)  or "italic" in name or "oblique" in name
+    style  = ("BoldItalic" if bold and italic else
+              "Bold" if bold else "Italic" if italic else "Regular")
+    fname  = f"{base}-{style}.ttf"
+    ck     = f"clonefont:{fname}"
+    if cache is not None and isinstance(cache.get(ck), fitz.Font):
+        return cache[ck], orig_ascender
+    path = os.path.join(_FONTS_DIR, fname)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "rb") as fh:
+            buf = fh.read()
+    except Exception:
+        return None
+    # Full clone fonts cover Latin CV text + standard punctuation; this
+    # guards only the rare exotic glyph the clone happens to lack.
+    if not _font_can_render(buf, text):
+        return None
+    try:
+        font = fitz.Font(fontbuffer=buf)
+    except Exception:
+        return None
+    if cache is not None:
+        cache[ck] = font
+    return font, orig_ascender
+
+
+# ATS hygiene: re-inserted LLM text occasionally carries Unicode that
+# trips older resume parsers — smart quotes, en/em dashes, ellipsis,
+# non-breaking spaces, zero-width characters. Map them to plain ASCII.
+# Applied ONLY to LLM-generated edits, never to restored original text.
+_ATS_NORMALIZE = {
+    0x201c: '"', 0x201d: '"', 0x201e: '"', 0x201f: '"',
+    0x2018: "'", 0x2019: "'", 0x201a: "'", 0x201b: "'",
+    0x2013: "-", 0x2014: "-",
+    0x2026: "...",
+    0x00a0: " ",
+    0x200b: "", 0x200c: "", 0x200d: "", 0x2060: "", 0xfeff: "",
+}
+
+
+def _normalize_for_ats(text: str) -> str:
+    """Convert ATS-hostile Unicode in re-inserted LLM text to plain ASCII."""
+    if not text or not isinstance(text, str):
+        return text
+    return text.translate(_ATS_NORMALIZE)
+
+
 def _int_color_to_rgb(c: int) -> tuple:
     r = (c >> 16) & 0xFF
     g = (c >> 8)  & 0xFF
@@ -390,6 +499,24 @@ _HEADINGS: Dict[str, re.Pattern] = {
     ),
     "certifications": re.compile(
         r"^\s*(certifications?|certificates?)\s*$",
+        re.I,
+    ),
+    # Adaptive parsing fix (May 2026 — Shrestha CV evidence): recognise
+    # AWARDS / ACHIEVEMENTS / HONORS as a distinct section. Without this
+    # entry, the awards block on a Genesis-style CV silently flows into
+    # whatever section preceded it (usually "projects"), corrupting that
+    # role's bullet list. Variants observed in real ATS-friendly CVs:
+    #   "Awards", "Awards & Achievements", "Achievements",
+    #   "Honors & Awards", "Recognition", "Awards and Honors"
+    # The optional prefix word (Honors / Recognition / Notable) plus the
+    # optional " & <other>" suffix captures the common templates without
+    # false-matching prose like "Achievements I'm proud of".
+    "awards": re.compile(
+        r"^\s*(?:honors?\s*(?:&|and)\s*|notable\s+|"
+        r"key\s+|selected\s+|recognition\s*[:&]?\s*)?"
+        r"(awards?|achievements?|honors?|recognitions?|accomplishments?)"
+        r"(?:\s*(?:&|and)\s*(?:achievements?|honors?|awards?|recognitions?))?"
+        r"\s*:?\s*$",
         re.I,
     ),
 }
@@ -492,6 +619,380 @@ _BULLET_CHARS = (
     "\u25aa\u25cb\u25e6\u25cf\u25a0"
     "\uf0b7\uf0a7\uf076\uf0d8"
 )
+
+# Adaptive bullet-glyph detection (May 2026 \u2014 Shrestha CV evidence).
+# Different CVs use different bullet characters (\u2022 U+2022 / \u25aa U+25AA /
+# \u00b7 U+00B7 / \u25cb U+25CB / etc.). When we re-render bullets after a rewrite,
+# we should use the SAME glyph the original PDF used so the visual look
+# is preserved. Asterisk fallback (* substituting for the original glyph
+# in some embedded-font fallback paths) was visible to the user as a
+# clear format break vs the input PDF.
+_GLYPHIC_BULLET_CHARS = (
+    "\u2022\u00b7\u2043\u2219"
+    "\u25aa\u25cb\u25e6\u25cf\u25a0"
+    "\uf0b7\uf0a7\uf076\uf0d8"
+)
+
+
+def _capture_borders_in_rect(
+    page: "fitz.Page",
+    rect: "fitz.Rect",
+) -> List[Dict[str, Any]]:
+    """
+    Record straight border lines (table borders, section divider rules)
+    that pass through `rect`, so they can be re-drawn after a redaction
+    wipes them.
+
+    May 2026 (Shrestha + Rishav): clipping the redact rect away from
+    borders shrank it below the bullet text and broke text fitting. The
+    robust approach is the opposite — redact freely, then restore any
+    border the redaction crossed by re-drawing it at its exact original
+    geometry / colour / width.
+
+    Captures standalone "l" segments and the four edges of "re"
+    rectangles. A line counts as "in the rect" when it crosses the
+    rect's span (full original endpoints kept so the redraw is exact).
+    """
+    saved: List[Dict[str, Any]] = []
+    if page is None or rect is None:
+        return saved
+    try:
+        drawings = page.get_drawings() or []
+    except Exception:
+        return saved
+    for d in drawings:
+        color = d.get("color")
+        width = d.get("width") or 0.75
+        for item in d.get("items", []) or []:
+            try:
+                op = item[0]
+            except (TypeError, IndexError):
+                continue
+            segs: List[Tuple[float, float, float, float]] = []
+            if op == "l":
+                try:
+                    p1, p2 = item[1], item[2]
+                    segs.append((float(p1.x), float(p1.y),
+                                 float(p2.x), float(p2.y)))
+                except Exception:
+                    continue
+            elif op == "re":
+                try:
+                    r = item[1]
+                    rx0, ry0 = float(r.x0), float(r.y0)
+                    rx1, ry1 = float(r.x1), float(r.y1)
+                except Exception:
+                    continue
+                segs = [
+                    (rx0, ry0, rx1, ry0),  # top edge
+                    (rx0, ry1, rx1, ry1),  # bottom edge
+                    (rx0, ry0, rx0, ry1),  # left edge
+                    (rx1, ry0, rx1, ry1),  # right edge
+                ]
+            for (x1, y1, x2, y2) in segs:
+                is_h = abs(y1 - y2) <= 2.0
+                is_v = abs(x1 - x2) <= 2.0
+                if not (is_h or is_v):
+                    continue
+                if is_h:
+                    if not (rect.y0 - 1.0 <= y1 <= rect.y1 + 1.0):
+                        continue
+                    xlo, xhi = min(x1, x2), max(x1, x2)
+                    if xlo >= rect.x1 or xhi <= rect.x0:
+                        continue
+                else:
+                    if not (rect.x0 - 1.0 <= x1 <= rect.x1 + 1.0):
+                        continue
+                    ylo, yhi = min(y1, y2), max(y1, y2)
+                    if ylo >= rect.y1 or yhi <= rect.y0:
+                        continue
+                saved.append({
+                    "p1": (x1, y1), "p2": (x2, y2),
+                    "color": color, "width": width,
+                })
+    return saved
+
+
+def _redraw_borders(page: "fitz.Page", saved: List[Dict[str, Any]]) -> None:
+    """Re-draw border segments captured by `_capture_borders_in_rect`."""
+    for b in saved or []:
+        try:
+            page.draw_line(
+                fitz.Point(*b["p1"]), fitz.Point(*b["p2"]),
+                color=b.get("color") or (0, 0, 0),
+                width=b.get("width") or 0.75,
+            )
+        except Exception:
+            pass
+
+
+def _horizontal_borders_intersecting_rect(
+    page: "fitz.Page",
+    rect: "fitz.Rect",
+    tolerance: float = 1.5,
+) -> List[float]:
+    """
+    Return Y positions of horizontal line segments drawn on `page` that
+    intersect `rect`'s horizontal range. Mirror of
+    `_vertical_borders_intersecting_rect` for the bottom-border case.
+    """
+    if page is None or rect is None:
+        return []
+    horizontals: List[float] = []
+    try:
+        drawings = page.get_drawings() or []
+    except Exception:
+        return []
+    for d in drawings:
+        for item in d.get("items", []) or []:
+            try:
+                op = item[0]
+            except (TypeError, IndexError):
+                continue
+            if op == "l":
+                try:
+                    p1, p2 = item[1], item[2]
+                    x1, y1 = float(p1.x), float(p1.y)
+                    x2, y2 = float(p2.x), float(p2.y)
+                except Exception:
+                    continue
+                if abs(y1 - y2) > tolerance:
+                    continue  # not horizontal
+                x_lo, x_hi = (x1, x2) if x1 < x2 else (x2, x1)
+                if x_lo >= rect.x1 or x_hi <= rect.x0:
+                    continue
+                horizontals.append((y1 + y2) / 2.0)
+            elif op == "re":
+                try:
+                    r = item[1]
+                    rx0, ry0, rx1, ry1 = float(r.x0), float(r.y0), float(r.x1), float(r.y1)
+                except Exception:
+                    continue
+                if abs(ry1 - ry0) <= tolerance:
+                    if rx0 < rect.x1 and rx1 > rect.x0:
+                        horizontals.append((ry0 + ry1) / 2.0)
+                else:
+                    if rx0 < rect.x1 and rx1 > rect.x0:
+                        horizontals.append(ry0)
+                        horizontals.append(ry1)
+    return sorted(set(horizontals))
+
+
+def _vertical_borders_intersecting_rect(
+    page: "fitz.Page",
+    rect: "fitz.Rect",
+    tolerance: float = 1.5,
+) -> List[float]:
+    """
+    Return X positions of vertical line segments (table borders / column
+    separators) drawn on `page` that intersect `rect`'s vertical range.
+
+    Used by apply_edits to clip the redaction rect so the white fill
+    doesn't paint over table borders. Without this, 2-column bordered
+    layouts (e.g. Shrestha's WORK EXPERIENCE table) lose their right
+    border line whenever we rewrite bullets inside the right column.
+
+    Tolerance allows for hairline lines that aren't perfectly vertical
+    (rounded coordinates) — anything within `tolerance` pt of vertical
+    counts.
+    """
+    if page is None or rect is None:
+        return []
+    verticals: List[float] = []
+    try:
+        drawings = page.get_drawings() or []
+    except Exception:
+        return []
+    for d in drawings:
+        for item in d.get("items", []) or []:
+            try:
+                op = item[0]
+            except (TypeError, IndexError):
+                continue
+            if op == "l":
+                # Line segment: ("l", Point start, Point end)
+                try:
+                    p1, p2 = item[1], item[2]
+                    x1, y1 = float(p1.x), float(p1.y)
+                    x2, y2 = float(p2.x), float(p2.y)
+                except Exception:
+                    continue
+                if abs(x1 - x2) > tolerance:
+                    continue  # not vertical
+                y_lo, y_hi = (y1, y2) if y1 < y2 else (y2, y1)
+                # Must intersect rect's Y range
+                if y_lo >= rect.y1 or y_hi <= rect.y0:
+                    continue
+                verticals.append((x1 + x2) / 2.0)
+            elif op == "re":
+                # Rectangle: ("re", Rect)
+                try:
+                    r = item[1]
+                    rx0, ry0, rx1, ry1 = float(r.x0), float(r.y0), float(r.x1), float(r.y1)
+                except Exception:
+                    continue
+                # Treat as four edges; record the vertical ones
+                if abs(rx1 - rx0) <= tolerance:
+                    # Degenerate rect (vertical line)
+                    if ry0 < rect.y1 and ry1 > rect.y0:
+                        verticals.append((rx0 + rx1) / 2.0)
+                else:
+                    # Real rectangle — its left + right edges are verticals.
+                    # Only count edges that intersect our rect Y-range.
+                    if ry0 < rect.y1 and ry1 > rect.y0:
+                        verticals.append(rx0)
+                        verticals.append(rx1)
+    return sorted(set(verticals))
+
+
+def _estimate_text_fits(
+    text:        str,
+    rect_width:  float,
+    rect_height: float,
+    fontsize:    float,
+    line_gap:    float,
+) -> bool:
+    """
+    Estimate (without touching the page) whether `text` will fit inside a
+    box of `rect_width` × `rect_height` at `fontsize`. Used as a PRE-CHECK
+    so apply_edits never redacts a bullet whose rewrite won't fit — which
+    would leave a blank gap when both the rewrite AND the original-text
+    restore fail PyMuPDF's conservative measurement.
+
+    Greedy word-wrap line count × the TIGHTEST line gap the editor will
+    try (line_gap × 0.88, matching `_insert_fitted`'s gap ladder floor).
+    If the text fits even at the tightest spacing, the real insertion is
+    guaranteed a gap that works. Conservative by ~1pt.
+    """
+    if not text or not text.strip():
+        return True
+    if rect_width <= 0 or rect_height <= 0:
+        return False
+    try:
+        font = fitz.Font("helv")
+    except Exception:
+        return True  # cannot measure — assume fits, let insertion decide
+    words = text.split()
+    if not words:
+        return True
+    try:
+        space_w = font.text_length(" ", fontsize)
+    except Exception:
+        return True
+    n_lines = 1
+    cur_w = 0.0
+    for w in words:
+        try:
+            ww = font.text_length(w, fontsize)
+        except Exception:
+            ww = len(w) * fontsize * 0.5
+        if cur_w <= 0:
+            cur_w = ww
+        elif cur_w + space_w + ww <= rect_width:
+            cur_w += space_w + ww
+        else:
+            n_lines += 1
+            cur_w = ww
+    # helv is ~8-10% wider than typical CV body fonts (Calibri/Liberation),
+    # so this line count is a slight over-estimate — that's the safe
+    # direction (skip rather than redact-and-fail).
+    tightest_gap = max(1.0, line_gap * 0.88)
+    needed_h = n_lines * fontsize * tightest_gap
+    return needed_h <= rect_height + 1.0
+
+
+def _bullet_body_rect(
+    lines: List[Dict[str, Any]],
+) -> Tuple[Optional["fitz.Rect"], bool, Optional["fitz.Rect"]]:
+    """
+    Compute the bounding rect of ONE bullet's BODY text — the
+    text-carrying spans only, EXCLUDING a separate-span bullet glyph
+    (e.g. a Wingdings ▪ rendered in its own span at a different X).
+
+    Returns (rect, has_inline_glyph, true_rect):
+      rect             — padded fitz.Rect of the body text (drives the
+                         redaction), or None if empty.
+      has_inline_glyph — True when the bullet glyph is embedded in the
+                         first text-carrying span ("• Started…" as one
+                         span, single-column CVs). The caller must then
+                         re-prepend the glyph because redacting the body
+                         rect also wipes that inline glyph. False when
+                         the glyph is a separate span (2-column layouts
+                         like Shrestha's Wingdings ▪) — that glyph sits
+                         outside this rect and stays untouched.
+      true_rect        — un-padded body-text rect, so the caller places
+                         re-inserted text at the exact original origin.
+    """
+    text_boxes: List[List[float]] = []
+    has_inline_glyph = False
+    first_text_span_checked = False
+    for ln in lines:
+        spans = ln.get("spans") or []
+        if spans:
+            for sp in spans:
+                if not _span_is_text_carrying(sp):
+                    continue
+                bb = sp.get("bbox")
+                if bb:
+                    text_boxes.append(list(bb))
+                if not first_text_span_checked:
+                    first_text_span_checked = True
+                    sp_text = (sp.get("text") or "").lstrip()
+                    if sp_text and sp_text[0] in _BULLET_CHARS:
+                        has_inline_glyph = True
+        else:
+            bb = ln.get("bbox")
+            if bb:
+                text_boxes.append(list(bb))
+            if not first_text_span_checked:
+                first_text_span_checked = True
+                ln_text = (ln.get("text") or "").lstrip()
+                if ln_text and ln_text[0] in _BULLET_CHARS:
+                    has_inline_glyph = True
+    if not text_boxes:
+        text_boxes = [list(ln["bbox"]) for ln in lines if ln.get("bbox")]
+    if not text_boxes:
+        return None, False, None
+    # Padded rect drives the redaction; the un-padded rect lets the
+    # caller place re-inserted text at the body's TRUE origin (the pad
+    # would otherwise shift every edited bullet up-and-left by 1pt).
+    return (_union_rect(text_boxes, pad=1.0), has_inline_glyph,
+            _union_rect(text_boxes, pad=0.0))
+
+
+def _detect_section_bullet_glyph(section: Dict[str, Any]) -> str:
+    """
+    Detect the bullet glyph the original PDF used for this section.
+    Returns the most common glyph found, or U+2022 (\u2022) as a safe default.
+
+    Method (two-pass):
+      Pass 1: standalone glyph-only lines (e.g. PyMuPDF extracted "\u25aa"
+        on its own line because the body text was at a different X)
+      Pass 2: glyph-prefixed lines (e.g. "\u25aa Led communication...")
+    """
+    from collections import Counter
+    glyphs: List[str] = []
+
+    for ln in section.get("lines", []) or []:
+        text = (ln.get("text") or "").strip()
+        if not text:
+            continue
+        # Standalone glyph line: short text whose every non-space
+        # character is a bullet glyph.
+        if len(text) <= 3:
+            chars = [c for c in text if not c.isspace()]
+            if chars and all(c in _GLYPHIC_BULLET_CHARS for c in chars):
+                glyphs.append(chars[0])
+                continue
+        # Glyph-prefixed line: first non-space char is a bullet glyph.
+        first = text.lstrip()[:1]
+        if first and first in _GLYPHIC_BULLET_CHARS:
+            glyphs.append(first)
+
+    if glyphs:
+        return Counter(glyphs).most_common(1)[0][0]
+    # Fallback: U+2022 (\u2022) renders cleanly in most CV fonts.
+    return "\u2022"
 _BULLET_START_RX = re.compile(rf"^\s*[{re.escape(_BULLET_CHARS)}]")
 _BULLET_STRIP_RX = re.compile(rf"^[{re.escape(_BULLET_CHARS)}]+\s*")
 
@@ -789,6 +1290,11 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
     # also happens to be rendered in a bold font (common in marketing /
     # comms CVs — see Shrestha-style layout, May 2026 Run 12 diagnosis).
     header_baseline_x0: Optional[float] = None
+    # Adaptive parsing: per-role flag set when any glyph-prefixed bullet
+    # has been seen. If the role NEVER sees a glyph (paragraph-style
+    # bullet section), we activate sentence-boundary paragraph detection
+    # for that role's bullets.
+    role_had_glyph_bullet: Dict[int, bool] = {}
 
     for ln in lines:
         text = ln["text"]
@@ -849,6 +1355,51 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
             and not is_continuation
             and not indent_blocks_header
         ):
+            # Adaptive parsing fix (May 2026 — Shrestha CV evidence):
+            # Same-Y role-header merge. Some CVs render the role-header
+            # as TWO visual fragments at the same baseline Y but at
+            # opposite ends of the page:
+            #     "Ogilvy – Senior Account Executive"   at x≈24  (left)
+            #     "October 2024 – Present"              at x≈460 (right)
+            # PyMuPDF extracts these as two separate lines because of the
+            # large horizontal gap. The previous parser created TWO roles
+            # for one visual line, then later silently dropped the left
+            # half (no bullets attached) leaving only the date as the
+            # role header — catastrophic for downstream LLM matching.
+            #
+            # Fix: if we're about to create a new role and the previous
+            # role we just created (a) has no bullets yet, (b) is at the
+            # same Y as this line (±5pt), and (c) this line is to the
+            # right of the previous header's right edge, merge this line
+            # into the previous role's header instead. Use a 4-space
+            # separator so the merged text looks natural in logs.
+            prev_role = roles[-1] if roles else None
+            if (
+                prev_role is not None
+                and not prev_role.get("bullet_groups")
+                and prev_role.get("header_line") is not None
+                and abs(ln["bbox"][1] - prev_role["header_line"]["bbox"][1]) <= 5
+                and ln["bbox"][0] > prev_role["header_line"]["bbox"][2]
+            ):
+                prev_role["header_text"] = (
+                    prev_role["header_text"].rstrip()
+                    + "    "
+                    + text.strip()
+                )
+                pbb = prev_role["header_line"]["bbox"]
+                prev_role["header_line"] = {
+                    **prev_role["header_line"],
+                    "bbox": [
+                        min(pbb[0], ln["bbox"][0]),
+                        min(pbb[1], ln["bbox"][1]),
+                        max(pbb[2], ln["bbox"][2]),
+                        max(pbb[3], ln["bbox"][3]),
+                    ],
+                }
+                prev_was_bullet_text = False
+                prev_line = ln
+                continue
+
             cur = {
                 "header_text":   text,
                 "header_line":   ln,
@@ -880,9 +1431,32 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
             }
             roles.append(cur)
 
+        # Adaptive paragraph-bullet detection (May 2026 — Shrestha CV).
+        # When the current role has NO glyph-prefixed bullets yet (pure
+        # paragraph-style section like Shrestha's "Projects"), use
+        # sentence-boundary + capital-verb-start as the bullet separator.
+        # This catches "Conducted research. Collaborated with teams.
+        # Crafted presentations." as 3 bullets instead of 1 merged.
+        cur_id = id(cur)
+        had_glyph_in_role = role_had_glyph_bullet.get(cur_id, False)
+        if explicit_bullet or marker_bullet:
+            role_had_glyph_bullet[cur_id] = True
+        is_paragraph_bullet_start = (
+            not had_glyph_in_role
+            and cur["bullet_groups"]
+            and prev_line is not None
+            and bool(_SENTENCE_END_RX.search(prev_line.get("text", "")))
+            and bool(_PARAGRAPH_BULLET_START_RX.match(text))
+            # Don't fire on lines that are themselves glyph-prefixed —
+            # the explicit_bullet path will handle them.
+            and not explicit_bullet
+            and not marker_bullet
+        )
+
         is_new_bullet = (
             explicit_bullet
             or marker_bullet
+            or is_paragraph_bullet_start
             or not cur["bullet_groups"]   # first content line of role starts a bullet
             or (bullet_gap_threshold > 0 and gap > bullet_gap_threshold)
         )
@@ -898,6 +1472,32 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
 
         prev_line = ln
 
+    # ── Sidebar-label filter (May 2026 — adaptive parsing) ────────────
+    # On 2-column layouts, the LEFT sidebar holds project labels
+    # ("Project Experience: SAP Labs", "B2B, B2C & D2C") and the RIGHT
+    # column holds the real bullets. PyMuPDF interleaves them by Y, so
+    # the line-walk above can promote a left-column label to bullet[0]
+    # of a role (seen in Shrestha's Genesis role: bullet[0] was the
+    # 28-char "Project Experience: SAP Labs" label, the 9 real bullets
+    # followed). Filter bullets whose first-line X is a left-side
+    # outlier from the role's dominant bullet X cluster.
+    _filter_sidebar_bullets(roles)
+
+    # ── Empty-bullet filter (May 2026 — adaptive parsing) ─────────────
+    # Drop bullet groups whose text is empty / sub-3-char (caused by
+    # standalone bullet-glyph lines like "▪" extracted on their own by
+    # PyMuPDF). MUST happen here at the source so build_outline AND
+    # apply_edits see the SAME bullets — otherwise the LLM's diff
+    # indices (computed against build_outline's view) misalign with
+    # apply_edits' raw view, sending rewrites to the wrong bullet slot.
+    for role in roles:
+        bullet_groups = role.get("bullet_groups") or []
+        role["bullet_groups"] = [
+            b for b in bullet_groups
+            if (b.get("text") or "").strip()
+            and len((b.get("text") or "").strip()) >= 3
+        ]
+
     # ── Post-merge fragmented roles (May 2026 / Run 12 fix) ─────────────
     # On 2-column layouts (left column = sub-section labels like
     # "Experience:" / "SAP Labs" / "India", right column = bullets), the
@@ -910,6 +1510,63 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
     return _merge_fragmented_roles(roles)
 
 
+def _filter_sidebar_bullets(roles: List[Dict[str, Any]]) -> None:
+    """
+    Drop bullets that are actually left-sidebar labels misclassified by
+    the parser. Mutates `roles` in place.
+
+    Heuristic (only fires when 2-column layout is detected):
+      - Role must have ≥3 bullets (need enough X data to cluster).
+      - First-line X positions must span ≥50pt across the role's
+        bullets (proves a 2-column gap, not just minor wrap variance).
+      - Then: drop bullets whose first-line X is >30pt LEFT of the
+        median bullet first-line X.
+
+    Single-column CVs (e.g. Rishav's): all bullets at similar X → the
+    span check is False → no filtering applied. Guaranteed no-op on
+    well-formed single-column layouts.
+    """
+    for role in roles:
+        bullets = role.get("bullet_groups") or []
+        if len(bullets) < 3:
+            continue
+        xs = [
+            b["lines"][0]["bbox"][0]
+            for b in bullets
+            if b.get("lines") and b["lines"]
+        ]
+        if len(xs) < 3:
+            continue
+        if max(xs) - min(xs) < 50:
+            continue  # single-column layout — skip
+
+        # Median X = dominant bullet column.
+        xs_sorted = sorted(xs)
+        median_x = xs_sorted[len(xs_sorted) // 2]
+
+        kept: List[Dict[str, Any]] = []
+        dropped: List[tuple] = []
+        for b in bullets:
+            if not b.get("lines") or not b["lines"]:
+                kept.append(b)
+                continue
+            bx = b["lines"][0]["bbox"][0]
+            # Only filter LEFT outliers (sidebar labels); right outliers
+            # are usually wrap variance or right-aligned dates.
+            if median_x - bx > 30:
+                dropped.append((round(bx, 0), (b.get("text") or "")[:60]))
+                continue
+            kept.append(b)
+
+        if dropped:
+            role["bullet_groups"] = kept
+            print(
+                f"   🔍 sidebar filter: dropped {len(dropped)} bullet(s) "
+                f"from role {role.get('header_text','')[:40]!r} at X outliers "
+                f"(median X={median_x:.0f}). Dropped: {dropped[:3]}"
+            )
+
+
 _DATE_HINT_RX = re.compile(
     r"\b("
     r"(?:19|20)\d{2}"                                    # 1995, 2024
@@ -920,7 +1577,43 @@ _DATE_HINT_RX = re.compile(
     r")\b",
     re.I,
 )
-_COMPANY_DASH_RX = re.compile(r"\w+\s*[\u2013\u2014\-]\s*\w+")
+# Match space-padded em/en dash between words, e.g. "Company \u2014 Role" or
+# "Manager \u2013 Director". Hyphens (and dashes WITHOUT surrounding spaces) are
+# excluded on purpose: they appear inside ordinary words ("on-time",
+# "data-driven", "2020-2023") and produced false positives that promoted
+# CV continuation lines (e.g. "Client: ... (on-time delivery)") to fake role
+# headers. Date ranges like "2020 \u2013 2023" are detected by _DATE_HINT_RX
+# separately, so we don't lose those signals by tightening this pattern.
+_COMPANY_DASH_RX = re.compile(r"\w+\s+[\u2013\u2014]\s+\w+")
+
+# Adaptive parsing (May 2026 \u2014 Shrestha CV evidence): some CVs render
+# bullets as plain paragraphs (no `\u25aa` / `\u2022` / `-` glyph), separated only
+# by sentence boundaries. The parser's default logic treats them as a
+# single merged bullet, losing per-bullet anchors. When a role has no
+# glyph-prefixed bullets yet, we activate paragraph detection: a new
+# bullet starts when the previous line ended with sentence terminator
+# AND the current line starts with a recognisable past-tense / present-
+# participle action verb. This list is comprehensive enough to cover
+# most ATS-friendly Word-style CVs without false-positive matches on
+# wrap continuations (which rarely start with these verbs).
+_PARAGRAPH_BULLET_START_RX = re.compile(
+    r"^(?:"
+    r"Built|Led|Drove|Delivered|Managed|Owned|Designed|"
+    r"Developed|Implemented|Created|Authored|Defined|Established|"
+    r"Architected|Engineered|Shipped|Launched|Coordinated|"
+    r"Orchestrated|Spearheaded|Partnered|Collaborated|Improved|"
+    r"Reduced|Increased|Achieved|Generated|Identified|Resolved|"
+    r"Negotiated|Facilitated|Conducted|Analysed|Analyzed|"
+    r"Streamlined|Translated|Drafted|Wrote|Researched|Initiated|"
+    r"Crafted|Capitalised|Capitalized|Directed|Provided|Utilised|"
+    r"Utilized|Influenced|Trained|Mentored|Supervised|Received|"
+    r"Captured|Negotiated|Drafted|Spear-?headed|Negotiated|"
+    r"Designing|Building|Owning|Leading|Delivering|Managing|"
+    r"Driving|Authoring|Defining|Establishing|Coordinating|"
+    r"Synthesised|Synthesized|Generated|Maintained|Influenced"
+    r")\b"
+)
+_SENTENCE_END_RX = re.compile(r"[.!?;]\s*$")
 
 
 def _role_header_has_signal(role: Dict[str, Any]) -> bool:
@@ -1062,6 +1755,8 @@ def build_outline(pdf_path: str) -> Dict[str, Any]:
         t = sec["type"]
         if t in ("experience", "projects"):
             for r in _role_blocks(sec):
+                # Empty bullets are filtered inside _role_blocks now (so
+                # apply_edits and build_outline see identical indices).
                 if not r.get("bullet_groups"):
                     continue
                 out["roles"].append({
@@ -1379,18 +2074,42 @@ def _span_is_text_carrying(span: dict) -> bool:
 
 def _pick_body_span(lines: List[Dict[str, Any]]) -> Optional[dict]:
     """
-    Find the first span across `lines` that is a body-text span (not a bullet
-    glyph and not a symbolic font). Falls back to the very first span if none
-    qualifies, so we always return *something*.
+    Find a body-text span across `lines` to use as the style reference
+    for re-inserting tailored text.
+
+    Adaptive fix (May 2026 — Shrestha CV evidence): prefer NON-BOLD
+    spans. Many CV templates bold the FIRST few words of each bullet for
+    emphasis ("Defined and executed integrated digital strategy..."
+    starts bold, wrap lines are regular weight). The old logic returned
+    the first text-carrying span — the bold one — and `_insert_fitted`
+    then rendered the entire rewrite in bold. The recruiter sees every
+    bullet body bolded, which looks broken.
+
+    New policy:
+      1. Collect every text-carrying span across all lines.
+      2. Prefer the first NON-bold one (matches body wrap-line style).
+      3. Fall back to the first text-carrying span (bold or otherwise)
+         if no non-bold span exists (rare; all-bold sections).
+      4. Last resort: the very first span we saw (preserves the old
+         "always return something" contract).
     """
     first_any: Optional[dict] = None
+    first_textcarrying: Optional[dict] = None
     for ln in lines:
         for s in ln.get("spans") or []:
             if first_any is None:
                 first_any = s
-            if _span_is_text_carrying(s):
+            if not _span_is_text_carrying(s):
+                continue
+            if first_textcarrying is None:
+                first_textcarrying = s
+            # Check bold-ness: PDF font flags bit 16 = bold, OR font name
+            # contains "bold". Skip; we want non-bold.
+            font_name = (s.get("font") or "").lower()
+            is_bold = bool(int(s.get("flags", 0)) & 16) or "bold" in font_name
+            if not is_bold:
                 return s
-    return first_any
+    return first_textcarrying or first_any
 
 
 def _first_span_of_lines(lines: List[Dict[str, Any]]) -> Optional[dict]:
@@ -1487,8 +2206,20 @@ def _apply_summary_edit(
         if not (own_y_min <= ln["bbox"][1] <= own_y_max)
     ]
     rect.x1 = max(rect.x1, _measured_right_margin(other_lines, page.rect.width))
-    next_y0 = _next_y0_below(rect, other_lines, page.rect.height)
-    rect.y1 = min(rect.y1, max(rect.y1, next_y0 - 2.0))
+    # Next content line strictly below the summary's TRUE text bottom.
+    # Measuring from the un-padded bottom matters: _union_rect's 1.5pt
+    # pad can otherwise reach into a heading sitting flush under the
+    # summary (e.g. "Personal Projects" on tightly-spaced CVs), which
+    # _next_y0_below would then skip — and the rect would redact it away.
+    summary_bottom = max(ln["bbox"][3] for ln in sum_sec["lines"])
+    next_tops = [ln["bbox"][1] for ln in other_lines
+                 if ln["bbox"][1] > summary_bottom + 0.3]
+    next_y0 = min(next_tops) if next_tops else (page.rect.height - 36.0)
+    # Extend y1 down into the whitespace below the summary (up to 8pt —
+    # invisible, gives _insert_fitted room to land the rewrite) but
+    # HARD-CAP it 0.5pt short of the next line so adjacent content is
+    # never touched by the redaction.
+    rect.y1 = min(rect.y1 + 8.0, next_y0 - 0.5)
 
     ref = _first_span_of_lines(sum_sec["lines"])
     if ref is None:
@@ -1496,12 +2227,25 @@ def _apply_summary_edit(
         return
 
     measured = _measure_line_gap(sum_sec["lines"])
+    summary_first_top = min(ln["bbox"][1] for ln in sum_sec["lines"])
+    summary_first_left = min(ln["bbox"][0] for ln in sum_sec["lines"])
+    summary_right = max(ln["bbox"][2] for ln in sum_sec["lines"])
+    # Match the original's alignment: justified summaries are re-justified,
+    # ragged-left ones stay left-aligned.
+    summary_align = 3 if _is_block_justified(sum_sec["lines"]) else 0
+    # Capture any border / divider lines inside the redact rect so they
+    # can be re-drawn after the white-fill redaction wipes them (e.g.
+    # the page-frame border on Shrestha-style 2-column layouts, or the
+    # rule under the "Professional Summary" heading).
+    saved_borders = _capture_borders_in_rect(page, rect)
     _redact_rect(page, rect)
     sz = _insert_fitted(
-        page, rect, new_summary, ref, align=0,
-        line_gap=measured,
+        page, rect, new_summary, ref, align=summary_align,
+        line_gap=measured, orig_first_top=summary_first_top,
+        orig_left=summary_first_left, orig_right=summary_right,
         doc=doc, font_cache=font_cache,
     )
+    _redraw_borders(page, saved_borders)
     if sz > 0:
         report["applied"]["summary"] = {"fontsize": sz, "line_gap": round(measured, 3)}
         return
@@ -1515,10 +2259,12 @@ def _apply_summary_edit(
         "font size; restoring original summary to avoid empty box."
     )
     sz_fallback = _insert_fitted(
-        page, rect, orig_text, ref, align=0,
-        line_gap=measured,
+        page, rect, orig_text, ref, align=summary_align,
+        line_gap=measured, orig_first_top=summary_first_top,
+        orig_left=summary_first_left, orig_right=summary_right,
         doc=doc, font_cache=font_cache,
     )
+    _redraw_borders(page, saved_borders)
     if sz_fallback > 0:
         report["applied"]["summary"] = {
             "fontsize": sz_fallback,
@@ -1541,6 +2287,140 @@ def _redact_rect(page: fitz.Page, rect: fitz.Rect) -> None:
     )
 
 
+def _wrap_to_width(
+    text: str, font: fitz.Font, fontsize: float, max_width: float,
+) -> List[str]:
+    """
+    Greedy word-wrap `text` to `max_width` points, measured with the real
+    font. Explicit newlines are honoured as hard breaks. A single word
+    wider than `max_width` is kept on its own line (not split mid-word).
+    """
+    out: List[str] = []
+    for para in (text or "").split("\n"):
+        words = para.split()
+        if not words:
+            out.append("")
+            continue
+        cur = words[0]
+        for w in words[1:]:
+            trial = f"{cur} {w}"
+            try:
+                fits = font.text_length(trial, fontsize) <= max_width
+            except Exception:
+                fits = len(trial) * fontsize * 0.5 <= max_width
+            if fits:
+                cur = trial
+            else:
+                out.append(cur)
+                cur = w
+        out.append(cur)
+    return out
+
+
+def _is_block_justified(lines: List[Dict[str, Any]]) -> bool:
+    """
+    True when the original block's lines are flush-right (justified) — the
+    non-last lines all end at nearly the same x1. Needs >=3 lines: a 1-2
+    line block cannot be told apart from a ragged-left one.
+    """
+    rows = [ln["bbox"] for ln in lines if ln.get("bbox")]
+    if len(rows) < 3:
+        return False
+    x1s = [b[2] for b in rows[:-1]]          # every line except the last
+    return (max(x1s) - min(x1s)) <= 2.5
+
+
+def _render_block_textwriter(
+    page:      fitz.Page,
+    rect:      fitz.Rect,
+    text:      str,
+    font:      fitz.Font,
+    fontsize:  float,
+    color:     tuple,
+    pitch:     float,
+    first_top: float,
+    left:      float,
+    align:     int = 0,
+    ascender:  Optional[float] = None,
+    right:     Optional[float] = None,
+) -> bool:
+    """
+    Word-wrap `text` to the slot width (`rect.x1` - `left`) and draw it
+    with a fitz.TextWriter: every glyph in `font` at exactly `fontsize`,
+    consecutive baselines spaced by exactly `pitch` points, the first
+    baseline pinned so the block starts where the original first line did
+    (`first_top` is that line's bbox-top, `left` its bbox-left).
+
+    Replaces page.insert_textbox, whose `lineheight` parameter does not
+    map linearly to rendered pitch on PyMuPDF 1.27 — passing the measured
+    multiplier rendered every edited block ~25% too tight.
+
+    Returns True on success; False — WITHOUT drawing — when the wrapped
+    block is taller than `rect` (the caller must then revert the region).
+
+    `ascender` overrides the baseline-placement ascender — needed when
+    `font` is a metric-compatible CLONE of the original (the clone shares
+    glyph widths but not vertical metrics, so the original family's
+    ascender must place the baseline where the original text sat).
+    """
+    eff_right = right if right is not None else rect.x1
+    avail_w   = max(1.0, eff_right - left)
+    lines = _wrap_to_width(text, font, fontsize, avail_w)
+    if not any(ln.strip() for ln in lines):
+        return False
+    asc      = float(ascender) if ascender is not None else float(font.ascender)
+    desc_abs = abs(float(font.descender))
+    n        = len(lines)
+    baseline0    = first_top + asc * fontsize
+    block_bottom = baseline0 + (n - 1) * pitch + desc_abs * fontsize
+    # Hard reject: an over-long rewrite must not spill past its slot.
+    if block_bottom > rect.y1 + 1.0:
+        return False
+    # Last non-empty line — a justified paragraph leaves it ragged (left);
+    # only the lines above are stretched to the full width.
+    last_real = max((i for i, ln in enumerate(lines) if ln.strip()), default=-1)
+    sp_w = font.text_length(" ", fontsize)
+    tw = fitz.TextWriter(page.rect)
+    for i, ln in enumerate(lines):
+        if not ln:
+            continue
+        y = baseline0 + i * pitch
+        # align 3 = justified: stretch inter-word gaps so the line spans
+        # the full width (every line except the last real one).
+        if align == 3 and i != last_real:
+            words = ln.split()
+            if len(words) > 1:
+                wlens   = [font.text_length(w, fontsize) for w in words]
+                natural = sum(wlens) + sp_w * (len(words) - 1)
+                extra   = avail_w - natural
+                if extra > 0:
+                    gap = sp_w + extra / (len(words) - 1)
+                    xx  = left
+                    last_wi = len(words) - 1
+                    for wi, w in enumerate(words):
+                        # Keep a real space char in each piece (except the
+                        # last word) — word-by-word placement alone fuses
+                        # the words in the extracted text layer, which
+                        # breaks ATS parsing and copy-paste.
+                        piece = w if wi == last_wi else w + " "
+                        tw.append((xx, y), piece, font=font, fontsize=fontsize)
+                        xx += wlens[wi] + gap
+                    continue
+        x = left
+        if align in (1, 2):
+            try:
+                line_w = font.text_length(ln, fontsize)
+            except Exception:
+                line_w = 0.0
+            if align == 1:        # centred
+                x = left + max(0.0, (avail_w - line_w) / 2.0)
+            else:                 # right-aligned
+                x = max(left, eff_right - line_w)
+        tw.append((x, y), ln, font=font, fontsize=fontsize)
+    tw.write_text(page, color=color)
+    return True
+
+
 def _insert_fitted(
     page:      fitz.Page,
     rect:      fitz.Rect,
@@ -1550,72 +2430,99 @@ def _insert_fitted(
     line_gap:  float = 1.05,  # matches typical CV line-spacing (~1.07).
     doc:       Optional[fitz.Document] = None,
     font_cache: Optional[Dict[int, str]] = None,
+    orig_first_top: Optional[float] = None,
+    orig_left: Optional[float] = None,
+    orig_right: Optional[float] = None,
 ) -> float:
     """
-    Insert `text` into `rect` using the ref_span's style. Tries to reuse the
-    original embedded font first; on failure falls back to a built-in Base14
-    font and substitutes any unicode bullets with ASCII dashes (so renders
-    never come out as `?`).
+    Insert `text` into `rect` in ref_span's exact style — original
+    embedded font, original size, original line pitch — using a
+    fitz.TextWriter with manual word-wrapping (see _render_block_textwriter).
 
-    Progressively shrinks fontsize on overflow. Returns the fontsize used, or 0
-    if even the smallest size couldn't fit.
+    99% format mode (final architecture): NO font shrinkage, NO line-gap
+    compression. The text is drawn at the original span's font size and
+    at the original block's measured line pitch. If the rewrite wraps to
+    more lines than the slot can hold, this returns 0 and the caller MUST
+    revert the region to its original text — the hard-reject path that
+    preserves typography exactly.
+
+    Why TextWriter and not page.insert_textbox: insert_textbox owns its
+    own line-wrapping and its `lineheight` parameter does not map linearly
+    to rendered pitch on PyMuPDF 1.27 (it folds in the font ascender), so
+    passing the measured multiplier rendered every edited block ~25% too
+    tight ("text looks sticked together"). TextWriter places each baseline
+    at an exact y.
+
+    `orig_first_top` is the original block's first-line bbox-top; the
+    re-inserted text's first baseline is pinned to it so the edited block
+    begins exactly where the original did.
+
+    Returns the fontsize used (== base_size) on success, or 0 on overflow.
     """
-    base_size = float(ref_span.get("size", 10))
+    base_size = float(ref_span.get("size", 10) or 10)
     color     = _int_color_to_rgb(int(ref_span.get("color", 0)))
 
-    # Apr 28 follow-up: STRICT rect (no spill).
-    #
-    # Previous logic extended y1 by `max(2.0, base_size * 0.4)` (= +3.6pt at
-    # 9pt body, +4pt at 10pt body) on the theory that PyMuPDF's textbox
-    # measurement is conservative and benefits from slack. In practice this
-    # spill is the cause of two visible bugs observed across all 3 CVs in
-    # the Apr 28 22:11 run:
-    #
-    #   1. Bullet-block bottom row clips into the next role header
-    #      ("Replaced" overprinted on previous bullet in Ryanair CV) — the
-    #      bullet rect's y1 was already pinned to `next_y0 - 2pt` by the
-    #      caller; adding 3.6pt of spill pushed text into the next role.
-    #
-    #   2. Personal Projects heading sits flush against the rewritten
-    #      Summary text, eating the natural 6-8pt gap. Same mechanism.
-    #
-    # Fix: `work_rect = rect` exactly. If text doesn't fit, `insert_textbox`
-    # returns rc<0 and the shrinkage ladder below will progressively reduce
-    # fontsize until it does. This guarantees zero spill into adjacent
-    # content while still giving us 10 attempts of 0.5pt-per-step shrink
-    # to land the text within the original block's natural footprint.
-    work_rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1)
+    # Original block line pitch, in points. `line_gap` is the multiplier
+    # measured by _measure_line_gap (median baseline distance / fontsize),
+    # so `pitch` reproduces the original's natural line spacing exactly.
+    pitch = max(1.0, float(line_gap)) * base_size
 
-    # Run-17 audit fix #15: cap shrinkage at 1.0pt (was 4.5pt). The
-    # previous ladder allowed each bullet to independently shrink up to
-    # 4.5pt, producing visibly inconsistent font sizes across bullets in
-    # the same role (10pt / 9.5pt / 9pt depending on each one's overflow).
-    # Now any rewrite that doesn't fit within 1pt of shrinkage will return
-    # 0, which signals the caller to revert this bullet to original —
-    # keeping the role's typography homogeneous. The 1.50× length ceiling
-    # in cv_diff_tailor._rewrite_is_safe already ensures rewrites should
-    # fit within a small shrink budget; this guard catches the rare cases
-    # where they don't.
-    sizes = [base_size, base_size - 0.5, base_size - 1.0]
+    # First-line bbox-top of the original block. Callers pass it from the
+    # original line geometry; fall back to the summary/skills rect padding
+    # (_union_rect uses pad=1.5) when it is not supplied.
+    if orig_first_top is None:
+        orig_first_top = rect.y0 + 1.5
+    # Left edge of the original text. Callers pass the original block's
+    # bbox-left; fall back to rect.x0 (already the true left for the
+    # bullet path, whose rect is not padded on the x-axis).
+    if orig_left is None:
+        orig_left = rect.x0
 
     # ── Attempt 1: original embedded font (preserves look + unicode) ──
     if doc is not None and font_cache is not None:
         alias = _install_original_font(doc, page, ref_span, font_cache, text=text)
         if alias:
-            for sz in sizes:
-                if sz < 6:
-                    break
-                try:
-                    rc = page.insert_textbox(
-                        work_rect, text,
-                        fontsize=sz, fontname=alias, color=color,
-                        align=align, lineheight=max(1.0, line_gap),
-                    )
-                except Exception:
-                    rc = -1
-                    break
-                if rc >= 0:
-                    return sz
+            emb_font = None
+            try:
+                xref = int(str(alias)[3:])          # alias is f"emb{xref}"
+                cached = font_cache.get(f"fontobj:{xref}")
+                if isinstance(cached, fitz.Font):
+                    emb_font = cached
+                else:
+                    buf = font_cache.get(f"buf:{xref}")
+                    if isinstance(buf, (bytes, bytearray)):
+                        emb_font = fitz.Font(fontbuffer=bytes(buf))
+                        font_cache[f"fontobj:{xref}"] = emb_font
+            except Exception:
+                emb_font = None
+            if emb_font is not None:
+                ok = _render_block_textwriter(
+                    page, rect, text, emb_font, base_size, color,
+                    pitch, orig_first_top, orig_left, align,
+                    right=orig_right,
+                )
+                # A non-None alias guarantees the embedded font installed
+                # and covers every glyph. Fit or not, do NOT fall through
+                # to the Base14 path: swapping the candidate's font (e.g.
+                # Calibri -> Helvetica) renders visibly wrong. On overflow
+                # return 0 so the caller keeps the ORIGINAL text, already
+                # in the correct font / size / pitch.
+                return base_size if ok else 0.0
+            # Embedded buffer unexpectedly unavailable — fall through.
+
+    # ── Attempt 1.5: bundled metric-compatible clone ──
+    # The CV's own font could not be reused. Before Base14 (which does
+    # not resemble Calibri / Cambria), try a bundled clone matched to the
+    # original family — same glyph widths, near-identical look.
+    clone = _bundled_clone_font(ref_span, text, font_cache)
+    if clone is not None:
+        clone_font, clone_ascender = clone
+        ok = _render_block_textwriter(
+            page, rect, text, clone_font, base_size, color,
+            pitch, orig_first_top, orig_left, align,
+            ascender=clone_ascender, right=orig_right,
+        )
+        return base_size if ok else 0.0
 
     # ── Attempt 2: built-in Base14 (PyMuPDF mapping) ──
     # PyMuPDF's built-in Latin-1 Base14 fonts silently render chars outside
@@ -1669,17 +2576,16 @@ def _insert_fitted(
         # Map every bullet-shape char (including U+2022) to · in this
         # fallback path.
         safe_text = safe_text.replace(ch, "\u00b7")
-    for sz in sizes:
-        if sz < 6:
-            break
-        rc = page.insert_textbox(
-            work_rect, safe_text,
-            fontsize=sz, fontname=builtin, color=color,
-            align=align, lineheight=max(1.0, line_gap),
-        )
-        if rc >= 0:
-            return sz
-    return 0.0
+    try:
+        b14_font = fitz.Font(builtin)
+    except Exception:
+        return 0.0
+    ok = _render_block_textwriter(
+        page, rect, safe_text, b14_font, base_size, color,
+        pitch, orig_first_top, orig_left, align,
+        right=orig_right,
+    )
+    return base_size if ok else 0.0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1725,7 +2631,7 @@ def apply_edits(
         sections = extract_structure(pdf_path)
 
         # ── SUMMARY ────────────────────────────────────────────
-        new_summary = (edits.get("summary") or "").strip()
+        new_summary = _normalize_for_ats((edits.get("summary") or "").strip())
         if new_summary:
             sum_sec = next((s for s in sections if s["type"] == "summary"), None)
             if sum_sec is None:
@@ -1804,6 +2710,73 @@ def apply_edits(
                     if not normalised:
                         continue
 
+                    # Issue 5 (May 2026): dedupe rewrites with >70% token
+                    # overlap. The LLM occasionally produces two rewrites
+                    # for different bullet slots whose content is near-
+                    # identical (e.g. "Capitalised on digital trends..." at
+                    # i=4 AND i=7). Keep the FIRST occurrence as rewrite;
+                    # revert subsequent duplicates to original text.
+                    _DUP_OVERLAP_THRESHOLD = 0.70
+                    rewrite_token_sets: List[set] = []
+                    for e in normalised:
+                        if e["text"] is None:
+                            rewrite_token_sets.append(set())
+                            continue
+                        tokens = {
+                            t for t in re.split(r"[^a-z0-9]+", e["text"].lower())
+                            if len(t) >= 3
+                        }
+                        # Compare against earlier rewrites in this role.
+                        is_duplicate = False
+                        for prev_tokens in rewrite_token_sets:
+                            if not prev_tokens or not tokens:
+                                continue
+                            overlap = len(tokens & prev_tokens) / max(
+                                1, min(len(tokens), len(prev_tokens))
+                            )
+                            if overlap >= _DUP_OVERLAP_THRESHOLD:
+                                is_duplicate = True
+                                break
+                        if is_duplicate:
+                            print(
+                                f"   ⚠️  apply_edits: bullet i={e['i']} in "
+                                f"role {header[:40]!r} duplicates an earlier "
+                                f"rewrite (token overlap ≥{_DUP_OVERLAP_THRESHOLD}) "
+                                f"— reverting to original."
+                            )
+                            e["text"] = None
+                            rewrite_token_sets.append(set())
+                        else:
+                            rewrite_token_sets.append(tokens)
+
+                    # Issue 6 (May 2026): auto-include missing bullet indices
+                    # as text=null instead of silently dropping them. The
+                    # tailor LLM occasionally returns only the indices it
+                    # rewrote (e.g. [0, 1, 4, 7, 11]) — the legacy behaviour
+                    # was to DROP bullets 2, 3, 5, 6, 8, 9, 10, 12, 13 from
+                    # the PDF entirely. For the Shrestha+Ogilvy case this
+                    # silently lost "Led a team of copywriters, designers,
+                    # and executives..." which is critical evidence of
+                    # Manager-level experience. New rule: any bullet index
+                    # not explicitly listed by the LLM is preserved at its
+                    # ORIGINAL position with text=null (keep original).
+                    listed_indices = {e["i"] for e in normalised}
+                    auto_added: List[int] = []
+                    for i in range(len(bullets)):
+                        if i not in listed_indices:
+                            normalised.append({"i": i, "text": None})
+                            auto_added.append(i)
+                    if auto_added:
+                        # Re-sort so original order is preserved when the
+                        # LLM didn't explicitly request a reorder.
+                        normalised.sort(key=lambda e: e["i"])
+                        print(
+                            f"   🛡️  apply_edits: auto-added {len(auto_added)} "
+                            f"missing bullet indices {auto_added} in role "
+                            f"{header[:40]!r} (LLM didn't list them — "
+                            f"keeping their original text)."
+                        )
+
                     # Detect no-op: same order as original AND no rewrites.
                     trivial = (
                         len(normalised) == len(bullets)
@@ -1839,136 +2812,197 @@ def apply_edits(
 
                     page_idx = bullets[0]["lines"][0]["page"]
                     page = doc[page_idx]
-                    all_boxes = [ln["bbox"] for b in bullets for ln in b["lines"]]
-                    rect = _union_rect(all_boxes, pad=1.5)
-
-                    # Apr 28 follow-up: data-driven boundaries. Replaces TWO
-                    # hardcoded magic numbers that broke on CV variations:
-                    #   1) `page.rect.width - 40`  → measured right margin
-                    #   2) `rect.y1 + 50`          → next-sibling y0
-                    #
-                    # The OLD `+50` was the root cause of the role-header
-                    # clipping bug ("V"/"P"/"Cl" fragments): when a CV's
-                    # natural spacing put the next role header within 50pt
-                    # of the last bullet, the redact rect overlapped the
-                    # next role and erased it. The redrawn bullet text
-                    # would then partially overlay the next role header,
-                    # leaving only the leading 1-2 chars visible.
-                    #
-                    # New logic: bound y1 below the next sibling on the
-                    # page minus a 2pt safety gap. Never overflows into
-                    # ANY following content regardless of CV layout.
                     page_lines = _all_lines_on_page(sections, page_idx)
-                    # Exclude this role's own bullet lines from the lookup
-                    # so we find the NEXT role/section, not our own bullets.
-                    own_y_min = rect.y0 - 0.5
-                    own_y_max = rect.y1 + 0.5
-                    other_lines = [
-                        ln for ln in page_lines
-                        if not (own_y_min <= ln["bbox"][1] <= own_y_max)
-                    ]
-                    rect.x1 = max(rect.x1, _measured_right_margin(other_lines, page.rect.width))
-                    next_y0 = _next_y0_below(rect, other_lines, page.rect.height)
-                    # Cap downward extension at next_y0 - 2pt safety gap.
-                    # Allow extending DOWN to that limit (rewritten bullets
-                    # may be longer than originals and need wrap room) but
-                    # never beyond — that's what protects role headers.
-                    rect.y1 = max(rect.y1, next_y0 - 2.0)
-                    # Pick a body-text span (NOT the symbol-font bullet glyph) as
-                    # style reference, scanning across all bullet lines.
-                    ref = _pick_body_span(
-                        [ln for b in bullets for ln in b["lines"]]
-                    )
-                    if ref is None:
-                        continue
-                    # Bullet glyph selection (May 2026 fix #2 — Option A):
-                    #
-                    # Default to U+2022 (•) so re-rendered bullets visually
-                    # match the original CV's bullets. The downstream call
-                    # chain handles the safety case automatically:
-                    #
-                    #   1. _insert_fitted → _install_original_font calls
-                    #      _font_can_render(buf, text) which now performs a
-                    #      THREE-layer check (cmap presence + positive
-                    #      advance-width + non-empty glyph bbox). The bbox
-                    #      check (Apr 29) catches the .notdef-stripped case
-                    #      that the older advance-only check missed and
-                    #      caused the Run-2 "?" bullets bug. If • does not
-                    #      survive subsetting, the embedded-font path
-                    #      returns None and we fall through to Base14.
-                    #
-                    #   2. The Base14 fallback in _insert_fitted maps every
-                    #      bullet-shape codepoint (incl. U+2022) to U+00B7
-                    #      (·) which renders reliably on every Base14 build.
-                    #
-                    # Net behaviour:
-                    #   • Embedded font with real • glyph    → ships •  (matches original)
-                    #   • Embedded font with stripped glyph  → falls to Base14, ships ·
-                    #   • No embedded font available         → Base14, ships ·
-                    #
-                    # Override: set APPLYSMART_FORCE_BULLET_DOT=1 to force ·
-                    # everywhere if a future font edge-case regresses. Safe
-                    # escape valve without code change.
+
+                    # PER-BULLET IN-PLACE INSERTION (May 2026 rewrite).
+                    # Each rewritten bullet is redacted + re-inserted in
+                    # ITS OWN rect, instead of redacting the whole role
+                    # block and re-flowing every bullet through one shared
+                    # textbox. The old block approach collapsed every
+                    # bullet to the leftmost X (broke 2-column layouts),
+                    # used one line-gap for the whole block, forced a
+                    # single inserted glyph, and re-rendered even unchanged
+                    # bullets. Per-bullet insertion keeps each bullet at its
+                    # own X / Y / line-gap, leaves the original bullet glyph
+                    # untouched, and SKIPS unchanged bullets entirely
+                    # (perfect fidelity for kept bullets).
                     if os.getenv("APPLYSMART_FORCE_BULLET_DOT") == "1":
-                        bullet_char = "\u00b7"
+                        bullet_char = "·"
                     else:
-                        bullet_char = "\u2022"
+                        bullet_char = _detect_section_bullet_glyph(sec)
 
-                    # Build new bullet block, using rewrite text when provided.
-                    lines_out: List[str] = []
-                    n_rewrites_role = 0
-                    for e in normalised:
-                        original = bullets[e["i"]]["text"]
-                        use_text = e["text"] if e["text"] is not None else original
-                        # Ensure use_text is a string (defensive against LLM returning dict)
-                        if not isinstance(use_text, str):
-                            use_text = str(use_text)
-                        if e["text"] is not None:
-                            n_rewrites_role += 1
-                        lines_out.append(f"{bullet_char}   {use_text}")
-                    new_text = "\n".join(lines_out)
-
-                    dropped_this_role = len(bullets) - len(normalised)
-                    n_rewrites_total += n_rewrites_role
-                    n_dropped_total  += dropped_this_role
-
-                    measured = _measure_line_gap(
+                    bullet_ref = _pick_body_span(
                         [ln for b in bullets for ln in b["lines"]]
                     )
-                    _redact_rect(page, rect)
-                    # Run 19 audit fix #34: check _insert_fitted return value.
-                    # Previously the return value was discarded — if the
-                    # rewrite didn't fit even at the 1pt shrinkage cap, the
-                    # rect was already wiped but nothing replaced it, leaving
-                    # a blank rectangle in the output PDF. Now we fall back
-                    # to the ORIGINAL bullet text on overflow so the user
-                    # ships content (even untailored) instead of blank space.
-                    sz_b = _insert_fitted(
-                        page, rect, new_text, ref, align=0,
-                        line_gap=measured,
-                        doc=doc, font_cache=font_cache,
-                    )
-                    if not sz_b or sz_b <= 0:
-                        # Rewrite didn't fit — restore original.
-                        original_text = "\n".join(
-                            f"{bullet_char}   {b['text']}" for b in bullets
+                    if bullet_ref is None:
+                        continue
+
+                    n_rewrites_role = 0
+                    role_applied = False
+                    for e in normalised:
+                        # Unchanged bullet — leave the PDF untouched.
+                        if e["text"] is None:
+                            continue
+                        new_btext = _normalize_for_ats(e["text"])
+                        if not isinstance(new_btext, str) or not new_btext.strip():
+                            continue
+                        bullet = bullets[e["i"]]
+                        b_lines = bullet.get("lines") or []
+                        if not b_lines:
+                            continue
+                        # Skip bullets that straddle a page break — one
+                        # rect can't redact across pages.
+                        if len({ln["page"] for ln in b_lines}) > 1:
+                            report.setdefault("skipped", []).append(
+                                f"bullets/{header}: bullet i={e['i']} spans "
+                                f"pages — kept original"
+                            )
+                            continue
+
+                        body_rect, has_inline_glyph, body_true = _bullet_body_rect(b_lines)
+                        if body_rect is None:
+                            continue
+
+                        # Extend the rect to this bullet's full vertical
+                        # SLOT: up to the midpoint of the gap above, down
+                        # to the midpoint of the gap below. PyMuPDF's
+                        # insert_textbox measurement runs ~0.5-2pt more
+                        # conservative than the original text's occupied
+                        # height — without this slack every multi-line
+                        # rewrite was rejected by a hair. Taking half of
+                        # each neighbouring gap is invisible (the gap is
+                        # whitespace) and never reaches a neighbour's text.
+                        # Capture the bullet's TRUE text bounds before the
+                        # slot extension — the reference for border clipping
+                        # (a divider line just below the text must be
+                        # protected even though it sits inside the padded,
+                        # extended rect).
+                        text_y0 = body_rect.y0
+                        text_y1 = body_rect.y1
+
+                        own_y_min = body_rect.y0 - 0.5
+                        own_y_max = body_rect.y1 + 0.5
+                        other_lines = [
+                            ln for ln in page_lines
+                            if not (own_y_min <= ln["bbox"][1] <= own_y_max)
+                        ]
+                        body_rect.x1 = max(
+                            body_rect.x1,
+                            _measured_right_margin(other_lines, page.rect.width),
                         )
-                        _insert_fitted(
-                            page, rect, original_text, ref, align=0,
+                        # Nearest line ABOVE (its bottom edge) and BELOW
+                        # (its top edge), excluding this bullet's own lines.
+                        prev_y1 = max(
+                            (ln["bbox"][3] for ln in other_lines
+                             if ln["bbox"][3] <= text_y0 + 0.5),
+                            default=text_y0 - 6.0,
+                        )
+                        next_y0 = _next_y0_below(
+                            body_rect, other_lines, page.rect.height
+                        )
+                        # Extend to this bullet's slot: half the gap on each
+                        # side (whitespace, invisible). Clamp ≤6pt so we
+                        # never swallow a neighbouring line.
+                        gap_above = max(0.0, text_y0 - prev_y1)
+                        body_rect.y0 = text_y0 - min(gap_above / 2.0, 6.0)
+                        gap_below = max(0.0, next_y0 - text_y1)
+                        body_rect.y1 = text_y1 + min(gap_below / 2.0, 6.0)
+
+                        # Inline glyph -> must re-prepend (original glyph is
+                        # inside the redact rect). Separate glyph -> leave
+                        # it; the original sits outside body_rect untouched.
+                        if has_inline_glyph:
+                            insert_text  = f"{bullet_char}   {new_btext}"
+                            restore_text = f"{bullet_char}   {bullet['text']}"
+                        else:
+                            insert_text  = new_btext
+                            restore_text = bullet["text"]
+
+                        measured = _measure_line_gap(b_lines)
+                        ref = _pick_body_span(b_lines) or bullet_ref
+                        fit_size = float(ref.get("size", 10) or 10) if ref else 10.0
+
+                        if os.getenv("APPLYSMART_DEBUG_BULLETS") == "1":
+                            print(
+                                f"   bullet i={e['i']}: rect "
+                                f"x0={body_rect.x0:.1f} y0={body_rect.y0:.1f} "
+                                f"x1={body_rect.x1:.1f} y1={body_rect.y1:.1f} "
+                                f"w={body_rect.width:.1f} h={body_rect.height:.1f} | "
+                                f"n_lines={len(b_lines)} measured_gap={measured:.3f} | "
+                                f"insert_len={len(insert_text)} ref_size={fit_size}"
+                            )
+
+                        # PRE-CHECK: only redact if the rewrite will fit.
+                        # Skipping a non-fitting rewrite leaves the original
+                        # bullet PERFECTLY intact (no redaction, no blank
+                        # gap). This is what prevents the empty-bullet bug.
+                        if not _estimate_text_fits(
+                            insert_text, body_rect.width, body_rect.height,
+                            fit_size, measured,
+                        ):
+                            report.setdefault("skipped", []).append(
+                                f"bullets/{header}: bullet i={e['i']} rewrite "
+                                f"too long for its slot — kept original (untouched)"
+                            )
+                            print(
+                                f"   pdf_editor: bullet i={e['i']} in "
+                                f"{header[:40]!r} rewrite too long for slot — "
+                                f"kept original (untouched, no redaction)"
+                            )
+                            continue
+
+                        # Capture any table/divider border lines that pass
+                        # through the redact rect, so we can re-draw them
+                        # after the white-fill redaction wipes them.
+                        saved_borders = _capture_borders_in_rect(page, body_rect)
+
+                        _redact_rect(page, body_rect)
+                        sz_b = _insert_fitted(
+                            page, body_rect, insert_text, ref, align=0,
                             line_gap=measured,
+                            orig_first_top=body_true.y0, orig_left=body_true.x0,
                             doc=doc, font_cache=font_cache,
                         )
-                        report.setdefault("skipped", []).append(
-                            f"bullets/{header}: rewrite did not fit "
-                            f"(restored original {len(bullets)} bullets)"
-                        )
-                        print(
-                            f"   ⚠️  pdf_editor: bullets for {header!r} did "
-                            f"not fit at min font size — restored original "
-                            f"({len(bullets)} bullets, {len(new_text)} chars "
-                            f"requested)"
-                        )
-                    else:
+                        _redraw_borders(page, saved_borders)
+                        if not sz_b or sz_b <= 0:
+                            # Estimate passed but PyMuPDF still rejected
+                            # (rare). Restore the original — it is no longer
+                            # than the rewrite, so it fits — and never leave
+                            # the bullet blank.
+                            restored = _insert_fitted(
+                                page, body_rect, restore_text, ref, align=0,
+                                line_gap=measured,
+                                orig_first_top=body_true.y0, orig_left=body_true.x0,
+                                doc=doc, font_cache=font_cache,
+                            )
+                            _redraw_borders(page, saved_borders)
+                            if not restored or restored <= 0:
+                                # Absolute last resort: force-draw the
+                                # original ignoring the fit return code so
+                                # the bullet is never blank.
+                                try:
+                                    page.insert_textbox(
+                                        body_rect, restore_text,
+                                        fontsize=fit_size, fontname="helv",
+                                        align=0, lineheight=1.0,
+                                    )
+                                    _redraw_borders(page, saved_borders)
+                                except Exception:
+                                    pass
+                            report.setdefault("skipped", []).append(
+                                f"bullets/{header}: bullet i={e['i']} rewrite "
+                                f"did not fit — kept original"
+                            )
+                            print(
+                                f"   pdf_editor: bullet i={e['i']} in "
+                                f"{header[:40]!r} did not fit — kept original"
+                            )
+                        else:
+                            n_rewrites_role += 1
+                            role_applied = True
+
+                    n_rewrites_total += n_rewrites_role
+                    if role_applied:
                         applied_roles.append(header)
             if applied_roles:
                 report["applied"]["bullets"] = {
@@ -1992,6 +3026,7 @@ def apply_edits(
                 page_lines = _all_lines_on_page(sections, page_idx)
                 own_y_min = min(ln["bbox"][1] for ln in sk_sec["lines"]) - 0.5
                 own_y_max = max(ln["bbox"][3] for ln in sk_sec["lines"]) + 0.5
+                own_x_min = min(ln["bbox"][0] for ln in sk_sec["lines"])
                 other_lines = [
                     ln for ln in page_lines
                     if not (own_y_min <= ln["bbox"][1] <= own_y_max)
@@ -2007,6 +3042,7 @@ def apply_edits(
                     # the skills path. Same fallback pattern.
                     sz_sk = _insert_fitted(
                         page, rect, reordered, ref, align=0,
+                        orig_first_top=own_y_min + 0.5, orig_left=own_x_min,
                         doc=doc, font_cache=font_cache,
                     )
                     if not sz_sk or sz_sk <= 0:
@@ -2018,6 +3054,7 @@ def apply_edits(
                         )
                         _insert_fitted(
                             page, rect, original_skills, ref, align=0,
+                            orig_first_top=own_y_min + 0.5, orig_left=own_x_min,
                             doc=doc, font_cache=font_cache,
                         )
                         report["skipped"].append(

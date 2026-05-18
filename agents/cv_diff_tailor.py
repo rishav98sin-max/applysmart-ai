@@ -137,16 +137,30 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
     parts: List[str] = []
     cur_summary   = (outline.get("summary") or "").strip()
     cur_word_count = len(cur_summary.split()) if cur_summary else 0
-    parts.append(f"CURRENT SUMMARY ({cur_word_count} words):")
+    # 99% format mode: surface a HARD character budget for the summary too.
+    # The summary bbox in the original PDF was sized for `orig_chars`. Allow
+    # +10% (matches the bullet budget policy). Anything longer is rejected
+    # by `_apply_summary_edit` (1.4× word-ratio guard) or by PyMuPDF's
+    # textbox fit check at base font size.
+    orig_summary_chars = len(cur_summary)
+    summary_budget = max(400, int(orig_summary_chars * 1.10)) if orig_summary_chars else 600
+    parts.append(
+        f"CURRENT SUMMARY ({cur_word_count} words, {orig_summary_chars} chars, "
+        f"max={summary_budget} chars — HARD limit; longer rewrites REVERT to original):"
+    )
     parts.append(cur_summary or "(none)")
     parts.append("")
     parts.append("ROLES (0-indexed bullets — index 'i' is how the editor locates each bullet):")
     parts.append(
-        "Each bullet has a [max=N chars] budget — your rewrite MUST stay "
-        "at or below N. Rewrites longer than the budget WILL be rejected "
-        "by the editor and the original bullet kept in place. Aim for "
-        "roughly the same length as the original (the budget is +10% "
-        "headroom, not a target)."
+        "Each bullet shows [keep ≈N words]. THE RULE: a tailored bullet has "
+        "the SAME word count as the original — match the N shown, within a "
+        "word or two, NEITHER longer NOR shorter. The editor drops each "
+        "rewrite into the exact slot the original occupies with no page "
+        "reflow: a same-length rewrite fits; a longer one overflows the slot "
+        "and a shorter one leaves a visible gap — BOTH are REJECTED. Tailor "
+        "by RE-WORDING the bullet's content end to end — re-word ALL of it, "
+        "keep every fact; never append a new clause and never drop content. "
+        "Re-aim the SAME amount of content at THIS job."
     )
     for r in outline.get("roles", []):
         parts.append(f'Role "{r["header"]}":')
@@ -154,16 +168,15 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
             # Bullets from build_outline are dicts {"text": str, "length": int};
             # tolerate legacy str entries too.
             btext = b["text"] if isinstance(b, dict) else str(b)
-            # Length budget = original length + 40%, floor 80 chars so very
-            # short bullets aren't impossible to rewrite. Capped at 350 to
-            # avoid runaway over-budget on dense paragraphs that already
-            # use the full PDF rect.
-            # May 2026 fix: raised from 1.10 to 1.40 (still under the 1.50
-            # hard guard) so Groq has enough headroom to produce a meaningful
-            # verb-led rewrite without being scared off by a very tight budget.
+            # May 2026 (per-bullet in-place renderer): the target length is
+            # the ORIGINAL bullet's length. The editor inserts each rewrite
+            # into the original bullet's slot with no page reflow, so a
+            # same-length rewrite occupies the same line count and the
+            # format is preserved. We show the original length as the
+            # target the LLM should hit (±10%).
             orig_len = len(btext.strip())
-            budget = max(80, min(350, int(orig_len * 1.40)))
-            parts.append(f"  [{i}] [max={budget} chars] {btext}")
+            orig_words = len(btext.split())
+            parts.append(f"  [{i}] [keep ≈{orig_words} words] {btext}")
         parts.append("")
     skills = outline.get("skills") or []
     if skills:
@@ -179,8 +192,13 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
 _PROMPT_TEMPLATE = """╔══════════════════════════════════════════════════════════════════════╗
 ║  MANDATORY: You MUST produce actual bullet rewrites.                  ║
 ║  Returning text=null for EVERY bullet = failed tailoring = REJECTED.  ║
-║  Aim for at least 3 substantive rewrites. Rewrites must be 50–150%    ║
-║  of the original bullet's character length and preserve all numbers.  ║
+║  Aim to rewrite EVERY bullet that the strategy targets.               ║
+║                                                                       ║
+║  THE LENGTH RULE: each rewrite must be ≈ the SAME LENGTH as its       ║
+║  original (within ±10% of the [target≈N chars] shown). The output    ║
+║  PDF places each rewrite in the original bullet's exact slot with    ║
+║  no reflow — a same-length rewrite fits perfectly; a longer one is    ║
+║  reverted (lost tailoring). Preserve every number + proper noun.      ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
 You are an EXECUTOR. A senior career strategist has already analysed
@@ -199,19 +217,27 @@ YOUR THINKING PROCESS (critical — do this BEFORE writing JSON):
    weave in the must_include_phrases (which are already in the CV);
    keep every credential (grade, YoE, employer, university) intact.
 3. For each bullet listed in the STRATEGY:
-     • action=rewrite_verb_led → open with the target_verb_phrase the
-       strategy gave you. Move the strategy's target_keywords to the
-       front of the sentence. Keep every number and proper noun from
-       the original verbatim. Do NOT just append the keywords — reshape
-       the bullet so JD vocabulary leads.
+     • action=rewrite_verb_led → the strategy gives a "LEAD WITH:"
+       directive naming a fact ALREADY IN that bullet. Produce a GENUINE
+       rewrite of that bullet: choose a strong verb that mirrors the
+       JD's language, move the LEAD-WITH fact to the front, and re-word
+       the framing and connective language so the sentence is aimed at
+       THIS job. The wording changes; the FACTS do not. Keep every
+       number, proper noun and claim exactly as the original; build only
+       from words in that bullet or elsewhere in the CV; never use a JD
+       term from the FORBIDDEN list. A targeted bullet that comes back
+       word-for-word (or with only a comma or article moved) has NOT
+       been done.
      • action=promote → keep the original text (text=null) but place
        this bullet earlier in the role's array.
      • action=deprioritise → keep verbatim (text=null), place last.
 4. For bullets NOT in the strategy: keep verbatim (text=null) in their
    original order. Do NOT improvise extra rewrites.
-5. CHECK every rewrite against the do_not_inject list. If a rewrite
-   contains any of those terms, scrub them — those terms are not in
-   the CV and a guard will REJECT the rewrite if they appear.
+5. CROSS-CHECK every rewrite — the summary AND every single bullet —
+   against the FORBIDDEN WORDS block above. NOT ONE of those words may
+   appear anywhere in your output. They are JD vocabulary this candidate
+   never used; if a sentence seems to need one, the underlying claim is
+   not in the CV — drop the claim and reframe using what the CV supports.
 6. ONLY NOW, format your rewrite plan into the JSON schema at the bottom.
 
 If you skip straight to JSON or invent rewrites the strategy did not
@@ -230,6 +256,10 @@ COMPANY    : {company}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+{jd_only_terms_block}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 CV CONTENT (structured):
 {outline}
 
@@ -242,80 +272,167 @@ CV CONTENT (structured):
 RULES (strict):
 
 1. summary:
-   WHAT THIS SECTION IS FOR:
-   A recruiter spends ~6 seconds on a CV on the first pass. The summary
-   is the user's story — who they are, what they have done, and why they
-   fit THIS role. Write it as a crisp 2-4 line human pitch, not as
-   marketing copy.
+   WHO YOU ARE WRITING FOR:
+   A recruiter on a 6-second scan. They have a stack of CVs. Your
+   summary either earns them another 30 seconds with this candidate or
+   sends the CV to the no-pile. You are NOT writing marketing copy.
+   You are writing a human pitch in 2-4 crisp lines: "I am X, I have
+   done Y, that's why I fit THIS role." Write like a person describing
+   themselves to another person in plain English.
 
-   WHAT YOU MUST DO:
-   - Look at the JD. Identify the 2-3 skills or experiences already in
-     the candidate's CV (summary, bullets, or skills section) that
-     most directly match the JD's top requirements.
-   - Foreground those CV items naturally in the rewrite so a recruiter
-     scanning for 6 seconds immediately sees why this candidate fits
-     THIS role. Example: if the CV lists skills A, B, C, D and the JD
-     focuses on A, lead with A. If the next job focuses on D, lead the
-     rewrite for that job with D instead.
-   - Keep the rest of the candidate's story (employer names, years of
-     experience, specialism, degree) intact around those highlights.
-   - Never sound robotic. Write like a person describing themselves to
-     another person in plain English.
+   THE 4-PART STRUCTURE (write in this order; each part is required):
+
+     PART 1 — IDENTITY (one phrase, ~10-15 words):
+       Role-family + years of experience + the candidate's domain.
+       Pull role/YoE/domain VERBATIM from the CV. Use the
+       `title_to_lead_with` from the STRATEGY block above if present.
+       Example: "Marketing and Communications specialist with 4+ years
+       across global tech brands including Lenovo and SAP Labs India."
+
+     PART 2 — JD-ALIGNED PROOF (two phrases, ~25-40 words):
+       Two themes the JD prioritises THAT ARE ALREADY IN THE CV.
+       Lead with the highest-priority match. Pull these themes from
+       the STRATEGY's `must_include_phrases` list — those phrases are
+       pre-verified to exist in this candidate's CV. Use the
+       candidate's OWN words; do not invent new framing.
+
+     PART 3 — SPECIFIC PROOF (one phrase, ~15-25 words):
+       One concrete artefact, project, platform, or tool the candidate
+       built/used that maps directly to a JD requirement. Name it
+       VERBATIM from the CV (e.g. "VoC Insight Hub", "Adobe Experience
+       Manager", "Sprinklr", "Lenovo Tech World 2025").
+
+     PART 4 — CREDENTIAL ANCHOR (one phrase, ~8-15 words) —
+       ⚠️  STRICTLY CONDITIONAL, READ CAREFULLY:
+
+       Look at the CURRENT SUMMARY shown above. Does its LAST sentence
+       already state a degree + institution (e.g. "MSc Management (2.1),
+       Trinity College Dublin")?
+
+         • YES → copy that exact degree + institution phrase into your
+           rewrite, VERBATIM. Do not alter the degree name, grade, or
+           university.
+         • NO → the original summary has no education line. OMIT Part 4
+           ENTIRELY. Your rewrite ends after Part 3. Three parts is a
+           complete, correct summary.
+
+       NEVER invent a degree, a university, or a city. Do NOT write
+       "Bachelor's degree", do NOT guess a university from the
+       candidate's location or employers. A fabricated credential is
+       the worst possible error — it is an outright lie on the CV, the
+       guard will catch it, and your ENTIRE summary rewrite will be
+       discarded. When in doubt, omit Part 4.
+
+   THE STRICT VOCABULARY RULE — CV-ONLY, NO EXCEPTIONS:
+   Every noun-phrase / acronym / proper-noun / framework / methodology /
+   metric you put in the summary MUST literally appear elsewhere in the
+   CV outline shown above (in the existing summary, bullets, skills,
+   role headers, or projects).
+
+   This includes generic-sounding business acronyms. If the CV does NOT
+   contain "ROI", you cannot add "measuring ROI" to the summary even if
+   the JD asks for it. If the CV does NOT contain "stakeholder management",
+   you cannot say "managed stakeholders" in the summary. If the candidate
+   has those skills, they will be in the CV. If they are not in the CV,
+   adding them is FABRICATION — the guard will detect it and revert your
+   entire rewrite to the original, wasting your output.
+
+   The FORBIDDEN WORDS block near the top of this prompt names, in full,
+   the JD words confirmed absent from THIS candidate's CV. Re-read that
+   list before you write the summary — not one of those words belongs
+   here. Build the summary only from vocabulary the CV already contains.
 
    ┌────────────────────────────────────────────────────────────────┐
-   │ SUMMARY WORD-COUNT TARGET (HARD CONSTRAINT)                    │
+   │ BEFORE YOU SUBMIT, RUN THIS SELF-CHECK FOR THE SUMMARY:        │
+   │                                                                │
+   │   1. List every noun-phrase, acronym, framework, tool, metric, │
+   │      methodology, or domain word you have used.                │
+   │   2. For each: is it literally in the CV outline above?        │
+   │   3. If even ONE item is not in the CV, remove it OR rephrase  │
+   │      with a CV-grounded alternative. If you can't, abandon the │
+   │      rewrite and keep the original summary verbatim.           │
+   └────────────────────────────────────────────────────────────────┘
+
+   WHY THIS MATTERS: a CV without ROI in the original but with ROI in
+   the rewrite isn't a "stronger" CV — it is a CV that lies. Recruiters
+   probe inconsistencies during interview. A truthful, JD-aligned
+   summary using ONLY CV-present vocabulary always wins over a
+   buzzword-stuffed one that the candidate can't defend.
+
+   ┌────────────────────────────────────────────────────────────────┐
+   │ SUMMARY LENGTH — MATCH THE ORIGINAL (HARD CONSTRAINT)          │
    │                                                                │
    │   Original summary: {cur_word_count} words                     │
    │   Your rewrite MUST be between {cur_word_min} and {cur_word_max} words │
-   │   (95%–115% of the original — these numbers are pre-computed   │
-   │    so you do NOT need to do the math yourself).                │
+   │   — i.e. essentially THE SAME LENGTH as the original.          │
    │                                                                │
-   │   Before you submit, count your words. If below {cur_word_min}, │
-   │   you MUST add more CV-grounded detail (specific outcomes,     │
-   │   years, platforms, methodologies from the CV) until you       │
-   │   reach the floor. If above {cur_word_max}, compress by removing │
-   │   filler (adjectives, hedges) without dropping any number,     │
-   │   proper noun, or credential.                                  │
+   │   This is deliberate: a tailored summary is the SAME size as   │
+   │   the original, just RETARGETED. You are not summarising or    │
+   │   trimming — you are re-aiming the same amount of content at   │
+   │   THIS job. If your draft comes out short, you have dropped    │
+   │   CV detail — add it back: name more JD-relevant tools,        │
+   │   platforms, methods, outcomes that are already in the CV      │
+   │   until you reach the original word count.                     │
    │                                                                │
-   │   A summary below the floor leaves a blank gap in the PDF      │
-   │   (the layout rect is sized for the original) AND causes the   │
-   │   post-processor to revert your entire rewrite to the original │
-   │   verbatim — wasting your output entirely. HIT THE BAND.       │
+   │   Below the floor → blank gap in the PDF, reads under-baked,   │
+   │   reverts to original. Above the ceiling → overflows the       │
+   │   layout, reverts. Land INSIDE the band.                       │
    └────────────────────────────────────────────────────────────────┘
 
-   HARD FABRICATION BAN (applies to the SUMMARY specifically):
-   - Reference ONLY facts, skills, tools, frameworks, certifications,
-     regulations, domains, and methodologies that are LITERALLY present
-     elsewhere in the CV outline shown above.
-   - You MUST NOT add JD-only skills to the summary. Example: if the JD
-     mentions "US GAAP", "IFRS", "SOX", "Python", etc. but these words do
-     NOT appear anywhere in the candidate's CV, you are FORBIDDEN from
-     mentioning them — even as "experience in" or "familiar with".
-   - If you cannot write a strong summary without the JD's buzzwords, keep
-     the ORIGINAL summary verbatim (set summary to the exact original).
-   - Re-ordering existing CV skills/phrases is encouraged. Inventing new
-     ones is a critical failure.
-
-   MUST-PRESERVE CREDENTIALS (applies to the SUMMARY specifically):
-   The original summary contains specific credentials a recruiter scans for.
-   Your rewrite MUST keep every one of these intact, verbatim:
-     • Degree grades / classifications (e.g. "(2.1)", "First Class",
+   MUST-PRESERVE CREDENTIALS (HARD — drop one and your rewrite is
+   reverted):
+     • Degree grade/classification (e.g. "(2.1)", "First Class",
        "Distinction", "GPA 3.8", "Magna Cum Laude").
-     • University and company names — exactly as written in the original.
-     • Years of experience claims (e.g. "4+ years", "5 years' experience").
-     • Numeric outcomes already quoted in the summary
-       (percentages, scale, headcount, revenue).
-     • Job-title language identifying the candidate's specialism
-       (e.g. "Technical Product Specialist", "QA & Performance Testing
-       specialist").
-   If your rewrite would drop ANY of the above to make room for JD
-   keywords, DO NOT submit the rewrite — keep the original summary
-   verbatim instead. A summary without the candidate's grade or YoE
-   loses the recruiter immediately; a slightly less JD-aligned summary
-   is far better than a credential-stripped one.
+     • University and company/employer names exactly as written.
+     • Years of experience claim (e.g. "4+ years", "5 years").
+     • Numeric outcomes already in the original summary (percentages,
+       scale, headcount, revenue).
+     • Job-title language identifying the candidate's specialism.
 
-   Tone: confident, specific, no buzzwords ("dynamic", "passionate",
-   "results-driven", etc.).
+   TONE: confident, specific. BANNED words (mark of buzzword filler):
+   "dynamic", "passionate", "results-driven", "synergy", "innovative",
+   "thought leader", "rockstar", "ninja", "guru".
+
+   ┌────────────────────────────────────────────────────────────────┐
+   │ WORKED EXAMPLE — using PLACEHOLDERS, not real names            │
+   │ (DO NOT copy these placeholder strings into your output —      │
+   │  they are illustrative only)                                   │
+   ├────────────────────────────────────────────────────────────────┤
+   │ Pretend the CV outline contains:                               │
+   │   role-family: "<ROLE-FAMILY>" (e.g. Senior Account Executive) │
+   │   YoE: "<N>+ years"                                            │
+   │   employers: <EMPLOYER-A>, <EMPLOYER-B>                        │
+   │   tools/platforms: <TOOL-A>, <TOOL-B>                          │
+   │   project: <FLAGSHIP-PROJECT-NAME>                             │
+   │   degree: <DEGREE-NAME>, <UNIVERSITY-NAME>                     │
+   │                                                                │
+   │ Pretend the JD priorities are:                                 │
+   │   <THEME-A>, <THEME-B>, <THEME-C>                              │
+   │                                                                │
+   │ Pretend <THEME-A> and <THEME-B> ARE in the CV (vocabulary      │
+   │ palette confirms it).                                          │
+   │                                                                │
+   │ Then a strong rewrite would look like (template, NOT verbatim):│
+   │ "<ROLE-FAMILY> with <N>+ years delivering <THEME-A> and        │
+   │ <THEME-B> for <EMPLOYER-A> and <EMPLOYER-B>. Built <CV-PROOF   │
+   │ phrase that the CV literally says> measured by <CV-METRIC      │
+   │ that the CV literally says>. Led <FLAGSHIP-PROJECT-NAME>       │
+   │ delivering <CV-OUTCOME>. <DEGREE-NAME>, <UNIVERSITY-NAME>."    │
+   │                                                                │
+   │ Why this template works:                                       │
+   │   ✓ Part 1: identity = role-family + YoE + employer domain     │
+   │   ✓ Part 2: TWO JD-aligned themes BOTH already in CV vocab     │
+   │   ✓ Part 3: concrete proof (project name + metric, both        │
+   │     verbatim from CV)                                          │
+   │   ✓ Part 4: credential anchor (degree + university, verbatim)  │
+   │   ✓ ZERO invented terms — every <PLACEHOLDER> resolves to a    │
+   │     literal CV string, never a JD-only term                    │
+   │                                                                │
+   │ FILL THESE PLACEHOLDERS FROM THE ACTUAL CV ABOVE. Do not       │
+   │ copy the placeholder strings into your output verbatim — and   │
+   │ do not invent values when the CV doesn't supply them. If the   │
+   │ CV doesn't list a degree, OMIT Part 4 entirely.                │
+   └────────────────────────────────────────────────────────────────┘
 
 2. bullets:
    For each role, return a list of bullet objects.
@@ -323,6 +440,26 @@ RULES (strict):
    REWRITING IS THE PRIMARY JOB OF THIS STEP — the user came to this tool
    explicitly asking for a per-JD tailored CV. A CV with 0-2 rewritten bullets
    across all roles is a FAILED tailoring — do not ship it.
+
+   WHAT A GENUINE TAILORED REWRITE IS:
+   You re-aim the SAME FACTS at THIS job. Every number, proper noun and
+   factual claim stays exactly as in the original — but you pick a strong
+   verb that mirrors the JD, move the most JD-relevant fact or outcome to
+   the front, and re-word the framing so a 6-second scan lands on the
+   match. Re-wording is the job; the facts are fixed points you write
+   around. Moving a comma or swapping one article is NOT a rewrite.
+
+     BEFORE: "Orchestrated always-on, multi-platform campaigns with
+              video-first digital branding execution, delivering high
+              reach and efficiency"
+     AFTER:  "Delivered high reach and efficiency through always-on,
+              multi-platform campaigns and video-first digital branding
+              execution"
+     WHY:    the outcome ("high reach and efficiency") moves to the
+              front, the verb is sharpened and the framing re-aimed,
+              yet every fact is the original's. THAT is a rewrite.
+
+   The facts are LOCKED; the language around them is yours to re-aim.
 
    ╔════════════════════════════════════════════════════════════════════╗
    ║ NUMBER & PROPER-NOUN PRESERVATION — STRICTEST RULE IN THIS PROMPT  ║
@@ -417,34 +554,38 @@ RULES (strict):
    - Move JD-relevant keywords to the front of the bullet.
    - Keep the factual core (numbers, tech, outcomes) identical.
    - Prefer concrete over abstract: "authored 12 PRDs" not "produced many documents".
-   - Length: STRICT 90-120% of the original bullet's character length.
-     Count characters before submitting. The post-processor REJECTS any
-     rewrite outside 50%-150% of the original. The visible-quality band is
-     tighter at 90-120%; aim for that. Going above 120% is acceptable when
-     needed to fit JD keywords, but never exceed 150%.
-     EXAMPLE: original is 180 chars → target 162-216 chars; HARD CAP at 270 chars (150%).
-     EXAMPLE: original is 95 chars → target 85-114 chars; HARD CAP at 142 chars (150%).
-     If you cannot land within 150% while keeping every number and proper
-     noun verbatim, return text=null (revert) instead of submitting an
-     overlong rewrite that will be silently reverted to the original.
+   - LENGTH — MATCH THE ORIGINAL, BOTH DIRECTIONS:
+     A tailored bullet RE-WORDS the original's content end to end — it does
+     not add to it and does not trim it. So its length equals the
+     original's. Each bullet shows its word count as [keep ≈N words]; your
+     rewrite has N words, give or take two, NEITHER longer NOR shorter.
+     Two ways to get REJECTED — avoid BOTH:
+       - TOO LONG: you appended a clause, a second outcome, or extra JD
+         detail not in the original bullet. That is padding; it overflows
+         the bullet's fixed slot.
+       - TOO SHORT: you compressed or dropped part of the original's
+         content. The rewrite under-fills the slot and leaves a gap.
+     A long bullet's rewrite is long — re-word the WHOLE thing, every clause
+     of it. A short bullet's rewrite is short. Re-word every part of the
+     original in the JD's language, keeping every number and proper noun,
+     and the length takes care of itself.
+     If you cannot re-aim a bullet at the JD at its original length, keep
+     it unchanged (text=null) rather than padding or trimming it.
 
-2a. NO-OP REWRITES ARE FORBIDDEN.
-    If you submit `text` identical (or trivially whitespace/case-different)
-    to the original bullet, you have not rewritten it — you have pretended
-    to rewrite it. This wastes tokens and produces a CV that looks identical
-    to the untailored input. A post-processor detects byte-equivalent
-    rewrites and silently demotes them to `text=null`, so submitting an
-    identical string gives you ZERO credit and costs you an output slot.
-    Every bullet you choose to rewrite MUST differ from the original by
-    at least ONE of:
-      • Lead verb swap (e.g., "Defined and executed…" → "Managed…")
-      • New JD-keyword foregrounded in the first 60 characters
-      • Sentence structure change (e.g., pulling a number to the front)
-      • Compression / expansion within the 90-120% length band
-    If you cannot make a meaningful change while keeping every number and
-    proper noun verbatim, omit `text` and submit only `{{"i": N}}` —
-    leaving the bullet unchanged is an HONEST response; submitting the
-    original as a "rewrite" is a DISHONEST one.
+2a. EVERY STRATEGY-TARGETED BULLET MUST GENUINELY CHANGE.
+    A `text` that is identical to the original — or differs only in
+    whitespace, case, punctuation or articles — is NOT a rewrite. A
+    post-processor normalises those away and demotes them to `text=null`,
+    so a near-copy counts as ZERO tailoring.
+    Every bullet the STRATEGY targets MUST come back genuinely re-worded:
+    a lead verb that mirrors the JD, the JD-relevant fact or outcome
+    surfaced near the front, and the connective / framing language
+    re-aimed. Keep every number and proper noun verbatim while you do
+    this — that fixes the FACTS, not the wording.
+    `text=null` (keep verbatim) is the correct answer ONLY for bullets
+    the strategy did NOT target. For a TARGETED bullet, returning the
+    original is a failed instruction — re-word it until it is a genuine
+    rewrite.
 
 2b. STYLE BAN — ZERO em-dashes (—) and ZERO en-dashes (–) in any rewrite
     (summary OR bullets). They are the #1 stylistic tell of LLM-written
@@ -894,6 +1035,303 @@ def _cv_vocabulary(outline: Dict[str, Any], cv_full_text: str = "") -> set:
     return tokens | bigrams | {text}
 
 
+# ─────────────────────────────────────────────────────────────
+# JD-only vocabulary — PROACTIVE fabrication prevention (May 2026).
+#
+# The model is tempted to inject JD keywords ("influencer", "ROI",
+# "content partnerships") that read on-target for the job but appear
+# NOWHERE in the candidate's CV. Writing them is fabrication.
+#
+# We do NOT catch this after the fact and revert. Reverting every bullet
+# that touched a JD term would collapse the tailoring rate — many
+# rewrites lost, an un-tailored CV shipped. Instead we TRAIN the model
+# up front: compute, deterministically, the JD words absent from the CV
+# and hand the model that explicit "forbidden words" list in the prompt
+# so it never writes them in the first place.
+# ─────────────────────────────────────────────────────────────
+
+# Pure verbs / adjectives / JD-meta words / stopwords. Using one of these
+# is a writing choice, not a claim of experience — so they must never be
+# flagged as fabrication even when absent from the CV. Skill / tool /
+# domain NOUNS are deliberately NOT listed here: adding a noun the CV
+# lacks IS fabrication and must stay flaggable.
+_JD_LEAK_NONSKILL: frozenset = frozenset("""
+the a an and or nor but yet so for of in on at to from with by as is are was
+were be been being have has had do does did will would shall should can could
+may might must this that these those it its we you your they them their our he
+she his her not no all any each both few more most much many other such same
+own very just only also than too then else when where why how who whom which
+what while about into out up down over under again further once here there etc
+via per eg ie new
+description responsibilities responsibility qualification qualifications
+requirement requirements department location salary benefits opportunity
+opportunities environment culture candidate candidates applicant applicants
+position positions vacancy role roles job jobs month months week weeks day
+days year years time office remote hybrid company companies team teams ideal
+preferred required responsible looking seeking join hire hiring apply applying
+offer offers overview summary
+drive drives drove driven driving deliver delivers delivered delivering lead
+leads led leading manage manages managed managing build builds built building
+create creates created creating develop develops developed developing execute
+executes executed executing own owns owned owning run runs ran running support
+supports supported supporting ensure ensures ensured ensuring provide provides
+provided providing work works worked working help helps helped helping enable
+enables enabled identify identifies identified analyse analyses analysed analyze
+analyzes analyzed grow grows grew growing scale scales scaled scaling improve
+improves improved improving launch launches launched launching optimise
+optimises optimised optimize optimizes optimized plan plans planned planning
+report reports reported reporting define defines defined defining maintain
+maintains maintained handle handles handled make makes made meet meets meeting
+collaborate collaborates collaborated collaborating coordinate coordinates
+coordinated communicate communicates communicated assist assists assisted use
+uses used using bring brings want wants need needs include includes included
+including across within strong excellent proven dynamic passionate skilled
+experienced senior junior relevant various multiple several great good better
+best key core overall effective effectively highly well able ability
+measure measures measured measuring creation bringing brought set sets setting
+nurture nurtures nurtured nurturing develop suggest suggests suggested
+""".split())
+
+
+def _safe_relabels(strategy: Optional[Dict[str, Any]]) -> list:
+    """The strategist's `safe_relabels` — JD terms it judged to be the
+    industry-standard label for a skill the CV genuinely demonstrates under
+    a DIFFERENT word. Returns [(jd_term, cv_evidence), ...] for well-formed
+    entries. These terms are exempt from the forbidden-vocabulary guards:
+    using one re-labels real CV experience, it does not fabricate."""
+    out: list = []
+    for entry in (strategy or {}).get("safe_relabels") or []:
+        if isinstance(entry, dict):
+            term = (entry.get("jd_term") or "").strip()
+            ev   = (entry.get("cv_evidence") or "").strip()
+        elif isinstance(entry, str):
+            term, ev = entry.strip(), ""
+        else:
+            continue
+        if term and len(term) >= 3:
+            out.append((term, ev))
+    return out
+
+
+def _safe_relabel_wordset(relabels: list) -> set:
+    """Content words (>=3 chars, lowercased) of every safe-relabel term."""
+    ws: set = set()
+    for term, _ in relabels:
+        for w in re.findall(r"[A-Za-z][A-Za-z0-9+&-]{2,}", term.lower()):
+            ws.add(w)
+    return ws
+
+
+def _all_words_safe(term: str, safe_ws: set) -> bool:
+    """True when EVERY content word of `term` is a safe-relabel word — the
+    term is fully covered by the strategist's whitelisted relabels."""
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+&-]{2,}", (term or "").lower())
+    return bool(words) and all(w in safe_ws for w in words)
+
+
+def _format_permitted_terms_block(relabels: list) -> str:
+    """Render the 'permitted JD terms' block — strategist-whitelisted
+    relabels the tailor MAY use. Empty string when there are none."""
+    if not relabels:
+        return ""
+    rows = []
+    for term, ev in relabels:
+        rows.append(f"    {term}" + (f'  —  CV proof: "{ev}"' if ev else ""))
+    body = "\n".join(rows)
+    return (
+        "\n\n"
+        "╔══════════════════════════════════════════════════════════════════════╗\n"
+        "║  PERMITTED JD TERMS — standard labels for THIS candidate's real work  ║\n"
+        "╚══════════════════════════════════════════════════════════════════════╝\n"
+        "\n"
+        "The strategist verified each term below is the industry-standard label\n"
+        "for a skill this candidate genuinely demonstrates in the CV, under a\n"
+        "different word. You MAY use these terms to re-aim a bullet or the\n"
+        "summary at the JD's language — this re-labels real experience, it does\n"
+        "NOT fabricate, and it overrides the CV-only vocabulary rule for THESE\n"
+        "terms only:\n"
+        "\n"
+        f"{body}\n"
+        "\n"
+        "Use a permitted term ONLY to relabel the matching CV experience above.\n"
+        "It licenses no OTHER JD vocabulary — the FORBIDDEN list still stands.\n"
+    )
+
+
+def _jd_only_terms(
+    job_description: str,
+    outline: Dict[str, Any],
+    cv_full_text: str = "",
+    max_terms: int = 28,
+) -> List[str]:
+    """Deterministically list JD content words that appear NOWHERE in the CV.
+
+    These are the words the model is most tempted to inject — JD keywords
+    that sound on-target but name skills / tools / domains the candidate
+    never claimed. The result drives a proactive "do not use these" block
+    in the tailor prompt; it is NOT a revert guard. Ranking puts the most-
+    repeated JD terms first (repetition == the JD's emphasis == the
+    strongest pull on the model).
+    """
+    if not job_description or not job_description.strip():
+        return []
+    cv_vocab = _cv_vocabulary(outline, cv_full_text)
+
+    freq: Dict[str, int] = {}
+    for raw in re.findall(r"[A-Za-z][A-Za-z0-9+&-]{2,}", job_description):
+        w = raw.lower().strip("-&+")
+        if len(w) < 3 or w.isdigit() or w in _JD_LEAK_NONSKILL:
+            continue
+        freq[w] = freq.get(w, 0) + 1
+
+    def _in_cv(w: str) -> bool:
+        # token-set membership, tolerant of simple singular/plural drift
+        if w in cv_vocab:
+            return True
+        sing = w[:-1] if w.endswith("s") else w
+        return sing in cv_vocab or (w + "s") in cv_vocab
+
+    jd_only = {w: c for w, c in freq.items() if not _in_cv(w)}
+    if not jd_only:
+        return []
+
+    ranked = sorted(jd_only.items(), key=lambda kv: (-kv[1], kv[0]))
+    strong = [w for w, c in ranked if c >= 2]
+    # A tight, high-signal list trains far better than a long noisy one.
+    # Prefer repeated terms; fall back to freq>=1 only for short JDs.
+    terms = strong if len(strong) >= 6 else [w for w, _ in ranked]
+    return terms[:max_terms]
+
+
+def _merge_forbidden_terms(
+    jd_only: List[str], strategy_dni: Optional[List[str]]
+) -> List[str]:
+    """Case-insensitive union of the deterministic JD-only list and the
+    strategist's do_not_inject list. The strategist sometimes names multi-
+    word phrases the token scan misses; the token scan catches generic JD
+    words the strategist overlooks. Showing both gives the model the most
+    complete picture."""
+    out: List[str] = []
+    seen: set = set()
+    for term in list(jd_only) + list(strategy_dni or []):
+        t = (term or "").strip()
+        key = t.lower()
+        if not t or len(t) < 3 or key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
+
+
+def _format_jd_only_terms_block(terms: List[str]) -> str:
+    """Render the proactive 'forbidden words' block for the tailor prompt."""
+    if not terms:
+        return (
+            "JD-ONLY VOCABULARY CHECK\n"
+            "Every salient word in the job description above also appears "
+            "somewhere in this candidate's CV — you have the full vocabulary "
+            "palette to tailor with. Even so: never introduce a noun, tool, "
+            "metric, framework, or domain term that is not already in the CV."
+        )
+    shown = ", ".join(terms)
+    return (
+        "╔══════════════════════════════════════════════════════════════════════╗\n"
+        "║  FORBIDDEN WORDS — IN THE JOB DESCRIPTION, NOT IN THIS CANDIDATE'S CV  ║\n"
+        "╚══════════════════════════════════════════════════════════════════════╝\n"
+        "\n"
+        "The words below were found in the job description above but appear\n"
+        "NOWHERE in this candidate's CV — not in the summary, bullets, skills,\n"
+        "projects, or role headers. They are the JOB's vocabulary, never the\n"
+        "candidate's:\n"
+        "\n"
+        f"    {shown}\n"
+        "\n"
+        "DO NOT WRITE ANY OF THESE WORDS — not in the summary, not in a single\n"
+        "bullet. Each one names a skill, tool, metric, or domain the candidate\n"
+        "never claimed; writing it invents experience the candidate does not\n"
+        "have. That is fabrication — the most serious error possible here.\n"
+        "\n"
+        "This OVERRIDES the STRATEGY block. If the strategy plan names one of\n"
+        "these words in a target verb or keyword, the strategy is wrong on\n"
+        "that point — do NOT use the word; re-angle the bullet with the\n"
+        "candidate's real CV vocabulary instead.\n"
+        "\n"
+        "WRITE IT RIGHT THE FIRST TIME (there is no second pass — your first\n"
+        "draft is what ships):\n"
+        "  - Tailor by REORDERING and REFRAMING what the CV already says. Lead\n"
+        "    with the candidate's real experience that is closest to the JD.\n"
+        "  - When the JD stresses a theme, find the nearest thing the candidate\n"
+        "    HAS actually done — already written in the CV — and put that\n"
+        "    forward, phrased in the candidate's own existing words.\n"
+        "  - If the candidate genuinely lacks a JD skill, stay silent about it.\n"
+        "    An honest CV that omits a skill always beats a CV that claims one\n"
+        "    the candidate cannot defend in an interview.\n"
+        "  - A rewrite that NEEDS a forbidden word to make sense is the wrong\n"
+        "    rewrite: pick a different angle the CV genuinely supports, or keep\n"
+        "    that bullet unchanged (text=null). An honest untailored bullet\n"
+        "    beats a tailored lie every time."
+    )
+
+
+def _scrub_strategy_jd_leak(strategy: Dict[str, Any], jd_only: List[str]) -> None:
+    """Remove JD-only terms (words in the JD but absent from the CV) from
+    the strategist's bullet targets, IN PLACE, before the strategy reaches
+    the tailor.
+
+    The strategist occasionally names a JD keyword the CV lacks
+    ("influencer", "ROI") in a target_verb_phrase / target_keywords entry.
+    Rendered into the BINDING strategy block, that instructs the tailor to
+    fabricate. This pre-emptively cleans the PLAN — it is NOT a post-hoc
+    revert of a finished rewrite; the bullet is still rewritten, just from
+    a clean target.
+    """
+    bad = [t.lower() for t in (jd_only or []) if t and len(t) >= 3]
+    if not bad:
+        return
+    try:
+        rxs = [re.compile(rf"\b{re.escape(t)}\b", re.IGNORECASE) for t in bad]
+    except re.error:
+        return
+
+    def _has_leak(s: str) -> bool:
+        return any(rx.search(s or "") for rx in rxs)
+
+    def _scrub_phrase(s: str) -> str:
+        out = s or ""
+        for rx in rxs:
+            out = rx.sub(" ", out)
+        out = re.sub(r"\s{2,}", " ", out).strip(" ,;-&/")
+        # trim a dangling connective left behind by the removal
+        out = re.sub(
+            r"\s+(and|the|a|an|of|for|with|to|in|on)\s*$", "", out,
+            flags=re.IGNORECASE,
+        ).strip(" ,;-&/")
+        return out
+
+    bs = strategy.get("bullet_strategy")
+    if not isinstance(bs, dict):
+        return
+    n_scrubbed = 0
+    for actions in bs.values():
+        for a in actions or []:
+            if not isinstance(a, dict):
+                continue
+            lead = a.get("lead_with")
+            if isinstance(lead, str) and _has_leak(lead):
+                cleaned = _scrub_phrase(lead)
+                # Too little left → blank it; the tailor then reorders
+                # using the bullet's most JD-relevant fact on its own.
+                a["lead_with"] = (
+                    cleaned if len(cleaned.split()) >= 2 else ""
+                )
+                n_scrubbed += 1
+    if n_scrubbed:
+        print(
+            f"   cv_diff_tailor: scrubbed JD-only term(s) from "
+            f"{n_scrubbed} strategist bullet target(s) before tailoring."
+        )
+
+
 def _check_professional_identity_fabrication(orig_summary: str, new_summary: str, outline: Dict[str, Any]) -> Optional[str]:
     """
     Check if the summary introduces a professional identity not supported by the CV.
@@ -1051,23 +1489,50 @@ def _check_professional_identity_fabrication(orig_summary: str, new_summary: str
     return None
 
 
-def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
+# Generic role / profession / seniority words. A capitalised phrase whose
+# only CV-absent words are these is a job-title descriptor, NOT a fabricated
+# proper noun (an invented university / employer / place). Such phrases are
+# exempt from the foreign-term check below; role / domain identity is
+# guarded separately by _check_professional_identity_fabrication.
+_ROLE_TITLE_WORDS = {
+    "manager", "builder", "engineer", "developer", "analyst", "designer",
+    "specialist", "architect", "consultant", "strategist", "scientist",
+    "researcher", "leader", "owner", "officer", "director", "associate",
+    "principal", "coordinator", "administrator", "advisor", "adviser",
+    "marketer", "expert", "professional", "practitioner", "generalist",
+    "executive", "founder", "partner", "programmer", "technologist",
+    "planner", "writer", "editor", "producer", "operator", "technician",
+    "representative", "facilitator", "evangelist", "ambassador", "mentor",
+    "coach", "lead", "head", "chief", "senior", "junior", "staff",
+    "global", "regional", "intern", "trainee",
+}
+
+
+def _foreign_capitalized_terms(summary: str, cv_text_set: set,
+                               exempt_words: set = frozenset()) -> List[str]:
     """
     Return a list of capitalized/acronym phrases that appear in `summary`
     but whose component words do NOT appear in any CV text. Stopwords are
     ignored.
 
-    Rationale: the previous implementation flagged a whole phrase as foreign
-    if its verbatim lowercased form was absent from the CV. That over-fired
-    on legitimate re-phrasings like "Integrated Marketing Communications"
-    (when the CV has "integrated marketing") or "B2B Campaigns" (when the
-    CV has "B2B" + "campaigns" separately). We now inspect each content
-    word of the phrase: a phrase is only "foreign" if MORE THAN HALF of
-    its content words are missing from the CV vocabulary AND it contains
-    at least one acronym-ish token (≥2 uppercase letters). This still
-    catches real fabrications ("US GAAP", "IFRS", "SOX") when the CV
-    never mentions them, but lets through prose rewrites that re-compose
-    CV facts.
+    May 2026 (strict, hallucination-fix): a capitalised phrase is foreign
+    if ANY of its substantive content words (≥4 chars, not a stopword) is
+    entirely absent from the CV. The previous ">half missing AND has an
+    acronym" rule let fabricated proper nouns slip through — e.g. the
+    LLM invented "University of Mumbai" for a candidate whose CV says
+    "St. Xavier's University, Kolkata": "University" IS in the CV so only
+    1 of 2 words was missing (not >half), and there was no acronym, so
+    the guard passed it. A fabricated institution / degree / place ALWAYS
+    contains at least one CV-absent content word, so "any missing content
+    word" catches it. Legitimate re-phrasings ("Integrated Marketing
+    Communications" from "integrated marketing") still pass because every
+    content word IS somewhere in the CV.
+
+    Generic role / profession words (manager, builder, engineer, ...) are
+    NOT treated as foreign: a job-title phrase is a common-noun role
+    descriptor, never a fabricated proper noun. So "Product Builder" on a
+    CV full of "Built ..." is fine. Role / domain identity changes are
+    caught separately by _check_professional_identity_fabrication.
     """
     if not summary:
         return []
@@ -1105,16 +1570,28 @@ def _foreign_capitalized_terms(summary: str, cv_text_set: set) -> List[str]:
         words = [w.lower() for w in word_rx.findall(term)]
         if not words:
             continue
-        missing = [w for w in words if w not in cv_tokens and w not in cv_text]
-        # A phrase is foreign only if the majority of its words are missing
-        # AND it contains an all-caps acronym-like token. This keeps us from
-        # flagging "Integrated Marketing Communications" while still
-        # catching "US GAAP" / "IFRS" / "Agile Scrum" on a non-agile CV.
-        has_acronym_like = any(
-            len(w) >= 2 and w.isupper() and w.isalpha()
-            for w in word_rx.findall(term)
-        )
-        if len(missing) > len(words) / 2 and has_acronym_like:
+        # Strict rule (May 2026): a SUBSTANTIVE content word (≥4 chars,
+        # not a generic stopword) that is entirely absent from the CV
+        # makes the whole phrase foreign. This catches every fabricated
+        # proper noun — invented universities, cities, degrees, employers,
+        # certifications — because such an invention always introduces at
+        # least one CV-absent content word. Short connectors ("of", "and",
+        # "the") and digits are ignored.
+        _PHRASE_STOPWORDS = {
+            "of", "and", "the", "for", "with", "to", "in", "on", "at",
+            "an", "a", "or", "by",
+        }
+        substantive_missing = [
+            w for w in words
+            if w not in cv_tokens
+            and w not in cv_text
+            and len(w) >= 4
+            and w not in _PHRASE_STOPWORDS
+            and w not in _ROLE_TITLE_WORDS
+            and w not in exempt_words
+            and not w.isdigit()
+        ]
+        if substantive_missing:
             foreign.append(term)
     return foreign
 
@@ -1122,35 +1599,31 @@ _MIN_BULLETS_PER_ROLE = 2
 _REWRITE_LEN_MIN_RATIO = 0.45  # rewrite must be at least 45% of original length
 # May 2026 fix (Claude spec): lowered from 0.50 to 0.45 to reduce false reverts
 # on legitimate paraphrases that compress slightly.
-# May 2026 fix #2b: tightened upper bound from 2.0 → 1.30 to bound forced
-# font shrinkage in the PDF editor at ≤1pt (recruiter-imperceptible).
 #
-# Background: when a rewritten bullet is longer than the original PDF rect
-# can fit at the original font size, `pdf_editor._insert_fitted` drops the
-# font size 0.5pt at a time until it fits. Different bullets shrink different
-# amounts → inconsistent bullet sizes in the rendered CV. Empirical mapping
-# of rewrite-length-ratio → shrinkage:
+# 99% format mode (final architecture, May 2026):
+#   tightened the upper bound from 1.50 → 1.15.
 #
-#   1.00–1.10× : 0 pt shrinkage          (target band)
-#   1.10–1.20× : 0–0.5 pt                (barely perceptible)
-#   1.20–1.30× : 0.5–1.0 pt              (allowed: matches user tolerance)
-#   1.30–1.50× : 1.0–1.5 pt              (visible — REJECTED)
-#   1.50×+     : >1.5 pt                 (very visible — REJECTED)
+# We now run PyMuPDF in-place edit with NO font shrinkage (the shrinkage
+# ladder in pdf_editor._insert_fitted was removed). Any rewrite longer than
+# the original's natural bbox is HARD-rejected by the editor — there is no
+# silent "shrink to fit". So this ratio guard's job is to catch over-budget
+# rewrites BEFORE we send them to the editor, where they would just bounce
+# back and force a revert.
 #
-# Capping at 1.30 means: any rewrite >30% longer than original gets reverted
-# to original by `_rewrite_is_safe`. Within 1.30 we accept up to 1pt of
-# shrinkage as "imperceptible to recruiter eye". This pairs with the per-
-# bullet character budget in `_format_outline_for_prompt` (which asks for
-# ≤+10% headroom): DeepSeek-faithful rewrites land at 1.00–1.15 (zero
-# shrinkage), Groq-fallback rewrites land at 1.10–1.40 (cap forces revert
-# on the worst overflows while keeping the merely-long ones).
+# Empirical mapping (PyMuPDF textbox fit at base_size):
+#   1.00–1.10× : fits cleanly                    (target band)
+#   1.10–1.15× : usually fits (word-length dependent)
+#   1.15–1.20× : fits ~50% of the time (line-wrap luck)
+#   1.20×+     : reliably overflows              (REJECT)
 #
-# Why not 1.20: too strict for Groq-fallback path. With DEEPSEEK_API_KEY
-# unfunded or rate-limited, every fallback rewrite would revert → mostly
-# original CV ships.
-# May 2026 fix (Claude spec): loosened from 1.30 → 1.50 to reduce false
-# reverts on legitimate paraphrases that expand slightly.
-_REWRITE_LEN_MAX_RATIO = 1.50
+# May 2026 (per-bullet in-place renderer): the editor inserts each
+# rewrite into the ORIGINAL bullet's slot with no page reflow. A rewrite
+# longer than the original needs more lines than the slot has. The
+# editor's line-gap ladder absorbs up to ~12% extra height, so a hard
+# guard at 1.08 leaves the LLM a small margin while keeping virtually
+# every accepted rewrite fitting its slot. The prompt budget shows 1.0×
+# (original length) as the target; this guard is the safety net.
+_REWRITE_LEN_MAX_RATIO = 1.08
 
 
 # H4: thread-local revert tracker. Reset at the start of every
@@ -1584,26 +2057,21 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
     # Use the provided original_length if available, otherwise fall back to len(orig)
     orig_len = original_length if original_length is not None else len(orig)
 
-    # Run-17 audit fix #18: piecewise length floor. The flat 0.45 ratio
-    # over-rejects legitimate compression of verbose originals — a 220-char
-    # rambling bullet honestly tightened to 95 chars (43%) was reverted
-    # even though JD-alignment usually IS compression. Long originals have
-    # more headroom for legitimate trimming, so loosen the floor for them.
-    if orig_len > 150:
-        lo = max(40, round(orig_len * 0.30))
-    else:
-        lo = round(orig_len * _REWRITE_LEN_MIN_RATIO)
-
-    # Run-17 audit fix #19: piecewise length ceiling. The flat 1.50 ratio
-    # rejects legitimate JD-keyword-led rewrites of short bullets — a
-    # 60-char bullet rewritten with strong verbs to 95 chars (158%) is
-    # well within any layout budget but was reverted on ratio. Use an
-    # absolute cap for short originals; keep the ratio for longer ones
-    # where font shrinkage actually starts to matter.
-    if orig_len < 80:
-        hi = max(180, round(orig_len * _REWRITE_LEN_MAX_RATIO))
-    else:
-        hi = round(orig_len * _REWRITE_LEN_MAX_RATIO)
+    # May 2026 (same-length tailoring): the tailored bullet must occupy
+    # roughly the SAME footprint as the original so the per-bullet
+    # in-place editor can drop it into the original slot without reflow.
+    # Band = 78%–108% of the original length.
+    #   • Floor 0.78 — a rewrite much shorter than the original leaves a
+    #     visible whitespace gap in its slot. A small absolute floor (45
+    #     chars) keeps very short bullets rewritable.
+    #   • Ceiling 1.08 (_REWRITE_LEN_MAX_RATIO) — longer than this risks
+    #     an extra wrapped line that overflows the slot. A small absolute
+    #     ceiling (95 chars) gives very short bullets room to JD-align.
+    lo = max(45, round(orig_len * 0.78))
+    hi = max(95, round(orig_len * _REWRITE_LEN_MAX_RATIO))
+    # Guard against a degenerate band on tiny originals.
+    if lo > hi:
+        lo = min(lo, hi)
 
     if not (lo <= len(new) <= hi):
         return False, f"length {len(new)} outside {lo}-{hi}"
@@ -1726,14 +2194,18 @@ def _normalise_bullet_list(
             # Treat it as "keep original" (text=None) so the metric
             # reflects reality and retries trigger when needed.
             def _norm_for_eq(s: str) -> str:
-                # Run-17 audit fix #25: do NOT normalise dashes here. The
-                # previous version collapsed em-/en-dashes to hyphens before
-                # equality, treating "Led 5\u20137% \u2014 designed A/B tests" and
-                # "Led 5-7%, designed A/B tests" as identical (the second
-                # clause is genuinely rewritten). _strip_em_en_dashes_text
-                # runs upstream on the LLM output already; equality should
-                # operate on substantive characters only (whitespace + case).
-                return " ".join((s or "").lower().split())
+                # Near-identical detection (May 2026): a "rewrite" that only
+                # adds a period, drops a comma, swaps a dash for a comma, or
+                # drops an article ("the PR team" -> "PR team") is NOT a
+                # rewrite \u2014 it is a cosmetic non-change. Counting it as a
+                # rewrite re-renders a perfectly good bullet for zero gain
+                # and inflates telemetry. Normalise away case, ALL
+                # punctuation, and articles so these register as identical
+                # and are demoted to text=None (the bullet is kept pristine).
+                s_l = re.sub(r"[^a-z0-9 ]+", " ", (s or "").lower())
+                return " ".join(
+                    t for t in s_l.split() if t not in ("a", "an", "the")
+                )
             if _norm_for_eq(text) == _norm_for_eq(orig_text):
                 # Run-17 audit fix #7: log identical-rewrite suppressions
                 # to the revert tracker so we can distinguish "LLM said the
@@ -1758,7 +2230,7 @@ def _normalise_bullet_list(
                 _LAST_BULLET_REVERTS.append({
                     "bullet_index": idx,
                     "reason": reason,
-                    "rewrite_preview": text[:120],
+                    "rewrite_preview": text,
                 })
                 text = None   # fall back to original wording
             else:
@@ -2278,6 +2750,22 @@ def tailor_cv_diff(
             },
         }
 
+    # ── JD-only forbidden list + strategy scrub (May 2026) ──────────
+    # Compute the deterministic "JD words absent from the CV" list, then
+    # pre-emptively scrub any such term the strategist named in a bullet
+    # target — so the BINDING strategy never instructs the tailor to
+    # inject a word the CV lacks. This cleans the PLAN up front; it is
+    # not a post-hoc revert of a finished rewrite.
+    try:
+        _jd_only_for_scrub = _jd_only_terms(job_description, outline, cv_text)
+    except Exception:
+        _jd_only_for_scrub = []
+    if strategy and _jd_only_for_scrub:
+        try:
+            _scrub_strategy_jd_leak(strategy, _jd_only_for_scrub)
+        except Exception as e:
+            print(f"   ⚠️  cv_diff_tailor: strategy JD-leak scrub failed ({e})")
+
     # Render the strategy block once (empty string when no strategy was
     # provided OR the strategist returned an empty payload). The tailor
     # prompt template requires a {strategy_block} substitution either way.
@@ -2313,8 +2801,54 @@ def tailor_cv_diff(
         _orig_word_max = min(_SUMMARY_STUB_CAP,
                              max(_orig_word_count + 10, int(_orig_word_count * 1.15)))
     else:
-        _orig_word_min = max(1, int(_orig_word_count * 0.95))
-        _orig_word_max = int(_orig_word_count * 1.15)
+        # May 2026 (user-driven): the tailored summary should be NEARLY
+        # THE SAME LENGTH as the original — same word count, retargeted
+        # content. A summary that shrinks to 70% of the original leaves
+        # a visible gap in the PDF and reads as under-baked. Tighten the
+        # band to 97%-108% so the rewrite stays close to the original
+        # footprint; the LLM fills any slack with JD-aligned CV detail
+        # rather than ending short.
+        _orig_word_min = max(1, int(round(_orig_word_count * 0.97)))
+        _orig_word_max = int(round(_orig_word_count * 1.08))
+
+    # ── Proactive fabrication prevention (May 2026) ──────────────────
+    # Deterministically list the JD words that appear NOWHERE in the CV
+    # and hand the model that explicit "forbidden words" list inside the
+    # prompt. This TRAINS the model never to inject JD vocabulary in the
+    # first place — it is NOT a revert guard. Reverting every rewrite
+    # that touched a JD term would collapse the tailoring rate to zero;
+    # teaching the model up front keeps tailoring high AND fabrication
+    # at zero. The strategist's do_not_inject list is merged in for the
+    # display so the model sees the most complete picture.
+    strategy_dni: List[str] = list((strategy or {}).get("do_not_inject") or [])
+    # B1: strategist-whitelisted relabels — JD terms that ARE the standard
+    # label for CV-proven experience under a different word. These are
+    # exempt from the forbidden-vocabulary guards (do-not-inject + the
+    # FORBIDDEN block + the foreign-capitalised summary guard).
+    _relabels = _safe_relabels(strategy)
+    _safe_ws  = _safe_relabel_wordset(_relabels)
+    strategy_dni = [t for t in strategy_dni if not _all_words_safe(t, _safe_ws)]
+    try:
+        _jd_only_list      = _jd_only_terms(job_description, outline, cv_text)
+        _forbidden_display = _merge_forbidden_terms(_jd_only_list, strategy_dni)
+        _forbidden_display = [t for t in _forbidden_display
+                              if not _all_words_safe(t, _safe_ws)]
+        _jd_only_block     = (_format_jd_only_terms_block(_forbidden_display)
+                              + _format_permitted_terms_block(_relabels))
+        if _forbidden_display:
+            print(
+                f"   cv_diff_tailor: {len(_forbidden_display)} JD-only "
+                f"term(s) surfaced as FORBIDDEN in the tailor prompt "
+                f"(proactive no-fabrication training, no revert)."
+            )
+        if _relabels:
+            print(
+                f"   cv_diff_tailor: {len(_relabels)} strategist relabel(s) "
+                f"PERMITTED (CV-proven JD vocabulary)."
+            )
+    except Exception as e:
+        print(f"   cv_diff_tailor: JD-only term scan failed ({e}) — continuing")
+        _jd_only_block = _format_jd_only_terms_block([])
 
     def _render_prompt(extra: str = "") -> str:
         # P1-4 (May 2026): Long-JD compression. When the job description is
@@ -2345,6 +2879,7 @@ def tailor_cv_diff(
             job_title             = job_title or "(unspecified)",
             company               = company   or "(unspecified)",
             job_description_block = jd_block,
+            jd_only_terms_block   = _jd_only_block,
             outline               = _format_outline_for_prompt(outline),
             strategy_block        = strategy_block_str or "(no strategy provided — use the legacy fallback floors in the RULES section below)",
             cur_word_count        = _orig_word_count,
@@ -2355,11 +2890,6 @@ def tailor_cv_diff(
         if extra:
             p += "\n\n" + extra
         return p
-
-    # Surface the strategist's do_not_inject list so every bullet rewrite
-    # gets checked against JD-only terms (microservices / cloud / UAT etc.
-    # when those words don't appear in the CV).
-    strategy_dni: List[str] = list((strategy or {}).get("do_not_inject") or [])
 
     raw_text = _call_llm(_render_prompt())
     raw_json = _extract_json(raw_text)
@@ -2435,7 +2965,7 @@ def tailor_cv_diff(
         else:
             # Check for foreign capitalized terms
             cv_vocab = _cv_vocabulary(outline, cv_full_text=cv_text)
-            foreign = _foreign_capitalized_terms(new_sum, cv_vocab)
+            foreign = _foreign_capitalized_terms(new_sum, cv_vocab, _safe_ws)
             if foreign:
                 print(
                     f"   ⚠️  summary introduced CV-foreign terms {foreign!r} — "
@@ -2497,96 +3027,179 @@ def tailor_cv_diff(
     # 95%, which reverted too many legitimate rewrites. If the retry is
     # still short, fall back to the ORIGINAL summary (no shortening).
     new_words = len((diff.get("summary") or "").split())
-    # Run 18 audit fix: loosened the floor from 0.85 → 0.75 with a +3 word
-    # grace band. Previous floor rejected 78-word rewrites of 93-word
-    # originals (78/93 = 0.84, floor was 0.85, fails). Asking DeepSeek to
-    # pad to a tighter word count generally produces filler, not real
-    # content. A tailored 78-word summary is BETTER than reverting to the
-    # 93-word original verbatim.
-    _SUMMARY_MIN_RATIO = 0.75
-    _SUMMARY_MAX_RATIO = 1.20
-    _SUMMARY_MIN_WORD_GRACE = 3  # accept up to 3 words below the ratio floor
+    # May 2026 (user-driven, same-length tailoring): the tailored summary
+    # should be NEARLY THE SAME LENGTH as the original — same footprint,
+    # retargeted content. The floor was 0.75, which let a 59-word rewrite
+    # of an 80-word original ship (visibly short, leaves a PDF gap). Raise
+    # to 0.90: anything shorter triggers the expand-retry, and the retry
+    # prompt explicitly tells the LLM to add CV-grounded JD-relevant
+    # detail until it reaches the original length.
+    _SUMMARY_MIN_RATIO = 0.90        # expand-retry target — aim for >=90%
+    _SUMMARY_MAX_RATIO = 1.12
+    _SUMMARY_MIN_WORD_GRACE = 3      # words below the ratio the retry tolerates
+    # 1+2 hybrid (user-driven): push HARD with up to _SUMMARY_RETRY_LIMIT
+    # expand-retries; but if the best attempt still lands short while
+    # at/above the HARD floor, ship it — a tailored, slightly-short summary
+    # beats an untailored original. Only a genuinely stunted summary,
+    # below the hard floor, reverts.
+    _SUMMARY_RETRY_LIMIT = 2
+    _SUMMARY_HARD_FLOOR_RATIO = 0.80
     # H3: suppress the length-retry on reviewer-driven retries. The reviewer
     # already triggered a re-tailor; cascading another inner retry on top
     # multiplies token use without adding signal (the LLM saw the directive
     # in the reviewer feedback already). Only run length-retry on first pass.
     on_retry_pass = bool(feedback or previous_diff)
-    # Run 18 audit fix: apply the grace band so 78w → 79w floor passes.
-    _effective_min_words = max(
-        1,
-        int(orig_words * _SUMMARY_MIN_RATIO) - _SUMMARY_MIN_WORD_GRACE,
+    # Word count the expand-retry AIMS for, and the HARD floor below which
+    # even a tailored summary is reverted as genuinely stunted.
+    _target_words = max(
+        1, int(orig_words * _SUMMARY_MIN_RATIO) - _SUMMARY_MIN_WORD_GRACE,
     )
-    if (not on_retry_pass) and orig_words >= 20 and new_words and new_words < _effective_min_words:
-        low  = _effective_min_words
+    _hard_floor = max(1, int(orig_words * _SUMMARY_HARD_FLOOR_RATIO))
+    if (not on_retry_pass) and orig_words >= 20 and new_words and new_words < _target_words:
         high = int(orig_words * _SUMMARY_MAX_RATIO)
-        print(
-            f"   ↻  summary too short ({new_words}/{orig_words} words, "
-            f"need ≥{low}) — retrying with hard target {low}-{high}."
-        )
-        # Run 18 audit fix (Perplexity-flagged): the previous instruction
-        # said "Rewrite ... to fall strictly within range" which DeepSeek
-        # interpreted as "be more concise" and produced an even shorter
-        # output. Explicitly tell it to EXPAND the existing summary, not
-        # rewrite it, by appending CV-grounded detail.
-        words_short = max(1, low - new_words)
-        enforce = (
-            f"YOUR PREVIOUS SUMMARY WAS TOO SHORT ({new_words} words; "
-            f"target {low}-{high}, original was {orig_words}). Do NOT rewrite "
-            f"the summary from scratch. KEEP the existing sentences and EXPAND "
-            f"by adding approximately {words_short}-{words_short + 8} more words "
-            f"of CV-grounded detail — specific outcomes, platform names, "
-            f"methodologies, or technologies that already appear elsewhere in "
-            f"the candidate's CV. You MUST NOT invent anything that is not in "
-            f"the CV. The expansion should read as natural additions to the "
-            f"existing prose, not a new draft."
-        )
-        raw_text2 = _call_llm(_render_prompt(extra=enforce))
-        raw_json2 = _extract_json(raw_text2)
-        diff2     = _sanitise_diff(raw_json2, outline, do_not_inject=strategy_dni, cv_text=cv_text)
-        new_sum2  = (diff2.get("summary") or "").strip()
-        # Run 18 audit fix: apply grace band on retry too.
-        if new_sum2 and len(new_sum2.split()) >= _effective_min_words:
-            # May 1 fix: re-run the credential-preservation guard on the
-            # length-retry summary. Yesterday's run produced a length-retry
-            # rewrite that dropped "(2.1)" because this branch never
-            # consulted _check_credentials_preserved. We now treat a
-            # credential-dropped retry the same as a too-short retry: fall
-            # back to the original summary verbatim. Length floor is a
-            # quality goal; credential preservation is a non-negotiable.
-            missing_creds_retry = _check_credentials_preserved(orig_summary, new_sum2)
-            if missing_creds_retry:
-                flat = ", ".join(
-                    f"{k}={v}" for k, v in missing_creds_retry.items()
-                )
+        # Best (longest) credential-preserving attempt so far, seeded with
+        # the first pass; the retry loop tries to beat it.
+        best_sum = (diff.get("summary") or "").strip()
+        best_n   = len(best_sum.split())
+        for attempt in range(1, _SUMMARY_RETRY_LIMIT + 1):
+            print(
+                f"   ↻  summary too short ({best_n}/{orig_words} words, "
+                f"need ≥{_target_words}) — expand-retry "
+                f"{attempt}/{_SUMMARY_RETRY_LIMIT} (target {_target_words}-{high})."
+            )
+            # Show the LLM its OWN previous summary and tell it to expand
+            # that exact text — DeepSeek reads "rewrite to fit a range" as
+            # "be more concise" and shrinks further.
+            words_short = max(1, _target_words - best_n)
+            enforce = (
+                f"YOUR PREVIOUS SUMMARY WAS TOO SHORT — it had {best_n} "
+                f"words but MUST end up between {_target_words} and {high} "
+                f"(the original is {orig_words}). Here is your previous "
+                f"summary:\n\n\"{best_sum}\"\n\nDo NOT rewrite it from "
+                f"scratch. KEEP these exact sentences and EXPAND them by "
+                f"adding about {words_short}-{words_short + 8} more words of "
+                f"CV-grounded detail — specific outcomes, metrics, platform "
+                f"names, methodologies or technologies that ALREADY appear "
+                f"in the candidate's CV. Invent nothing. Do not exceed "
+                f"{high} words. Count the words before submitting."
+            )
+            diff_r = _sanitise_diff(
+                _extract_json(_call_llm(_render_prompt(extra=enforce))),
+                outline, do_not_inject=strategy_dni, cv_text=cv_text,
+            )
+            sum_r = (diff_r.get("summary") or "").strip()
+            n_r   = len(sum_r.split())
+            # Keep an attempt only if it is LONGER and still preserves the
+            # original's credential tokens (grade / YoE / numeric outcomes).
+            if (sum_r and n_r > best_n
+                    and not _check_credentials_preserved(orig_summary, sum_r)):
+                best_sum, best_n = sum_r, n_r
+            if best_n >= _target_words:
+                break
+
+        if best_n >= _hard_floor:
+            # 1+2 hybrid: ship the best attempt — it is tailored and at or
+            # above the hard floor, even if a few words under target.
+            diff["summary"] = best_sum
+            new_words = best_n
+            if best_n >= _target_words:
+                print(f"   ↻  summary expand-retry hit target ({best_n} words).")
+            else:
                 print(
-                    f"   ↺  length-retry rewrite dropped credential tokens "
-                    f"({flat}) — reverting to original summary."
+                    f"   ↻  summary {best_n}/{orig_words} words — under "
+                    f"target {_target_words} but ≥ hard floor {_hard_floor}: "
+                    f"shipping the tailored summary."
                 )
                 diff["_debug"]["summary_reverts"].append({
-                    "reason":  "credentials_dropped_on_retry",
-                    "missing": missing_creds_retry,
+                    "reason":         "length_below_target_accepted",
+                    "new_words":      best_n,
+                    "original_words": orig_words,
+                    "target":         _target_words,
                 })
-                diff["summary"] = orig_summary
-                new_words = orig_words
-            else:
-                diff["summary"] = new_sum2
-                new_words = len(new_sum2.split())
         elif orig_summary:
-            # Retry still short — revert to original rather than ship a
-            # noticeably shortened summary.
-            short_words = len(new_sum2.split()) if new_sum2 else 0
+            # Even the best attempt is below the hard floor — genuinely
+            # stunted. Revert rather than ship a clearly short summary.
             print(
-                f"   ↺  retry still short ({short_words} words) "
-                f"— reverting to original summary verbatim."
+                f"   ↺  summary still too short after {_SUMMARY_RETRY_LIMIT} "
+                f"expand-retries (best {best_n}/{orig_words}, hard floor "
+                f"{_hard_floor}) — reverting to original summary."
             )
             diff["_debug"]["summary_reverts"].append({
-                "reason": "length_floor",
-                "new_words": short_words,
+                "reason":         "length_floor",
+                "new_words":      best_n,
                 "original_words": orig_words,
-                "floor": int(orig_words * _SUMMARY_MIN_RATIO),
+                "hard_floor":     _hard_floor,
             })
             diff["summary"] = orig_summary
             new_words = orig_words
+
+    # ── Summary upper-bound enforcement (May 2026, user-driven) ──────
+    # A tailored summary must occupy the SAME footprint as the original:
+    # same font, same size, same LINE SPACING. The renderer keeps spacing
+    # identical only when the rewrite genuinely fits the original slot. A
+    # summary longer than the original forces the editor to compress the
+    # line-gap to cram it in — the "stuck together" look. The retry above
+    # handles undershoot; this handles overshoot. One retry with a
+    # tighten-to-fit directive, then keep the shorter attempt. Never
+    # revert to the un-tailored original — that discards the tailoring.
+    _summary_hi_hard = int(round(orig_words * _SUMMARY_MAX_RATIO))
+    if (not on_retry_pass) and orig_words >= 20 and new_words > _summary_hi_hard:
+        _first_sum  = (diff.get("summary") or "").strip()
+        _first_wcnt = new_words
+        print(
+            f"   ↻  summary too long ({new_words}/{orig_words} words, "
+            f"ceiling {_summary_hi_hard}) — retrying with a tighten-to-fit "
+            f"directive (target {_orig_word_min}-{_orig_word_max})."
+        )
+        enforce_long = (
+            f"YOUR PREVIOUS SUMMARY WAS TOO LONG ({new_words} words; it MUST "
+            f"land between {_orig_word_min} and {_orig_word_max} words — the "
+            f"original is {orig_words}). A summary longer than the original "
+            f"does not fit the CV's summary slot: the layout is forced to "
+            f"squeeze the lines together, which looks wrong. Do NOT drop any "
+            f"fact, number, employer, tool, platform, or credential. TIGHTEN "
+            f"the existing prose instead — merge clauses, cut filler words "
+            f"and redundant qualifiers, choose shorter phrasings. Same "
+            f"content, same facts, fewer words. Count the words in your "
+            f"final summary before submitting."
+        )
+        raw_text3 = _call_llm(_render_prompt(extra=enforce_long))
+        raw_json3 = _extract_json(raw_text3)
+        diff3     = _sanitise_diff(raw_json3, outline, do_not_inject=strategy_dni, cv_text=cv_text)
+        new_sum3  = (diff3.get("summary") or "").strip()
+        _retry_wcnt = len(new_sum3.split()) if new_sum3 else 0
+        # Adopt the retry only if it is non-empty, genuinely shorter, and
+        # still clean — a length fix that drops a credential, introduces a
+        # CV-foreign term, or alters the professional identity is not a fix.
+        _adopt_long = False
+        if new_sum3 and 0 < _retry_wcnt < _first_wcnt:
+            _cv_vocab_b = _cv_vocabulary(outline, cv_full_text=cv_text)
+            _bad = (
+                _check_credentials_preserved(orig_summary, new_sum3)
+                or _foreign_capitalized_terms(new_sum3, _cv_vocab_b, _safe_ws)
+                or _check_professional_identity_fabrication(
+                    orig_summary, new_sum3, outline
+                )
+            )
+            _adopt_long = not _bad
+        if _adopt_long:
+            diff["summary"] = new_sum3
+            new_words = _retry_wcnt
+            diff["_debug"].setdefault("summary_length_retries", []).append(
+                {"reason": "too_long", "before": _first_wcnt, "after": _retry_wcnt}
+            )
+            print(
+                f"   ✓  summary tighten retry: {_first_wcnt} → {_retry_wcnt} "
+                f"words (ceiling {_summary_hi_hard})."
+            )
+        else:
+            diff["summary"] = _first_sum
+            new_words = _first_wcnt
+            print(
+                f"   ↺  summary tighten retry did not improve "
+                f"({_first_wcnt} → {_retry_wcnt} words) — keeping the first "
+                f"attempt; editor will compress line spacing to fit."
+            )
 
     # Count rewrites across all roles (bullets with non-null "text" field).
     def _count_diff_edits(d: Dict[str, Any]) -> tuple:
@@ -2670,6 +3283,156 @@ def tailor_cv_diff(
                 n_rewrites  = n_rewrites_rr
                 n_dropped   = n_dropped_rr
                 new_words   = rr_sum_words or new_words
+
+    # ── Identical-rewrite retry (May 2026) ───────────────────────────
+    # The strategist flagged a bullet for a verb-led rewrite, but the
+    # tailor returned text that normalises to the original (cosmetic
+    # near-copy → demoted to "identical_rewrite"). That bullet was
+    # PLANNED to change and didn't. Do ONE retry showing the LLM each
+    # unchanged bullet and demanding a genuine restructure — or an
+    # honest omission if the bullet truly cannot be improved. First pass
+    # only; reviewer-driven retries carry their own directive.
+    if not (feedback or previous_diff):
+        _identical_reverts = [
+            r for r in list(_LAST_BULLET_REVERTS)
+            if isinstance(r, dict)
+            and str(r.get("reason", "")) == "identical_rewrite"
+        ]
+        if len(_identical_reverts) >= 1:
+            print(
+                f"   ↻  cv_diff_tailor: {len(_identical_reverts)} planned "
+                f"bullet(s) returned UNCHANGED — retrying with a "
+                f"restructure-or-omit directive."
+            )
+            _unchanged_lines = []
+            for r in _identical_reverts:
+                prev = (r.get("rewrite_preview") or "").strip()
+                if not prev:
+                    continue
+                _unchanged_lines.append(
+                    f'  - bullet {r.get("bullet_index")}: "{prev}"'
+                )
+            enforce_id = (
+                f"{len(_identical_reverts)} of your bullet rewrites came "
+                f"back UNCHANGED — the text you returned is identical to "
+                f"the original (ignoring punctuation and articles). The "
+                f"PER-BULLET ACTION PLAN flagged each of these bullets "
+                f"for a verb-led rewrite, so returning the original is "
+                f"not an answer.\n\nBullets returned unchanged:\n"
+                + "\n".join(_unchanged_lines)
+                + "\n\nFor EACH bullet above, do ONE of two things: "
+                "(1) genuinely restructure it — lead with the buried "
+                "JD-relevant fact named in the action plan, change the "
+                "opening verb, or surface the metric / named project "
+                "that is currently mid-sentence; OR (2) only if the "
+                "bullet honestly cannot be improved for this JD, OMIT it "
+                "from the bullets JSON entirely (it is then kept "
+                "verbatim — that is acceptable). Do NOT return another "
+                "near-copy. Return the full bullets JSON again."
+            )
+            raw_text_id = _call_llm(_render_prompt(extra=enforce_id))
+            raw_json_id = _extract_json(raw_text_id)
+            _LAST_BULLET_REVERTS.clear()
+            diff_id = _sanitise_diff(
+                raw_json_id, outline,
+                do_not_inject=strategy_dni, cv_text=cv_text,
+            )
+            n_rewrites_id, n_dropped_id = _count_diff_edits(diff_id)
+            _n_rewrites_before_id = n_rewrites
+            if n_rewrites_id > n_rewrites:
+                id_sum = (diff_id.get("summary") or "").strip()
+                id_sum_words = len(id_sum.split()) if id_sum else 0
+                if (id_sum_words == 0
+                        or (new_words > 0 and id_sum_words < new_words)) \
+                        and diff.get("summary"):
+                    diff_id["summary"] = diff["summary"]
+                    id_sum_words = new_words
+                diff       = diff_id
+                n_rewrites = n_rewrites_id
+                n_dropped  = n_dropped_id
+                new_words  = id_sum_words or new_words
+                print(
+                    f"   ✓  identical-rewrite retry: {_n_rewrites_before_id} "
+                    f"→ {n_rewrites_id} bullet rewrites."
+                )
+
+    # ── Over-length retry (May 2026 — same-length tailoring) ──────────
+    # If the first pass had bullet rewrites rejected for being too LONG
+    # (DeepSeek overshot the [target≈N chars] same-length target), do ONE
+    # retry asking it to compress those bullets to fit. Mirrors the
+    # summary length-retry. First pass only — reviewer-driven retries
+    # already carry their own directive.
+    if not (feedback or previous_diff):
+        _length_reverts = [
+            r for r in list(_LAST_BULLET_REVERTS)
+            if isinstance(r, dict)
+            and str(r.get("reason", "")).startswith("length ")
+        ]
+        if len(_length_reverts) >= 1:
+            print(
+                f"   ↻  cv_diff_tailor: {len(_length_reverts)} bullet "
+                f"rewrite(s) rejected as too long — retrying with a "
+                f"compress-to-fit directive (own drafts shown back)."
+            )
+            # Show the LLM each of its OWN too-long drafts with the exact
+            # character limit — the lever that made the summary length-
+            # retry converge. Re-tailoring blind just overshoots again;
+            # trimming a concrete draft to a concrete number works.
+            _draft_lines = []
+            for r in _length_reverts:
+                m = re.search(r"length (\d+) outside \d+-(\d+)",
+                              str(r.get("reason", "")))
+                draft = (r.get("rewrite_preview") or "").strip()
+                if not m or not draft:
+                    continue
+                drew, lim = int(m.group(1)), int(m.group(2))
+                _draft_lines.append(
+                    f"  - HARD LIMIT {lim} characters (your draft was "
+                    f"{drew}, {drew - lim} over):\n"
+                    f'    YOUR DRAFT: "{draft}"'
+                )
+            enforce_len = (
+                f"{len(_length_reverts)} of your bullet rewrites were "
+                f"REJECTED — each is TOO LONG for the bullet's fixed slot "
+                f"in the PDF. Below is each rejected draft with its HARD "
+                f"character limit:\n\n"
+                + "\n".join(_draft_lines)
+                + "\n\nShorten YOUR OWN DRAFT above to AT OR BELOW its "
+                "limit: cut adjectives, hedges, qualifiers and redundant "
+                "words; keep every number and proper noun verbatim. Do NOT "
+                "re-tailor from scratch and do NOT add anything — just trim "
+                "the draft you already wrote. A rewrite at or below its "
+                "limit SHIPS; one even a character over is DISCARDED.\n"
+                "Return the full bullets JSON again with these trimmed."
+            )
+            raw_text_lr = _call_llm(_render_prompt(extra=enforce_len))
+            raw_json_lr = _extract_json(raw_text_lr)
+            _LAST_BULLET_REVERTS.clear()
+            diff_lr = _sanitise_diff(
+                raw_json_lr, outline,
+                do_not_inject=strategy_dni, cv_text=cv_text,
+            )
+            n_rewrites_lr, n_dropped_lr = _count_diff_edits(diff_lr)
+            # Adopt the retry only if it landed MORE rewrites than the
+            # first pass. Otherwise keep the first pass (never regress).
+            _n_rewrites_before = n_rewrites
+            if n_rewrites_lr > n_rewrites:
+                lr_sum = (diff_lr.get("summary") or "").strip()
+                lr_sum_words = len(lr_sum.split()) if lr_sum else 0
+                # Keep whichever summary is closer to the original length.
+                if (lr_sum_words == 0
+                        or (new_words > 0 and lr_sum_words < new_words)) \
+                        and diff.get("summary"):
+                    diff_lr["summary"] = diff["summary"]
+                    lr_sum_words = new_words
+                diff       = diff_lr
+                n_rewrites = n_rewrites_lr
+                n_dropped  = n_dropped_lr
+                new_words  = lr_sum_words or new_words
+                print(
+                    f"   ✓  over-length retry: {_n_rewrites_before} "
+                    f"→ {n_rewrites_lr} bullet rewrites."
+                )
 
     tag = " (retry)" if feedback or previous_diff else ""
     # Apr 28 follow-up: include LLM source so we can see at a glance whether

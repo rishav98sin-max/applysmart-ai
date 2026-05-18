@@ -91,9 +91,15 @@ YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
    role actually wants: titles, frameworks, deliverables, domains.
 2. SCAN the CV. For each JD requirement, mark:
      • STRONG MATCH    — CV has it explicitly (same word or close synonym)
-     • IMPLICIT MATCH  — CV demonstrates it without using the JD's word
-     • GAP             — CV does not have this; do NOT instruct the tailor
-                          to invent it. Add it to `do_not_inject` instead.
+     • IMPLICIT MATCH  — the CV genuinely demonstrates this EXACT skill but
+                          under a DIFFERENT word, and the JD's word is the
+                          industry-standard label for it. Record it in
+                          `safe_relabels` with the CV phrase that proves it.
+                          Be strict: a relabel of the SAME skill, never an
+                          adjacent or aspirational one. When unsure → GAP.
+     • GAP             — CV does not have this, even implicitly; do NOT
+                          instruct the tailor to invent it. Add it to
+                          `do_not_inject` instead.
 3. DECIDE the candidate's narrative angle for THIS role only — the
    single one-line story that reframes their existing experience as
    the fit for this JD. Cross-industry example shapes (adapt to
@@ -110,12 +116,69 @@ YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
    the candidate isn't already on. If the CV and JD are in the same
    field, the angle is often just "<specialism from CV> with <JD
    emphasis> focus" — no transition wording needed.
-4. DRAFT per-bullet actions. For each bullet in each role, choose:
-     • "promote"            — bullet already matches JD strongly; lift it earlier
-     • "rewrite_verb_led"   — bullet is relevant but needs a JD-vocabulary verb
-                               and reordered keywords. Provide the target verb.
-     • "deprioritise"       — bullet is not relevant for this JD; keep at end,
-                               do not rewrite.
+4. DRAFT per-bullet actions. This is the highest-value part of the
+   strategy. Work role by role, TOP TO BOTTOM — evaluate EVERY role and
+   EVERY project in the CV. Never skip a whole role. Apply the selection
+   test below to each bullet individually.
+
+   THE SELECTION TEST — run this on EVERY bullet before listing it.
+   Read the bullet's FIRST 6-8 words and what it emphasises:
+     • Bullet ALREADY opens with this JD's priority and already
+       surfaces the right keywords → DO NOT LIST IT. An on-target
+       bullet needs no rewrite; leaving it verbatim is the correct
+       action. Listing it anyway forces a cosmetic near-copy that
+       wastes the tailor's output and re-renders a perfectly good
+       bullet for ZERO gain. This is the #1 mistake to avoid.
+     • Bullet BURIES a JD-relevant point later in the sentence, opens
+       with a weak/generic verb, or leads with something this JD does
+       not care about → LIST IT as "rewrite_verb_led".
+     • Bullet is irrelevant to this JD → omit it; it is kept verbatim.
+     • Bullet is a SHORT, pure-scope line — it just states a duty or scope
+       ("Responsible for managing X, Y, Z") with no metric, outcome,
+       project, or named achievement buried in it → DO NOT LIST IT. There
+       is nothing to surface and no room to re-aim it inside its fixed
+       slot; targeting it only yields a rewrite the editor reverts. Spend
+       the plan on bullets that carry re-aimable substance.
+
+   For every bullet you DO list as "rewrite_verb_led", you do NOT write
+   the new sentence — the tailor does that, and it can see the full
+   bullet. Your job is to POINT, surgically, at ONE buried fact.
+
+     • "lead_with" — name ONE specific element (3-8 words) the bullet
+       ALREADY contains but does NOT currently open with: a single
+       metric, ONE platform, ONE named project, ONE deliverable, or ONE
+       outcome sitting in the bullet's MIDDLE or END. It is NOT a
+       clause, NOT half the bullet, and NEVER the words the bullet
+       already starts with.
+
+   TEST IT before you write it: read the bullet's first 5-6 words, then
+   read your lead_with. If your lead_with repeats or paraphrases those
+   first words, it is WRONG — you pointed at the opening, not a buried
+   fact. Either find the genuinely buried element, or DO NOT LIST this
+   bullet (a bullet with nothing worth pulling forward is already fine
+   — leave it verbatim).
+
+   WORKED EXAMPLES:
+     Bullet "Structured content strategies for key themes, achieving
+       2M+ reach and 1.8M+ impressions" — first words "Structured
+       content strategies..." → lead_with "the 2M+ reach and 1.8M+
+       impressions"  (RIGHT — buried at the end).
+     Bullet "Drove analytics and measurement using KPI dashboards..." —
+       first words "Drove analytics and measurement..." → lead_with
+       "analytics and measurement"  (WRONG — that IS the opening; the
+       bullet already leads with the JD priority, so do NOT list it).
+
+   Never name a JD word the CV lacks ("influencer", "ROI", ...) in
+   lead_with — point at the candidate's real fact.
+
+   List EVERY bullet that genuinely needs a rewrite — there is no target
+   count and no cap. A role with 12 bullets might need 9 rewrites, or 2;
+   list exactly the ones that fail the selection test, however many that
+   is. Do NOT ration: a bullet that buries a JD point must be listed even
+   if you have already listed many. Equally, do NOT pad: a bullet that is
+   already on-target must be OMITTED, never echoed back. The only
+   question for each bullet is "does this one genuinely need it?" — if
+   yes, list it; if no, skip it.
 5. CONSIDER synthesising AT MOST ONE new bullet per role IF it would
    land 2+ JD keywords AND every claim is grounded in OTHER existing
    bullets of the SAME role. If you cannot ground it, omit.
@@ -203,10 +266,8 @@ OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
     "<exact role-header line after ▸ in the CV outline — e.g. 'Ogilvy – Senior Account Executive October 2024 – Present'. NEVER 'ROLES' or 'PROJECTS'>": [
       {{
         "i": 0,
-        "action": "rewrite_verb_led" | "promote" | "deprioritise",
-        "target_verb_phrase": "<JD-aligned opening verb phrase, e.g. 'Led roadmap planning' — required for rewrite_verb_led>",
-        "target_keywords": ["<keyword from JD that is ALSO grounded in CV>", "..."],
-        "rationale": "<one short clause: why this action>"
+        "action": "rewrite_verb_led",
+        "lead_with": "<ONE specific buried element, 3-8 words — a metric / platform / project / outcome the bullet contains but does NOT open with>"
       }}
     ]
   }},
@@ -224,11 +285,52 @@ OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
     "<JD term the CV does not contain — tailor must NOT add this>"
   ],
 
+  "safe_relabels": [
+    {{
+      "jd_term": "<JD word/phrase that is the standard label for a skill the CV genuinely shows under a DIFFERENT word>",
+      "cv_evidence": "<the exact, literal CV phrase that proves it>"
+    }}
+  ],
+
   "cover_letter_hook": {{
     "pattern": "industry_observation" | "concrete_achievement" | "role_insight",
     "opening_topic": "<one-sentence framing the cover letter should open with — drawn from JD or industry context, no candidate self-reference>"
   }}
 }}
+
+OUTPUT-SIZE BUDGET RULES (CRITICAL — over-output truncates the JSON
+mid-array and the tailor receives a partial plan, producing few or no
+rewrites):
+
+  1. bullet_strategy: list every bullet that genuinely needs a rewrite,
+     with a safety ceiling of 12 entries per role (only relevant for
+     unusually long roles — pick the 12 highest JD impact if a role
+     truly has more than 12 bullets that all need work). Bullets you do
+     NOT list are implicitly "keep verbatim" — the tailor handles them
+     without a strategy entry. The ceiling is a truncation guard, NOT a
+     target: most roles need far fewer, and a role where only 2 bullets
+     need work should list exactly 2.
+
+  2. List ONLY bullets that genuinely need a rewrite — the ones that
+     FAILED the selection test in step 4. Never list a bullet just to
+     fill the plan: an already-on-target bullet must be OMITTED, not
+     echoed back as a rewrite (that produces a cosmetic non-change).
+     SKIP "promote" / "deprioritise" unless a reorder is genuinely
+     critical.
+
+  3. OMIT any "rationale" / explanation fields. The tailor doesn't read
+     them. They consume tokens with no downstream use.
+
+  4. Keep "lead_with" SHORT — a few words naming ONE fact already in
+     the bullet. Never write a full sentence there.
+
+  5. project_reframings: include only when a project's existing label
+     genuinely misrepresents the work for THIS JD. Most projects don't
+     need reframing.
+
+  6. synthesised_bullets: include AT MOST 1 per role, and only when an
+     existing bullet pair in that role can be honestly recombined into
+     a stronger JD-aligned version. Default to omitting this field.
 
 Return the JSON now:"""
 
@@ -529,6 +631,58 @@ def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
 
 
 # ─────────────────────────────────────────────────────────────
+# Adaptive token budget
+# ─────────────────────────────────────────────────────────────
+
+def _estimate_strategist_token_budget(outline: Dict[str, Any]) -> int:
+    """
+    Compute an adaptive max_tokens for the strategist call based on the
+    CV's complexity, instead of hardcoding a single value that either
+    truncates large CVs or wastes tokens on small ones.
+
+    Token budget components (the strategist's JSON output):
+      - Fixed overhead: narrative_angle, summary_strategy, do_not_inject,
+        cover_letter_hook → ~1500 chars (~375 tokens).
+      - Per-role overhead (header repetition + array brackets): ~120 chars.
+      - Per-strategy-bullet entry: ~220 chars (i + action + verb_phrase
+        + 3 keywords + JSON syntax).
+      - Per-project-reframing entry: ~200 chars (rare, often 0).
+      - Per-synthesised-bullet: ~180 chars (rare, often 0).
+
+    The prompt caps bullet_strategy at 12 entries per role, so the
+    relevant bullet count is min(actual_bullets, 12) per role — actual
+    counts above 12 don't grow the output.
+
+    Apply a 1.3x safety margin and clamp to [1500, 6000].
+    """
+    if not outline:
+        return 2500
+
+    roles = outline.get("roles") or []
+    n_roles = len(roles)
+    capped_strategy_bullets = sum(
+        min(len(r.get("bullets") or []), 12) for r in roles
+    )
+
+    # Estimate output JSON size in chars
+    fixed_overhead = 1500
+    per_role_overhead = 120
+    per_bullet_entry = 220
+    estimated_chars = (
+        fixed_overhead
+        + n_roles * per_role_overhead
+        + capped_strategy_bullets * per_bullet_entry
+    )
+
+    # ~4 chars per token (English JSON), apply 1.3x safety margin.
+    estimated_tokens = int((estimated_chars / 4) * 1.3)
+    # Clamp: never below 1500 (small CVs still need room for the fixed
+    # JSON shape), never above 6000 (extreme CVs should hit the per-role
+    # cap and not need more).
+    return max(1500, min(6000, estimated_tokens))
+
+
+# ─────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────
 
@@ -539,6 +693,7 @@ EMPTY_STRATEGY: Dict[str, Any] = {
     "bullet_strategy": {},
     "synthesised_bullets": {},
     "do_not_inject": [],
+    "safe_relabels": [],
     "cover_letter_hook": {},
     "_source": "empty",
 }
@@ -549,6 +704,83 @@ EMPTY_STRATEGY: Dict[str, Any] = {
 # grounding evidence for other rewrites but must never propose edits
 # to the skills block. cv_diff_tailor.py mirrors this lock by always
 # returning skills_order=[].
+
+
+# Articles / conjunctions / prepositions ignored when comparing a
+# lead_with against a bullet's opening — "communication and engagement"
+# and "communication & engagement strategies" should register as the
+# same lead.
+_LEAD_FILLER_WORDS = {
+    "a", "an", "the", "and", "or", "of", "for", "to", "in", "on",
+    "with", "by", "at", "as", "into", "from",
+}
+
+
+def _lead_content_words(text: str) -> List[str]:
+    """Lowercased alphanumeric content words, filler words dropped."""
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
+    return [w for w in cleaned.split() if w not in _LEAD_FILLER_WORDS]
+
+
+def _clean_lead_withs(
+    bullet_strategy: Dict[str, Any], outline: Dict[str, Any]
+) -> int:
+    """
+    Deterministic guard against the strategist's #1 lead_with failure:
+    pointing `lead_with` at the bullet's EXISTING opening (or writing a
+    long clause instead of a 3-8 word fact). Such a lead_with tells the
+    tailor to "lead with" words the bullet already opens with → the
+    tailor returns a near-copy → identical_rewrite revert.
+
+    For every defective entry we BLANK the lead_with. An empty lead_with
+    makes render_strategy_for_tailor fall back to "reorder to lead with
+    this bullet's most JD-relevant existing fact" — the tailor, which
+    sees the full bullet, then picks the buried fact itself. That is
+    strictly better than executing a wrong instruction.
+
+    Returns the number of lead_with values blanked.
+    """
+    roles = (outline or {}).get("roles") or []
+    blanked = 0
+    for role_key, actions in (bullet_strategy or {}).items():
+        if not isinstance(actions, list):
+            continue
+        rk = (role_key or "").strip().lower()
+        bullets = None
+        for r in roles:
+            hdr = (r.get("header") or "").strip().lower()
+            if rk and (hdr.startswith(rk) or rk in hdr or hdr in rk):
+                bullets = r.get("bullets") or []
+                break
+        if bullets is None:
+            continue
+        for a in actions:
+            if not isinstance(a, dict):
+                continue
+            lead = (a.get("lead_with") or "").strip()
+            if not lead:
+                continue
+            i = a.get("i")
+            if not isinstance(i, int) or not (0 <= i < len(bullets)):
+                continue
+            b = bullets[i]
+            btext = (b.get("text") if isinstance(b, dict) else str(b)) or ""
+            lead_w = _lead_content_words(lead)
+            open_w = _lead_content_words(btext)[:8]
+            # (a) over-long: a clause, not a 3-8 word fact.
+            too_long = len(lead_w) > 9
+            # (b) echo: lead_with's first 3 content words match the
+            #     bullet's opening 3 content words → it points at the
+            #     opening, not a buried fact.
+            echo = (
+                len(lead_w) >= 3
+                and len(open_w) >= 3
+                and lead_w[:3] == open_w[:3]
+            )
+            if too_long or echo:
+                a["lead_with"] = ""
+                blanked += 1
+    return blanked
 
 
 def build_tailor_strategy(
@@ -621,6 +853,18 @@ def build_tailor_strategy(
         cv_outline            = _format_outline_for_strategist(outline),
     )
 
+    # Adaptive token budget (May 2026 — user-driven design).
+    # The output JSON size scales with CV complexity (bullets × roles).
+    # Hardcoding 2500 truncated Shrestha-style CVs (23 bullets); a
+    # smaller CV would waste budget. Compute per-CV based on the outline
+    # so the same code adapts to any input size.
+    strategist_max_tokens = _estimate_strategist_token_budget(outline)
+    print(
+        f"   📐 strategist: adaptive token budget = {strategist_max_tokens} "
+        f"(CV has {sum(len(r.get('bullets') or []) for r in outline.get('roles') or [])} "
+        f"bullets across {len(outline.get('roles') or [])} roles)"
+    )
+
     # Strategy chain (May 2026): DeepSeek → Groq.
     # The strategy is a small structured JSON output (~500 tokens). DeepSeek's
     # better instruction-following produces sharper bullet_actions and tighter
@@ -631,15 +875,22 @@ def build_tailor_strategy(
     # bullet_actions for 12-18 bullets + project_reframings + do_not_inject).
     # At max_tokens=900 the JSON was truncated mid-string in Run 8 + Run 9
     # (observed 3,522 and 3,758 char outputs ≈ 880-940 tokens, right at
-    # the ceiling). Truncated JSON → empty strategy → tailor improvises
-    # without guidance → both jobs get identical fallback diff. Cost
-    # impact at 2500: ≈ +1,600 tokens × 3 jobs/run × $0.27/1M = $0.0013/run.
+    # the ceiling). Bumped to 2500 (May 2026 v1).
+    #
+    # Token budget should stay at 2500. Shrestha+Asian Paints showed
+    # truncation NOT because of insufficient tokens but because the
+    # output schema was bloated — per-bullet entries averaged 200 chars
+    # of JSON each (target_keywords list + rationale + verb_phrase +
+    # action enum). For long CVs (23+ bullets) that adds up. The fix is
+    # to compress the output schema (drop optional fields, limit
+    # bullet_strategy to top N rewrites per role), not to keep raising
+    # the token ceiling.
     raw = chat_deepseek(
-        prompt, max_tokens=2500, temperature=0.2, json_mode=True
+        prompt, max_tokens=strategist_max_tokens, temperature=0.2, json_mode=True
     )
     if not raw:
         try:
-            raw = chat_quality(prompt, max_tokens=2500, temperature=0.2)
+            raw = chat_quality(prompt, max_tokens=strategist_max_tokens, temperature=0.2)
         except Exception as e:
             print(f"   ⚠️  strategist: LLM call failed ({type(e).__name__}: {e}) — empty strategy")
             return dict(EMPTY_STRATEGY)
@@ -660,7 +911,7 @@ def build_tailor_strategy(
                 f"likely stale-deploy 900-token truncation) — retrying on Groq"
             )
             try:
-                raw2 = chat_quality(prompt, max_tokens=2500, temperature=0.2)
+                raw2 = chat_quality(prompt, max_tokens=strategist_max_tokens, temperature=0.2)
                 parsed = _extract_json(raw2 or "")
                 if parsed:
                     raw = raw2
@@ -685,6 +936,7 @@ def build_tailor_strategy(
         "bullet_strategy",
         "synthesised_bullets",
         "do_not_inject",
+        "safe_relabels",
         "cover_letter_hook",
     ):
         if key in parsed:
@@ -705,6 +957,20 @@ def build_tailor_strategy(
     normalised["synthesised_bullets"] = _normalise_section_keys(
         normalised.get("synthesised_bullets") or {}
     )
+
+    # Deterministic lead_with guard: blank any lead_with that echoes the
+    # bullet's own opening or is a long clause. Without this the tailor
+    # is handed "lead with <words the bullet already opens with>" and
+    # returns a near-copy → identical_rewrite revert.
+    _blanked = _clean_lead_withs(
+        normalised.get("bullet_strategy") or {}, outline
+    )
+    if _blanked:
+        print(
+            f"   🧹 strategist: blanked {_blanked} lead_with value(s) that "
+            f"echoed the bullet's opening or were over-long — tailor will "
+            f"pick the buried fact itself for those."
+        )
 
     angle = (normalised.get("narrative_angle") or "").strip()
     bullet_count = sum(
@@ -786,14 +1052,19 @@ def render_strategy_for_tailor(strategy: Dict[str, Any]) -> str:
             for a in (actions or []):
                 idx     = a.get("i")
                 action  = a.get("action") or "rewrite_verb_led"
-                verb    = a.get("target_verb_phrase") or ""
-                kws     = a.get("target_keywords") or []
+                lead    = (a.get("lead_with") or "").strip()
                 rat     = a.get("rationale") or ""
                 if action == "rewrite_verb_led":
-                    lines.append(
-                        f"      [{idx}] REWRITE — open with {verb!r}, "
-                        f"weave in {kws}. {rat}"
-                    )
+                    if lead:
+                        lines.append(
+                            f"      [{idx}] REWRITE — reorder the bullet's "
+                            f"OWN words to LEAD WITH: {lead}"
+                        )
+                    else:
+                        lines.append(
+                            f"      [{idx}] REWRITE — reorder to lead with "
+                            f"this bullet's most JD-relevant existing fact."
+                        )
                 elif action == "promote":
                     lines.append(f"      [{idx}] PROMOTE (keep text, lift earlier). {rat}")
                 elif action == "deprioritise":

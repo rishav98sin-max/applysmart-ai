@@ -1323,27 +1323,27 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                 # in place" question for the DOCX pipeline.
                 if docx_route is not None:
                     replica_check = {"compatible": True, "reason": "docx_route"}
-                elif os.getenv("PREFER_REBUILD_OVER_INPLACE", "1").strip() not in ("0", "false", "no", "off", ""):
-                    # Run 18 audit fix: when DOCX route fails AND PDF upload
-                    # is being processed, prefer the rebuild path over PyMuPDF
-                    # in-place editing. In-place editing causes visible font
-                    # shrinkage on bullets where the rewrite is longer than
-                    # the original — even with the 1pt shrinkage cap, the
-                    # result is visibly inconsistent ("format got fucked").
-                    # Rebuild produces clean consistent formatting; loses
-                    # exact pixel-fidelity to the original PDF but the result
-                    # looks professional and respects the candidate's style
-                    # profile (fonts, margins, colours). Set
-                    # PREFER_REBUILD_OVER_INPLACE=0 to restore legacy in-place
-                    # fallback behaviour for debugging.
+                elif os.getenv("PREFER_REBUILD_OVER_INPLACE", "0").strip() not in ("0", "false", "no", "off", ""):
+                    # 99% format mode (May 2026): default flipped from "1" to
+                    # "0". PyMuPDF in-place edit is the primary path for PDF
+                    # uploads because it preserves the input PDF's layout
+                    # pixel-for-pixel. The font-shrinkage that motivated the
+                    # earlier rebuild preference has been eliminated — apply
+                    # _edits now hard-rejects rewrites that don't fit at the
+                    # original font size and reverts to the original bullet
+                    # text instead of silently shrinking. The tailor prompt
+                    # also gives the LLM per-bullet character budgets so
+                    # rewrites fit upfront. Rebuild remains available behind
+                    # PREFER_REBUILD_OVER_INPLACE=1 as an opt-in escape hatch
+                    # for layouts that genuinely can't be edited in place
+                    # (two-column, scanned, image-heavy designer CVs).
                     print(
-                        f"   ℹ️  {tag} DOCX route unavailable AND "
-                        f"PREFER_REBUILD_OVER_INPLACE is on — routing to "
-                        f"rebuild path (cleaner output than in-place editing)."
+                        f"   ℹ️  {tag} PREFER_REBUILD_OVER_INPLACE explicitly "
+                        f"set — routing to rebuild path."
                     )
                     replica_check = {
                         "compatible": False,
-                        "reason": "docx_route_failed_preferring_rebuild",
+                        "reason": "prefer_rebuild_env_set",
                     }
                 else:
                     replica_check = _detect_replica_compatibility(state["cv_path"])

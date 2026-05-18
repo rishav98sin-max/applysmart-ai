@@ -212,20 +212,19 @@ def _split_mega_bullet(text: str) -> List[str]:
     Returns a list of bullet texts (with leading glyphs stripped). When the
     paragraph contains no internal bullet boundaries the returned list is
     `[text]` (single element).
-
-    Splits ONLY when:
-    - The paragraph contains at least one internal `\\n + bullet-glyph`
-      pattern (very strong signal pdf2docx fused bullets)
-    OR
-    - The paragraph is >250 chars AND contains 2+ internal newlines that
-      look like wrap boundaries (fallback heuristic for when pdf2docx
-      stripped glyphs but kept paragraph breaks)
     """
     if not text:
         return []
     stripped = text.strip()
     if not stripped:
         return []
+
+    # Run 20 audit fix: minimum length threshold. A megabullet by definition
+    # is multiple bullets merged — that's at LEAST 100 chars. Splitting
+    # shorter paragraphs that happen to contain `\n + glyph` is noise (Run 20
+    # log showed splits firing on 5-char and 7-char paragraphs).
+    if len(stripped) < 100:
+        return [_strip_leading_bullet_glyph(stripped)]
 
     # Primary split: internal bullet glyphs after newline.
     parts = _INTERNAL_BULLET_SPLIT_RX.split(stripped)

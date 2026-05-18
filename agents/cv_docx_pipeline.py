@@ -166,62 +166,20 @@ def try_route_docx(
             workdir        = workdir,
         )
 
-    # Case 2: PDF upload — feature-flagged.
+    # Case 2: PDF upload — 99% format mode (May 2026 final architecture).
+    #
+    # The pdf2docx → DOCX → LibreOffice render path is DISABLED for PDF
+    # uploads. Empirical evidence (Runs 16-20, three distinct CVs):
+    # pdf2docx output is non-deterministically corrupted (text duplication,
+    # role headers swallowed, bullets split across table boundaries,
+    # mojibake) and downstream rendering produces visibly broken CVs.
+    # PDFs now always use the PyMuPDF in-place edit path so the output
+    # PDF is pixel-similar to the input (only bullet/summary text changes,
+    # everything else byte-preserved). The `DOCX_PATH_ENABLED` env flag is
+    # honoured as a kill switch back to the legacy behaviour ONLY if
+    # something forces it on — by default it is treated as off for PDFs.
     if ext == ".pdf":
-        if not _is_docx_path_enabled():
-            return None
-
-        # Place the converted DOCX inside the supplied workdir so the
-        # caller decides cleanup. `pdf2docx` writes silently next to the
-        # input by default; we override to avoid littering the user's
-        # CV folder with our intermediate `.docx` files.
-        try:
-            os.makedirs(workdir, exist_ok=True)
-        except OSError:
-            pass
-        base = os.path.splitext(os.path.basename(cv_path))[0]
-        converted_docx = os.path.join(workdir, f"{base}__converted.docx")
-
-        result = convert_pdf_to_docx(cv_path, converted_docx)
-        if not result.get("ok") or not result.get("acceptable"):
-            print(
-                f"   ↩️  cv_docx_pipeline: PDF conversion not acceptable "
-                f"(score={result.get('score', 0)}/100, "
-                f"reason={(result.get('reason') or '').strip()[:120]!r}) — "
-                f"using PDF replica path instead."
-            )
-            return None
-
-        outline = build_outline_from_docx(converted_docx)
-        if not outline.get("roles"):
-            print(
-                "   ↩️  cv_docx_pipeline: converted DOCX outline has 0 roles "
-                "— using PDF replica path instead."
-            )
-            return None
-
-        # May 2026 fix: check outline quality for pdf2docx corruption
-        # (text duplication, merged bullet content into headers)
-        from agents.cv_docx_parser import _outline_quality_ok
-        if not _outline_quality_ok(outline):
-            print(
-                "   ↩️  cv_docx_pipeline: converted DOCX outline quality check failed "
-                "(likely pdf2docx corruption) — using PDF replica path instead."
-            )
-            return None
-
-        print(
-            f"   📄 cv_docx_pipeline: DOCX route activated "
-            f"(PDF→DOCX, score={result.get('score')}/100, "
-            f"{len(outline['roles'])} role(s))."
-        )
-        return CVDocxRoute(
-            docx_path      = converted_docx,
-            outline        = outline,
-            convertibility = int(result.get("score", 0)),
-            source_was_pdf = True,
-            workdir        = workdir,
-        )
+        return None
 
     # Case 3: unknown extension — let upstream reject.
     return None

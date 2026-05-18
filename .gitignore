@@ -58,6 +58,8 @@ CVs/
 # Temporary scratch / one-off run scripts at repo root
 tmp_*.py
 tmp_*.txt
+tmp_*.docx
+tmp_*.pdf
 tmp_*/
 
 # LangFuse local log dumps (per-run telemetry; large and PII-bearing)
