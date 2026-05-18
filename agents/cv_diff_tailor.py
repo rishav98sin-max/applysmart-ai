@@ -2300,6 +2300,38 @@ def _check_content_preserved(original: str, rewrite: str) -> Optional[str]:
     return None
 
 
+def _is_keyword_jam(original: str, rewrite: str) -> bool:
+    """Detect the keyword-jam failure mode.
+
+    The strategist tells the tailor to weave a JD keyword into a bullet.
+    The tailor sometimes does it mechanically — it takes the original
+    bullet and wedges the keyword phrase straight in after the opening
+    verb, producing a noun-pile like "Made technical concepts trade-offs"
+    out of "Made trade-offs". A prompt directive (tailor_strategist.py)
+    asks it not to; DeepSeek ignores that, so this is the deterministic
+    backstop.
+
+    Returns True when `rewrite` is exactly `original` with a contiguous
+    span of >= 2 words inserted immediately after the first word. That
+    span-after-the-verb shape, with the rest of the bullet word-for-word
+    identical to the original, is the jam. A single-word insertion
+    ("Built [agentic] systems") is left alone — a lone adjective after
+    the verb is usually fine, and the original is the safe fallback for
+    anything ambiguous. When this returns True the caller keeps the
+    original bullet verbatim (the clean form).
+    """
+    ow = (original or "").split()
+    rw = (rewrite or "").split()
+    inserted = len(rw) - len(ow)
+    if len(ow) < 2 or inserted < 2:
+        return False
+    if rw[0].lower() != ow[0].lower():
+        return False  # opening verb changed — not a mechanical jam
+    # rw must be:  ow[0]  +  <inserted span>  +  ow[1:]
+    spliced = rw[:1] + rw[1 + inserted:]
+    return [w.lower() for w in spliced] == [w.lower() for w in ow]
+
+
 def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int] = None) -> tuple:
     """
     Guardrail: reject rewrites that look like fabrications or truncations.
@@ -2512,6 +2544,25 @@ def _normalise_bullet_list(
                 return " ".join(
                     t for t in s_l.split() if t not in ("a", "an", "the")
                 )
+            # Keyword-jam backstop (deterministic). The tailor sometimes
+            # wedges a JD keyword between the verb and its object
+            # ("Made technical concepts trade-offs" from "Made
+            # trade-offs"). When the rewrite is exactly the original
+            # with such a span jammed in, keep the clean original.
+            if _is_keyword_jam(orig_text, text):
+                print(
+                    f"   🧹 keyword-jam stripped (bullet {idx}): "
+                    f"{text[:80]!r} — keeping clean original"
+                )
+                _LAST_BULLET_REVERTS.append({
+                    "bullet_index": idx,
+                    "reason": "keyword_jam",
+                    "rewrite_preview": (text or "")[:120],
+                })
+                text = None
+                normalised.append({"i": idx, "text": text})
+                seen.add(idx)
+                continue
             if _norm_for_eq(text) == _norm_for_eq(orig_text):
                 # Run-17 audit fix #7: log identical-rewrite suppressions
                 # to the revert tracker so we can distinguish "LLM said the
@@ -3377,14 +3428,44 @@ def tailor_cv_diff(
         else:
             _dropped_proj = _summary_dropped_project(orig_summary, _final_sum, outline)
             if _dropped_proj:
+                # One-shot restore retry (mirrors the credential guard
+                # above). A dropped project name should not cost the whole
+                # tailored summary — a revert throws away every bit of JD
+                # re-aiming over one missing token. Try to restore just
+                # the name first; revert only if the retry also fails.
                 print(
-                    f"   ⚠️  summary dropped the named project "
-                    f"'{_dropped_proj}' — reverting to original summary."
+                    f"   ↻  summary dropped the named project "
+                    f"'{_dropped_proj}' — retrying once to restore it."
                 )
-                diff["_debug"]["summary_reverts"].append({
-                    "reason": "project_dropped", "project": _dropped_proj,
-                })
-                diff["summary"] = orig_summary
+                _proj_fix = (
+                    f"YOUR PREVIOUS SUMMARY DROPPED the named project "
+                    f"\"{_dropped_proj}\", which appears in the original CV "
+                    f"summary. Here is your summary:\n\n\"{_final_sum}\"\n\n"
+                    f"Return the summary again with \"{_dropped_proj}\" "
+                    f"named explicitly, exactly as written in the original "
+                    f"CV. Change nothing else and keep the length "
+                    f"materially the same."
+                )
+                sum_pf = (_sanitise_diff(
+                    _extract_json(_call_llm(_render_prompt(extra=_proj_fix))),
+                    outline, do_not_inject=strategy_dni, cv_text=cv_text,
+                ).get("summary") or "").strip()
+                if (sum_pf
+                        and not _summary_dropped_project(orig_summary, sum_pf, outline)
+                        and not _check_credentials_preserved(orig_summary, sum_pf)
+                        and not _summary_absorbed_bullet(sum_pf, outline)
+                        and _is_english_text(sum_pf, min_ascii_ratio=0.85)):
+                    print("   ✓  project retry restored the dropped project name.")
+                    diff["summary"] = sum_pf
+                else:
+                    print(
+                        "   ↺  project retry did not restore it — "
+                        "reverting to original summary."
+                    )
+                    diff["_debug"]["summary_reverts"].append({
+                        "reason": "project_dropped", "project": _dropped_proj,
+                    })
+                    diff["summary"] = orig_summary
 
     # ── Length-enforcement retry ─────────────────────────────────────
     # Triggers when the new summary is below 85% of the original word count.
