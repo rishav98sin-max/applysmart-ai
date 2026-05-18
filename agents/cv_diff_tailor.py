@@ -190,9 +190,11 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
 # ─────────────────────────────────────────────────────────────
 
 _PROMPT_TEMPLATE = """╔══════════════════════════════════════════════════════════════════════╗
-║  MANDATORY: You MUST produce actual bullet rewrites.                  ║
-║  Returning text=null for EVERY bullet = failed tailoring = REJECTED.  ║
-║  Aim to rewrite EVERY bullet that the strategy targets.               ║
+║  MANDATORY: produce genuine bullet rewrites — but tailoring          ║
+║  RE-FRAMES, it never REMOVES. Rewrite every targeted bullet you can   ║
+║  improve WITHOUT dropping a fact; keep the rest unchanged. Returning  ║
+║  text=null for EVERY bullet = failed tailoring. A rewrite that drops  ║
+║  a concrete fact = also failed (reverts to original).                ║
 ║                                                                       ║
 ║  THE LENGTH RULE: each rewrite must be ≈ the SAME LENGTH as its       ║
 ║  original (within ±10% of the [target≈N chars] shown). The output    ║
@@ -579,9 +581,28 @@ RULES (strict):
    You may REORDER freely — place the most job-relevant bullets first
    (the strategy's promote / deprioritise actions tell you the order).
 
+   ╔══════════════════════════════════════════════════════════════════╗
+   ║  THE PRESERVATION RULE — the single most important rule here.      ║
+   ║  Tailoring RE-FRAMES a bullet. It NEVER REMOVES from it.           ║
+   ║  Your rewrite must contain EVERY concrete fact the original had:   ║
+   ║  every number, every acronym (PRD, MVP, RICE, JTBD, SLA…), every   ║
+   ║  proper noun (project/client/tool names), every named method      ║
+   ║  ("sprint-over-sprint", "JTBD-driven discovery"). You may ADD      ║
+   ║  JD framing; you may NOT drop, omit, or generalise away a          ║
+   ║  specific. "Prioritised MVP feature set" must NOT become "Made     ║
+   ║  prioritisation decisions" — that DROPS "MVP feature set".         ║
+   ║  A rewrite that drops a concrete term is REJECTED by the guard     ║
+   ║  and reverts to the original. If you cannot re-aim a bullet at     ║
+   ║  the JD without dropping a fact, KEEP IT UNCHANGED — that is the   ║
+   ║  correct answer, never a failure.                                  ║
+   ╚══════════════════════════════════════════════════════════════════╝
+
    You MUST NOT:
    - DROP / OMIT any bullet. Every original bullet MUST appear in your output exactly once.
      If a bullet is not JD-relevant, keep it verbatim (text=null) rather than removing it.
+   - DROP a concrete fact WITHIN a bullet — a number, acronym, proper noun, named tool,
+     named method, or specific scope the original bullet contained. Re-frame around it,
+     never delete it. This is the #1 cause of a bad tailored CV.
    - Remove or omit ANY achievement, award, recognition, certification, promotion, or
      measurable outcome bullet (e.g. "Awarded ...", "Recognised as ...", "Top performer",
      "Employee of the Month"). These are evidence and belong in every tailored CV.
@@ -947,14 +968,14 @@ def _summary_absorbed_bullet(summary: str, outline: Dict[str, Any]) -> bool:
     growth and 15% retention improvement…" — the trailing sentence was an
     IBM bullet glued on.
 
-    Padding lands at the END, so only the trailing sentences are checked.
-    A trailing summary sentence with >=70% token overlap with any CV
-    bullet is treated as an absorbed bullet.
+    EVERY sentence is checked (Run 22: the absorbed bullet sat mid-summary,
+    sentence 4 of 6 — the old tail-only window missed it). A genuine
+    summary sentence paraphrases; it does not >=75%-overlap a bullet
+    verbatim, so this threshold does not false-positive on real prose.
     """
     if not summary:
         return False
     sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", summary) if s.strip()]
-    tail = sents[-2:]
 
     def _toks(t: str) -> set:
         return set(re.sub(r"[^a-z0-9 ]+", " ", (t or "").lower()).split())
@@ -965,13 +986,39 @@ def _summary_absorbed_bullet(summary: str, outline: Dict[str, Any]) -> bool:
             bw = _toks(bt)
             if len(bw) < 6:
                 continue
-            for s in tail:
+            for s in sents:
                 sw = _toks(s)
                 if len(sw) < 6:
                     continue
-                if len(sw & bw) / len(sw) >= 0.70:
+                if len(sw & bw) / len(sw) >= 0.75:
                     return True
     return False
+
+
+def _summary_dropped_project(
+    orig_summary: str, new_summary: str, outline: Dict[str, Any]
+) -> Optional[str]:
+    """
+    Returns a named project that the ORIGINAL summary mentioned but the
+    tailored summary dropped — or None. Run 22: the Archer summary
+    silently dropped "ApplySmart AI", the candidate's flagship shipped
+    project. A shipped project is a proof point; the re-aim may
+    de-emphasise it but must not delete the name.
+    """
+    if not orig_summary or not new_summary:
+        return None
+    o_l, n_l = orig_summary.lower(), new_summary.lower()
+    for role in (outline.get("roles") or []):
+        if "project" not in str(role.get("section", "")).lower():
+            continue
+        header = (role.get("header") or "").strip()
+        # project name = text before "|" or "Tech Stack" or a double-space
+        name = re.split(r"\s*\|\s*|\s{2,}|\bTech Stack\b", header)[0].strip()
+        if len(name) < 4:
+            continue
+        if name.lower() in o_l and name.lower() not in n_l:
+            return name
+    return None
 
 
 def _check_credentials_preserved(
@@ -2176,6 +2223,64 @@ def _strip_banned_suffix_from_bullet(
     return stripped
 
 
+def _check_content_preserved(original: str, rewrite: str) -> Optional[str]:
+    """
+    Preservation-first guard: a tailored bullet must RE-FRAME the original,
+    never DROP its concrete facts. Returns the first concrete term from the
+    original that is missing from the rewrite, or None when all are kept.
+
+    Catches the Run-22 failure mode where the reframe dropped the
+    candidate's own specifics to make room for a JD keyword:
+      "Prioritised MVP feature set …"  → lost "MVP"
+      "… sprint-over-sprint …"         → lost the named method
+      "Authored initial PRDs …"        → lost "PRDs"
+
+    Three concrete-term classes (plain numbers are checked separately in
+    _rewrite_is_safe):
+      (a) acronyms      — >=3 uppercase letters, optional trailing 's'
+      (b) proper nouns  — mid-sentence capitalised words (projects,
+                          clients, employers, tools, platforms)
+      (c) distinctive hyphenated compounds — >=2 hyphens
+    Reverting to the clean original on a drop is the safe outcome.
+    """
+    orig = original or ""
+    new_l = (rewrite or "").lower()
+    if not orig or not new_l:
+        return None
+
+    required: List[str] = []
+    # (a) acronyms
+    for m in re.finditer(r"\b([A-Z]{3,})s?\b", orig):
+        required.append(m.group(1).lower())
+    # (b) capitalised proper nouns (skip sentence-initial capitals)
+    words = orig.split()
+    for i, w in enumerate(words):
+        core = re.sub(r"[^A-Za-z]", "", w)
+        if len(core) < 3 or not core[0].isupper():
+            continue
+        if i == 0 or words[i - 1].rstrip().endswith((".", "!", "?", ":")):
+            continue
+        if core.isupper():               # already captured as an acronym
+            continue
+        required.append(core.lower())
+    # (c) distinctive hyphenated compounds (>=2 hyphens, e.g. sprint-over-sprint)
+    for m in re.finditer(r"\b\w+(?:-\w+){2,}\b", orig):
+        for part in m.group(0).lower().split("-"):
+            if len(part) >= 3:
+                required.append(part)
+
+    seen: set = set()
+    for tok in required:
+        if tok in seen:
+            continue
+        seen.add(tok)
+        # stem-tolerant: accept singular/plural variants
+        if tok in new_l or tok.rstrip("s") in new_l:
+            continue
+        return tok
+    return None
+
+
 def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int] = None) -> tuple:
     """
     Guardrail: reject rewrites that look like fabrications or truncations.
@@ -2261,6 +2366,13 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
         if re.fullmatch(r"\d+[kmb]", tok, re.IGNORECASE):
             continue
         return False, f"number token {tok!r} missing"
+
+    # Content-preservation guard (Run 22 fix) — a rewrite must RE-FRAME,
+    # never DROP a concrete fact. Reverting to the clean original beats
+    # shipping a bullet that lost the candidate's own specifics.
+    _dropped = _check_content_preserved(orig, new)
+    if _dropped:
+        return False, f"dropped concrete term '{_dropped}'"
 
     # Stranded-verb / fragment-shuffle detector (Run 21 fix). A "rewrite"
     # that shoves a noun fragment to the front and leaves the original's
@@ -3202,6 +3314,29 @@ def tailor_cv_diff(
                         })
                         diff["summary"] = orig_summary
 
+    # Absorbed-bullet + project-preservation guard (Run 22 fix). Runs on
+    # whatever summary survived the checks above.
+    _final_sum = (diff.get("summary") or "").strip()
+    if _final_sum and orig_summary and _final_sum != orig_summary:
+        if _summary_absorbed_bullet(_final_sum, outline):
+            print(
+                "   ⚠️  summary absorbed a CV bullet (padded to length with "
+                "bullet text) — reverting to original summary."
+            )
+            diff["_debug"]["summary_reverts"].append({"reason": "absorbed_bullet"})
+            diff["summary"] = orig_summary
+        else:
+            _dropped_proj = _summary_dropped_project(orig_summary, _final_sum, outline)
+            if _dropped_proj:
+                print(
+                    f"   ⚠️  summary dropped the named project "
+                    f"'{_dropped_proj}' — reverting to original summary."
+                )
+                diff["_debug"]["summary_reverts"].append({
+                    "reason": "project_dropped", "project": _dropped_proj,
+                })
+                diff["summary"] = orig_summary
+
     # ── Length-enforcement retry ─────────────────────────────────────
     # Triggers when the new summary is below 85% of the original word count.
     # The 85% floor catches real truncations (90→60 words) but allows modest
@@ -3255,15 +3390,21 @@ def tailor_cv_diff(
             words_short = max(1, _target_words - best_n)
             enforce = (
                 f"YOUR PREVIOUS SUMMARY WAS TOO SHORT — it had {best_n} "
-                f"words but MUST end up between {_target_words} and {high} "
-                f"(the original is {orig_words}). Here is your previous "
-                f"summary:\n\n\"{best_sum}\"\n\nDo NOT rewrite it from "
-                f"scratch. KEEP these exact sentences and EXPAND them by "
-                f"adding about {words_short}-{words_short + 8} more words of "
-                f"CV-grounded detail — specific outcomes, metrics, platform "
-                f"names, methodologies or technologies that ALREADY appear "
-                f"in the candidate's CV. Invent nothing. Do not exceed "
-                f"{high} words. Count the words before submitting."
+                f"words but should end up between {_target_words} and "
+                f"{high} (the original is {orig_words}). Here is your "
+                f"previous summary:\n\n\"{best_sum}\"\n\nDo NOT rewrite it "
+                f"from scratch. KEEP these exact sentences and EXPAND them "
+                f"by adding about {words_short}-{words_short + 8} more "
+                f"words of CV-grounded detail — specific outcomes, "
+                f"metrics, platform names, methodologies or technologies "
+                f"that ALREADY appear in the candidate's CV. Invent "
+                f"nothing. Do not exceed {high} words.\n"
+                f"⚠️  NEVER reach the word count by appending or pasting in "
+                f"a CV bullet sentence — the summary is flowing prose, not "
+                f"a bullet list. Enrich the EXISTING sentences. If you "
+                f"genuinely cannot reach {_target_words} words by honest "
+                f"enrichment, a slightly shorter CLEAN summary is correct "
+                f"— a padded one is not."
             )
             diff_r = _sanitise_diff(
                 _extract_json(_call_llm(_render_prompt(extra=enforce))),
@@ -3509,22 +3650,24 @@ def tailor_cv_diff(
                     f'  - bullet {r.get("bullet_index")}: "{prev}"'
                 )
             enforce_id = (
-                f"{len(_identical_reverts)} of your bullet rewrites came "
-                f"back UNCHANGED — the text you returned is identical to "
-                f"the original (ignoring punctuation and articles). The "
-                f"PER-BULLET ACTION PLAN flagged each of these bullets "
-                f"for a verb-led rewrite, so returning the original is "
-                f"not an answer.\n\nBullets returned unchanged:\n"
+                f"{len(_identical_reverts)} bullet(s) the action plan "
+                f"flagged came back UNCHANGED:\n\n"
                 + "\n".join(_unchanged_lines)
-                + "\n\nFor EACH bullet above, do ONE of two things: "
-                "(1) genuinely restructure it — lead with the buried "
-                "JD-relevant fact named in the action plan, change the "
-                "opening verb, or surface the metric / named project "
-                "that is currently mid-sentence; OR (2) only if the "
-                "bullet honestly cannot be improved for this JD, OMIT it "
-                "from the bullets JSON entirely (it is then kept "
-                "verbatim — that is acceptable). Do NOT return another "
-                "near-copy. Return the full bullets JSON again."
+                + "\n\nFor EACH one, apply this test honestly:\n"
+                "• Can you genuinely improve it — surface a buried "
+                "JD-relevant fact, lead with a stronger verb — WITHOUT "
+                "dropping any fact and WITHOUT making it vaguer? If yes, "
+                "rewrite it that way.\n"
+                "• If NOT — if the only way to make it 'look different' "
+                "would drop a specific (a metric, a named tool, 'MVP', "
+                "'PRD', a project name) or weaken it — then KEEP IT "
+                "EXACTLY as the original (omit it from the bullets JSON, "
+                "or text=null). Keeping a strong bullet unchanged is the "
+                "CORRECT answer, not a failure.\n"
+                "PRESERVATION RULE: a rewrite RE-FRAMES; it never REMOVES "
+                "a concrete fact the original had. A forced change that "
+                "drops a specific is worse than no change. Do NOT return "
+                "a cosmetic near-copy either. Return the full bullets JSON."
             )
             raw_text_id = _call_llm(_render_prompt(extra=enforce_id))
             raw_json_id = _extract_json(raw_text_id)
