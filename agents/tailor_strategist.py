@@ -1103,17 +1103,20 @@ def render_strategy_for_tailor(strategy: Dict[str, Any]) -> str:
                     if lead:
                         lines.append(
                             f"      [{idx}] REWRITE — re-write this bullet "
-                            f"as ONE complete, grammatical sentence that "
-                            f"OPENS with: {lead}. Rephrase the connecting "
-                            f"grammar so it reads as natural English — do "
-                            f"NOT just shove a fragment to the front and "
-                            f"leave the original verb stranded mid-sentence."
+                            f"as ONE complete, grammatical sentence. OPEN "
+                            f"with a STRONG PAST-TENSE ACTION VERB, and "
+                            f"surface this fact inside the opening clause "
+                            f"(within the first ~8 words): {lead}. Do NOT "
+                            f"make the bare fact the literal first word — "
+                            f"that forces broken or passive grammar. "
+                            f"Verb first, fact early, one natural sentence."
                         )
                     else:
                         lines.append(
-                            f"      [{idx}] REWRITE — re-write this bullet "
-                            f"as one complete, grammatical sentence that "
-                            f"opens with its most JD-relevant existing fact."
+                            f"      [{idx}] REWRITE — re-write this bullet as "
+                            f"one grammatical sentence: open with a strong "
+                            f"past-tense action verb and surface its most "
+                            f"JD-relevant existing fact in the first clause."
                         )
                 elif action == "promote":
                     lines.append(f"      [{idx}] PROMOTE (keep text, lift earlier). {rat}")

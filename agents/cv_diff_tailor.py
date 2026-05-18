@@ -219,21 +219,26 @@ YOUR THINKING PROCESS (critical — do this BEFORE writing JSON):
 3. For each bullet listed in the STRATEGY:
      • action=rewrite_verb_led → the strategy gives a "LEAD WITH:"
        directive naming a fact ALREADY IN that bullet. Produce a GENUINE
-       rewrite: REBUILD the sentence from scratch so it OPENS with the
-       LEAD-WITH fact and reads as natural, grammatical English. You are
-       re-writing the sentence, NOT relocating a fragment — rephrase the
-       verb, the connectors and the framing so the result is a clean
-       sentence a person would actually write. The wording changes; the
-       FACTS do not. Keep every number, proper noun and claim exactly as
-       the original; build only from words in that bullet or elsewhere
-       in the CV; never use a JD term from the FORBIDDEN list.
-       ⚠️  BROKEN GRAMMAR = REJECTED. Shoving the lead-with phrase to the
-       front and leaving the original verb stranded —
-       e.g. "Supervisor + workers pattern with a 0-100 scorer scoped the
-       architecture, so…" — is NOT a rewrite. It is word salad and the
-       guard discards it. Every rewrite must be ONE grammatical sentence.
-       A targeted bullet that comes back word-for-word (or with only a
-       comma or article moved) has likewise NOT been done.
+       rewrite: REBUILD the sentence from scratch. OPEN it with a STRONG
+       PAST-TENSE ACTION VERB that mirrors the JD's language, and pull
+       the LEAD-WITH fact into the OPENING CLAUSE (early — within the
+       first ~8 words — but NOT necessarily the literal first word).
+       Example pattern: lead-with fact "40% efficiency gain" →
+       "Delivered 40% efficiency gain and 2x capacity by identifying a
+       critical bottleneck…" — verb first, fact early, natural sentence.
+       The wording changes; the FACTS do not. Keep every number, proper
+       noun and claim exactly as the original; build only from words in
+       that bullet or elsewhere in the CV; never use a JD term from the
+       FORBIDDEN list.
+       ⚠️  TWO WAYS TO FAIL — avoid BOTH:
+         (1) BROKEN GRAMMAR — shoving the fact to the literal front and
+             leaving the original verb stranded ("Supervisor + workers
+             pattern… scoped the architecture, so…"). Word salad. The
+             guard discards it. NEVER make a bare noun phrase the first
+             word — open with a verb.
+         (2) NEAR-COPY — coming back word-for-word, or with only a comma
+             or article moved. That is not a rewrite either.
+       Every rewrite is ONE clean grammatical sentence, verb-first.
      • action=promote → keep the original text (text=null) but place
        this bullet earlier in the role's array.
      • action=deprioritise → keep verbatim (text=null), place last.
@@ -634,6 +639,15 @@ RULES (strict):
    │ (illustrative only; <ALL-CAPS> are placeholders — never copy    │
    │  these strings, and never copy facts from this box into a CV)   │
    ├────────────────────────────────────────────────────────────────┤
+   │ VERB-LEAD (the default bullet move):                            │
+   │   Strategy says LEAD WITH "40% efficiency gain". Original:       │
+   │   "Identified a bottleneck… and delivered 40% efficiency gain."  │
+   │   GOOD: "Delivered 40% efficiency gain and 2x capacity by        │
+   │   identifying a critical bottleneck…" → verb FIRST, fact in the  │
+   │   opening clause.                                                │
+   │   BAD:  "40% efficiency gain identified the bottleneck…" → bare  │
+   │   noun first, verb stranded. Word salad. Rejected.               │
+   │                                                                 │
    │ RELABEL (only if the strategy's SAFE RELABELS cleared it):      │
    │   Original bullet: "Set up a process that checks each output    │
    │   before release."  JD term: "guardrail".                       │
