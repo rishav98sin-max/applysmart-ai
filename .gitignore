@@ -60,6 +60,7 @@ tmp_*.py
 tmp_*.txt
 tmp_*.docx
 tmp_*.pdf
+tmp_*.json
 tmp_*/
 
 # LangFuse local log dumps (per-run telemetry; large and PII-bearing)

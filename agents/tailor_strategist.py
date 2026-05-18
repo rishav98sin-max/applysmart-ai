@@ -87,8 +87,17 @@ CANDIDATE CV (structured outline — every fact you may reference):
 
 YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
 
-1. READ the JD twice. Identify the 5-8 most concrete things this
-   role actually wants: titles, frameworks, deliverables, domains.
+1. READ the JD twice.
+   (a) Identify the 5-8 most concrete things this role actually wants:
+       titles, frameworks, deliverables, domains.
+   (b) Extract the JD's THESIS — the ONE sentence that captures what
+       this role/team is really about. The JD usually states it: a
+       mission line, a "what you'll do" framing, or a named workstream.
+       Copy it near-verbatim into `jd_thesis`. The summary will echo it.
+   (c) Identify the JD's HOT ZONE — the 1-3 CV items (a specific
+       project or role) that map most directly to this JD. Tailoring
+       CONCENTRATES here. List `hot_zone` as the exact CV item label(s).
+       CV items far from the JD get few actions or none.
 2. SCAN the CV. For each JD requirement, mark:
      • STRONG MATCH    — CV has it explicitly (same word or close synonym)
      • IMPLICIT MATCH  — the CV genuinely demonstrates this EXACT skill but
@@ -171,14 +180,21 @@ YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
    Never name a JD word the CV lacks ("influencer", "ROI", ...) in
    lead_with — point at the candidate's real fact.
 
-   List EVERY bullet that genuinely needs a rewrite — there is no target
-   count and no cap. A role with 12 bullets might need 9 rewrites, or 2;
-   list exactly the ones that fail the selection test, however many that
-   is. Do NOT ration: a bullet that buries a JD point must be listed even
-   if you have already listed many. Equally, do NOT pad: a bullet that is
-   already on-target must be OMITTED, never echoed back. The only
-   question for each bullet is "does this one genuinely need it?" — if
-   yes, list it; if no, skip it.
+   List every bullet that genuinely needs a rewrite — no target count,
+   no cap. But CONCENTRATE on the HOT ZONE: a real plan lists most or
+   all bullets of the 1-3 hot-zone items, and FEW or NONE elsewhere. A
+   role far from this JD whose bullets are already fine should get zero
+   actions — that is correct, not lazy.
+   Two failure modes, equally bad:
+     • RATIONING — skipping a hot-zone bullet that buries a JD point
+       just to keep the plan short.
+     • OVER-LISTING — listing nearly every bullet of every role. If
+       your plan touches every role roughly equally, or lists ~all
+       bullets in the CV, you have STOPPED discriminating. Re-apply the
+       selection test: an already-on-target or JD-irrelevant bullet
+       must be OMITTED, never echoed back as a cosmetic non-change.
+   The only question per bullet: "does THIS one genuinely need it?" —
+   yes → list it; no → skip it.
 5. CONSIDER synthesising AT MOST ONE new bullet per role IF it would
    land 2+ JD keywords AND every claim is grounded in OTHER existing
    bullets of the SAME role. If you cannot ground it, omit.
@@ -246,6 +262,10 @@ OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
 
 {{
   "narrative_angle": "<one sentence — the strategic story for this role>",
+
+  "jd_thesis": "<the ONE sentence from the JD that captures what this role/team is really about — copied near-verbatim from the JD. The summary will be re-aimed to echo this.>",
+
+  "hot_zone": ["<exact CV item label(s) — the 1-3 projects/roles this JD maps to most directly; tailoring concentrates here>"],
 
   "summary_strategy": {{
     "title_to_lead_with": "<role-aligned title the candidate has ACTUALLY earned from their CV (may be exactly the CV title, or a close JD-side synonym IF the CV work supports it — NEVER a JD title the candidate hasn't earned)>",
@@ -688,6 +708,8 @@ def _estimate_strategist_token_budget(outline: Dict[str, Any]) -> int:
 
 EMPTY_STRATEGY: Dict[str, Any] = {
     "narrative_angle": "",
+    "jd_thesis": "",
+    "hot_zone": [],
     "summary_strategy": {},
     "project_reframings": [],
     "bullet_strategy": {},
@@ -931,6 +953,8 @@ def build_tailor_strategy(
     normalised: Dict[str, Any] = dict(EMPTY_STRATEGY)
     for key in (
         "narrative_angle",
+        "jd_thesis",
+        "hot_zone",
         "summary_strategy",
         "project_reframings",
         "bullet_strategy",
@@ -1016,6 +1040,27 @@ def render_strategy_for_tailor(strategy: Dict[str, Any]) -> str:
             "this angle. If a rewrite would contradict it, keep the original."
         )
 
+    jd_thesis = (strategy.get("jd_thesis") or "").strip()
+    if jd_thesis:
+        lines.append(f"\nJD THESIS: {jd_thesis}")
+        lines.append(
+            "Re-aim the SUMMARY so its OPENING sentence echoes this thesis "
+            "in the candidate's own true terms — lead with the identity and "
+            "focus this JD is really hiring for, not a generic "
+            "'<title> with <N> years of experience' opener. Use ONLY facts "
+            "already in the CV; invent nothing."
+        )
+
+    hot_zone = strategy.get("hot_zone") or []
+    if hot_zone:
+        lines.append(f"\nHOT ZONE (concentrate rewrites here): {hot_zone}")
+        lines.append(
+            "These CV items map most directly to the JD — most bullet "
+            "rewrites should land here. Items outside the hot zone are "
+            "likely already fine; rewrite one only if it genuinely buries "
+            "a JD-relevant point."
+        )
+
     summary_s = strategy.get("summary_strategy") or {}
     if summary_s:
         lines.append("\nSUMMARY STRATEGY:")
@@ -1057,13 +1102,18 @@ def render_strategy_for_tailor(strategy: Dict[str, Any]) -> str:
                 if action == "rewrite_verb_led":
                     if lead:
                         lines.append(
-                            f"      [{idx}] REWRITE — reorder the bullet's "
-                            f"OWN words to LEAD WITH: {lead}"
+                            f"      [{idx}] REWRITE — re-write this bullet "
+                            f"as ONE complete, grammatical sentence that "
+                            f"OPENS with: {lead}. Rephrase the connecting "
+                            f"grammar so it reads as natural English — do "
+                            f"NOT just shove a fragment to the front and "
+                            f"leave the original verb stranded mid-sentence."
                         )
                     else:
                         lines.append(
-                            f"      [{idx}] REWRITE — reorder to lead with "
-                            f"this bullet's most JD-relevant existing fact."
+                            f"      [{idx}] REWRITE — re-write this bullet "
+                            f"as one complete, grammatical sentence that "
+                            f"opens with its most JD-relevant existing fact."
                         )
                 elif action == "promote":
                     lines.append(f"      [{idx}] PROMOTE (keep text, lift earlier). {rat}")
@@ -1092,6 +1142,24 @@ def render_strategy_for_tailor(strategy: Dict[str, Any]) -> str:
         "\nSKILLS + EDUCATION: FROZEN. Leave both sections exactly as in "
         "the original CV. No reordering, no additions, no rewording."
     )
+
+    relabels = strategy.get("safe_relabels") or []
+    if relabels:
+        lines.append(
+            "\nSAFE RELABELS (CV-proven JD vocabulary — the candidate's CV "
+            "genuinely shows this under a different word; you MAY use the "
+            "JD term in a rewrite, because the named CV evidence proves it):"
+        )
+        for r in relabels:
+            jd_term = (r.get("jd_term") or "").strip()
+            cv_ev   = (r.get("cv_evidence") or "").strip()
+            if jd_term and cv_ev:
+                lines.append(f"  • use \"{jd_term}\"  ⇐ proven by CV: \"{cv_ev}\"")
+        lines.append(
+            "  Apply these where they fit naturally — surfacing a relabel "
+            "into the relevant bullet/summary is GOOD tailoring, not "
+            "fabrication. The mechanism is real; only the word changes."
+        )
 
     dni = strategy.get("do_not_inject") or []
     if dni:
