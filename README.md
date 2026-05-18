@@ -27,6 +27,12 @@ sees them.
   guards that scan every summary and cover letter for tool/framework
   names absent from the CV and auto-retry or revert. Works identically
   on the Groq fallback path.
+- **High-yield, non-cosmetic rewrites** — the strategist flags every
+  bullet that genuinely needs a rewrite (no artificial per-role cap) and
+  walks every role; a deterministic `lead_with` guard plus an
+  `identical_rewrite` retry stop the tailor from shipping near-copies.
+  Bullets that genuinely can't be re-aimed for the JD are kept verbatim
+  rather than cosmetically churned.
 - **Deterministic filters before LLM spend** — YOE + experience-level
   checks skip ~30-50% of LLM calls on broad scrapes.
 - **Multi-provider key rotation** — up to 8 Groq keys rotate on 429 /

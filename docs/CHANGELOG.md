@@ -9,6 +9,27 @@
 
 ---
 
+## v1.4.2 — Tailoring Yield + In-Place Render Hardening (18 May 2026)
+
+**Bet under test:** Will removing the strategist's self-imposed volume cap and fixing the broken `lead_with` instruction raise the number of genuinely-tailored bullets per CV — instead of the pipeline shipping 2–3 cosmetic rewrites and reverting the rest?
+
+### Shipped
+
+**Tailoring yield** (`cv_diff_tailor.py`, `tailor_strategist.py`):
+
+- **Strategist volume uncap** — removed the "2–5 per role, rarely all" rationing language and raised the hard per-role cap 6 → 12. The strategist now walks every role/project (whole roles were being skipped) and lists every bullet that genuinely needs a rewrite. The adaptive token budget scales with the new cap.
+- **Deterministic `lead_with` guard** — the strategist's #1 failure mode was pointing `lead_with` at the bullet's *existing opening* (or writing a long clause), telling the tailor to "lead with" words the bullet already opens with → near-copy → `identical_rewrite` revert. A post-process guard now blanks any echoing/over-long `lead_with` so the tailor picks the buried fact itself.
+- **`identical_rewrite` retry** — when planned bullets come back as near-copies, one retry shows the LLM its own unchanged drafts and demands a genuine restructure-or-omit.
+- **Over-length retry hybrid** — bullets rejected as too long are retried with their own draft + exact character limit shown back (mirrors the summary length retry).
+
+**PDF in-place rendering** (`pdf_editor.py`): TextWriter-based block rendering with width-aware wrapping and block-justification detection; bundled font cloning + ATS text normalisation; table-border capture/redraw so edits don't drop cell borders; sidebar / 2-column bullet filtering.
+
+### Why
+
+On a representative 2-column CV (Shrestha → Airtel "Product Marketing Manager") the pipeline tailored only **3 of 27 bullets across 1 of 3 roles** — the strategist rationed itself to 6 actions and half of those returned as cosmetic near-copies. Root-cause trace: (1) the "2–5 per role" prompt language plus a hard 6-entry cap; (2) `lead_with` values that echoed each bullet's own opening, leaving the tailor nothing to do. After the fixes the same run tailored **11 bullets across all 3 roles**, 9 rendered into the PDF (2 cleanly reverted at apply-time for slot overflow).
+
+---
+
 ## v1.4.1 — Tailor Prompt & Guard Fixes (13 May 2026)
 
 **Bet under test:** Will fixing the per-bullet budget ceiling and `_check_do_not_inject` guard eliminate the zero-rewrite failure mode that was producing PDFs identical to the original?

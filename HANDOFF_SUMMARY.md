@@ -1,12 +1,51 @@
 # ApplySmart AI — Complete Handoff Summary
 
 **Generated:** April 20, 2026
-**Last updated:** May 13, 2026 (v1.4: DOCX path — accept .docx uploads, optional PDF→DOCX conversion, LibreOffice headless render; DeepSeek V4-Flash as primary writing LLM; GEMINI_BYPASS=True default; tailor prompt + guard fixes)
+**Last updated:** May 18, 2026 (v1.4.2: tailoring-yield work — strategist volume uncap, deterministic `lead_with` guard, `identical_rewrite` retry; PDF in-place render hardening)
+**Earlier:** May 13, 2026 (v1.4: DOCX path — accept .docx uploads, optional PDF→DOCX conversion, LibreOffice headless render; DeepSeek V4-Flash as primary writing LLM; GEMINI_BYPASS=True default; tailor prompt + guard fixes)
 **Purpose:** Full context handoff to Cursor for continued development
 
 ---
 
-## 0. What's new in v1.4 — DOCX path (May 13, 2026)
+## 0. What's new in v1.4.2 — Tailoring yield + render hardening (May 18, 2026)
+
+The CV tailoring pipeline was shipping too few genuine bullet rewrites —
+on a representative 2-column CV it tailored only 3 of 27 bullets across
+1 of 3 roles. Root cause was two compounding bugs:
+
+1. **Strategist rationed itself.** The prompt said "2–5 per role, rarely
+   all" and a hard 6-entry-per-role cap; it also skipped whole roles.
+2. **`lead_with` echoed the bullet's opening.** The strategist routinely
+   pointed `lead_with` at words the bullet *already* opened with (or
+   wrote a long clause). The tailor, told to "lead with" the existing
+   opening, returned a near-copy → `identical_rewrite` revert.
+
+### Fixes (`tailor_strategist.py`, `cv_diff_tailor.py`)
+
+- **Volume uncap** — removed the "2–5 per role" language; raised the hard
+  per-role cap 6 → 12 (now a truncation guard, not a target); the
+  strategist evaluates every role/project. Adaptive token budget scales.
+- **Deterministic `lead_with` guard** (`_clean_lead_withs`) — after the
+  strategist returns, any `lead_with` whose first 3 content words echo
+  the bullet's opening, or which exceeds ~9 words, is blanked. An empty
+  `lead_with` makes the tailor pick the buried fact itself.
+- **`identical_rewrite` retry** (`cv_diff_tailor.py`) — when planned
+  bullets come back as near-copies, one retry shows the LLM its own
+  unchanged drafts and demands a genuine restructure-or-omit.
+- **Over-length retry hybrid** — bullets rejected as too long are retried
+  with their own draft + the exact character limit shown back.
+
+### Result
+
+Same CV/JD after the fixes: **11 bullets tailored across all 3 roles**
+(9 rendered into the PDF; 2 cleanly reverted at apply-time for slot
+overflow). PDF in-place rendering also hardened: TextWriter block
+rendering with width-aware wrapping, bundled font cloning, table-border
+capture/redraw, sidebar/2-column bullet filtering.
+
+---
+
+## 0.1 What's new in v1.4 — DOCX path (May 13, 2026)
 
 The CV tailoring pipeline now supports a **DOCX-based editing path** as
 an alternative to the existing PDF in-place editor and rebuild path.
@@ -898,9 +937,10 @@ streamlit run app.py
 |--------|---------|
 | `scripts/test_pdf_fix.py` | Synthetic PDF edit test — aggressive bullet format + drops (no LLM cost) |
 | `scripts/test_yoe_matcher.py` | YOE extraction + early-exit decision matrix — 16/16 tests pass (no LLM cost) |
-| `scripts/diag_tailored.py` | Analyze tailored CV PDF line spacing |
-| `scripts/diag_tailor_diff.py` | Compare two tailored CVs for similarity |
-| `scripts/diag_chars.py` | Diagnostic for character encoding issues |
+| `scripts/test_cv_corpus.py` | Validate a folder of CV PDFs against the pre-flight validator |
+| `scripts/test_redaction.py` | Privacy redaction unit tests |
+| `scripts/test_groq_rotation.py` | Groq key-rotation pool behaviour |
+| `scripts/smoke_vector.py` | ChromaDB vector-retrieval smoke test |
 
 ---
 

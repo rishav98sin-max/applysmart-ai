@@ -1,10 +1,10 @@
 # ApplySmart AI — Roadmap
 
-*Product owner: Rishav Singh · Last updated: 27 Apr 2026 (v1.2)*
+*Product owner: Rishav Singh · Last updated: 18 May 2026 (v1.4.2)*
 
 > **Companion docs:**
 > `PM_CASE_STUDY.md` — customer hypothesis, product bets, falsifiable tests.
-> `docs/CHANGELOG.md` — version-by-version build log (what shipped in v1.0 → v1.2).
+> `docs/CHANGELOG.md` — version-by-version build log (what shipped in v1.0 → v1.4.2).
 > `HANDOFF_SUMMARY.md` — engineering / architecture handoff.
 
 This doc captures the path from "solo prototype that works on my laptop" to
@@ -23,19 +23,29 @@ land.
 
 ---
 
-## Where we are today (22 Apr 2026, v1.2)
+## Where we are today (18 May 2026, v1.4.2)
 
 **Deployed on Streamlit Community Cloud** and fully usable end-to-end by a
 real user:
-- Upload a CV → scrape LinkedIn / Indeed / Glassdoor / Builtin / Jobs.ie →
-  score against each JD → tailor the CV summary + bullets + cover letter →
-  render to PDF → preview → email.
-- Dual-LLM architecture: **Groq** (Llama 3.3 70B) for structured tasks,
-  **Gemini 2.5 Flash** for writing. Both support up to 3 rotating API keys
-  and cross-provider fallback.
-- **PDF rendering pipeline:** PyMuPDF in-place edits first; **WeasyPrint**
-  HTML/CSS rebuild as ATS-safe fallback; ReportLab as a last-resort safety
-  net on hosts without WeasyPrint's native deps.
+- Upload a CV (PDF **or** native `.docx`) → scrape LinkedIn / Indeed /
+  Glassdoor / Builtin / Jobs.ie → score against each JD → tailor the CV
+  summary + bullets + cover letter → render to PDF → preview → email.
+- Multi-LLM architecture: **DeepSeek V4-Flash** is the primary writing LLM
+  (CV strategy, bullet tailoring, cover letters); **Groq** (Llama 3.3 70B)
+  handles fast structured tasks (matcher, planner, reviewers, supervisor)
+  and is the automatic writing fallback. Gemini 2.5 Flash is wired but
+  bypassed by default (`GEMINI_BYPASS=1`). Up to 8 Groq keys rotate on
+  429 / quota errors.
+- **Rendering pipeline (two paths):** (1) the **DOCX path** — native
+  `.docx` or a high-convertibility PDF→DOCX conversion, edited at
+  paragraph/run level and rendered by LibreOffice headless (v1.4); (2) the
+  **PDF in-place path** — PyMuPDF coordinate-level edits with TextWriter
+  block rendering, with a WeasyPrint HTML/CSS rebuild and a ReportLab
+  last-resort net as fallbacks.
+- **Tailoring yield (v1.4.2):** the strategist targets every bullet that
+  genuinely needs a rewrite (no volume cap), and a `lead_with` guard plus
+  an `identical_rewrite` retry stop the tailor from shipping cosmetic
+  near-copies.
 - **Fabrication defence in depth:** prompt-level bans + post-generation
   guards for both the summary and the cover letter. The guards run in
   pure Python so they protect the Groq fallback path too.
