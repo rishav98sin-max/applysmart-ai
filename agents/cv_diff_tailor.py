@@ -937,7 +937,7 @@ def _extract_credentials(summary: str) -> Dict[str, List[str]]:
     original-vs-rewrite and revert the rewrite when something was dropped.
     """
     if not summary:
-        return {"grades": [], "yoe": [], "numbers": []}
+        return {"grades": [], "yoe": [], "numbers": [], "awards": []}
     grades: List[str] = []
     for rx in _GRADE_PATTERNS:
         for m in rx.finditer(summary):
@@ -947,6 +947,20 @@ def _extract_credentials(summary: str) -> Dict[str, List[str]]:
     # for summary preservation. Scale tokens like "200+" or "600K" can be
     # legitimately compressed when reframing the summary for a JD.
     numbers = [m.group(0).strip().lower() for m in _CREDENTIAL_NUMBER_RX.finditer(summary)]
+    # Awards / recognition (Run 23 fix): the Archer summary silently
+    # dropped "Accenture Kudos and Spotlight Awards" — an achievement
+    # signal recruiters value. Capture distinctive capitalised words
+    # within 4 tokens before "Award"/"Awards".
+    awards: List[str] = []
+    if "award" in summary.lower():
+        _w = summary.split()
+        for i, tok in enumerate(_w):
+            if re.sub(r"[^a-z]", "", tok.lower()) in ("award", "awards"):
+                for j in range(max(0, i - 4), i):
+                    core = re.sub(r"[^A-Za-z]", "", _w[j])
+                    if (len(core) >= 3 and core[0].isupper()
+                            and core.lower() not in ("and", "the", "for", "with")):
+                        awards.append(core.lower())
     # De-duplicate while preserving order.
     def _dedupe(items: List[str]) -> List[str]:
         seen: set = set()
@@ -960,6 +974,7 @@ def _extract_credentials(summary: str) -> Dict[str, List[str]]:
         "grades":  _dedupe(grades),
         "yoe":     _dedupe(yoe),
         "numbers": _dedupe(numbers),
+        "awards":  _dedupe(awards),
     }
 
 
@@ -1041,9 +1056,9 @@ def _check_credentials_preserved(
     # `new` is built from the lowercased rewrite for membership checks.
     new_text_lower = new_summary.lower()
     missing: Dict[str, List[str]] = {}
-    for kind in ("grades", "yoe", "numbers"):
+    for kind in ("grades", "yoe", "numbers", "awards"):
         # May 2026 fix: case-insensitive check so "600K+" matches "600k+"
-        gone = [tok for tok in orig[kind] if tok.lower() not in new_text_lower]
+        gone = [tok for tok in orig.get(kind, []) if tok.lower() not in new_text_lower]
         if gone:
             missing[kind] = gone
     return missing or None

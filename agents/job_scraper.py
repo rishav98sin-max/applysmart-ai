@@ -154,15 +154,26 @@ def _scrape_via_jobspy(
                     country_indeed = country_value
                     break
 
-        df = jobspy_scrape(
+        _scrape_kwargs = dict(
             site_name                  = [site],
             search_term                = job_title,
             location                   = location,
             results_wanted             = fetch_count,
-            hours_old                  = 168,          # 7 days
             country_indeed             = country_indeed,
             linkedin_fetch_description = False,
         )
+        try:
+            # `hours_old` (7-day recency filter) — newer python-jobspy
+            # releases renamed/removed this kwarg, which broke Indeed /
+            # Glassdoor / Builtin entirely (Run 23). Retry without it
+            # rather than failing the whole board.
+            df = jobspy_scrape(hours_old=168, **_scrape_kwargs)
+        except TypeError as e:
+            if "hours_old" in str(e):
+                print("   ℹ️  jobspy: 'hours_old' unsupported in this version — scraping without the recency filter")
+                df = jobspy_scrape(**_scrape_kwargs)
+            else:
+                raise
 
         if df is None or df.empty:
             print(f"   ⚠️  No jobs returned from {source_label}")

@@ -1174,15 +1174,18 @@ def render_strategy_for_tailor(strategy: Dict[str, Any]) -> str:
                         )
                     if kw:
                         lines.append(
-                            f"           ↳ REFRAME — this bullet MUST weave "
-                            f"in the CV-proven JD term \"{kw}\": name the "
-                            f"thing the bullet describes with the JD's word "
-                            f"(it is pre-cleared, the mechanism is real). "
-                            f"This is what makes the rewrite meaningful — a "
-                            f"rewrite that does not surface \"{kw}\" is just "
-                            f"a reorder. You may also use it as a short "
-                            f"\"{kw}: …\" themed label if the bullet is in a "
-                            f"hot-zone project."
+                            f"           ↳ REFRAME — if it fits NATURALLY, "
+                            f"weave the CV-proven JD term \"{kw}\" into this "
+                            f"bullet (it is pre-cleared; name the thing the "
+                            f"bullet describes with the JD's word). It must "
+                            f"read as a clean grammatical sentence. If "
+                            f"\"{kw}\" cannot be woven in cleanly — if it "
+                            f"would jam between the verb and its object "
+                            f"(\"Made technical concepts trade-offs\") or "
+                            f"pile up nouns — DROP the keyword and just "
+                            f"write a clean verb-led rewrite. A clean "
+                            f"sentence WITHOUT \"{kw}\" always beats a "
+                            f"jammed one with it."
                         )
                 elif action == "promote":
                     lines.append(f"      [{idx}] PROMOTE (keep text, lift earlier). {rat}")
