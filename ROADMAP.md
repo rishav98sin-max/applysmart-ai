@@ -290,6 +290,32 @@ A UI box where the user can paste current project facts (live URLs,
 updated counts) so the tailor can match a careful hand-tailor on facts
 not in the base CV. See discussion in PM notes.
 
+### 19. Near-copy bullets — yield, not guard — OPEN
+
+Run 24 Optum reverted 9 of 16 bullets. Batch 20 fixed the *blunt* half
+(the concrete-term guard now accepts acronym expansions). The other
+half — 6× `identical_rewrite` reverts — is NOT a guard fault: the
+tailor genuinely produced near-copies (a comma moved, an article
+dropped). The guard correctly demotes those to "keep original".
+
+So this is a **draft-quality / yield** problem, not a guard problem.
+On a weak-variance run the tailor returns mostly near-copies and yield
+collapses to thin, cosmetic tailoring. The `identical_rewrite` retry
+already exists but is clearly not lifting enough drafts.
+
+**Proposed (pick one, measure first):**
+- Run-twice-keep-better on the whole diff — generate two tailor passes,
+  keep the one with more genuine (guard-passing) rewrites.
+- A stronger second-pass model only for bullets that came back as
+  near-copies, instead of re-prompting the same model.
+- Tighter retry directive: show the LLM its near-copy next to the
+  original and demand a structural change (verb swap, clause reorder),
+  not a reword.
+
+**Why not bundled with batch 20:** changing draft generation risks
+re-opening fabrication/word-salad failure modes that batches 10–16
+closed. Needs its own run + review cycle, not a same-day change.
+
 ---
 
 ## Reliability backlog
