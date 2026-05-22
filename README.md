@@ -110,7 +110,7 @@ node.
                               │        │  (score)  │    │  Generator   │
                               │        │           │    │              │
                               │        └─────┬─────┘    └──────┬───────┘
-                              │              │ < 72?           │
+                              │              │ < 65?           │
                               │      retry Tailor           ▼
                               │              │        ┌──────────────┐
                               │              │        │Cover-Letter  │
@@ -136,7 +136,7 @@ node.
 | 5 | **Matcher** | `agents/job_matcher.py` | Scores every JD vs. the CV (0-100) | Groq | Vector retrieval (ChromaDB + MiniLM-L6) fused with LLM judgment |
 | 6 | **Strategist** | `agents/tailor_strategist.py` | Generates bullet-level strategy (promote/rewrite/drop) | DeepSeek → Groq | LLM decides strategic narrative; reduces cosmetic edits |
 | 7 | **CV Tailor** | `agents/cv_diff_tailor.py` | Rewrites CV per JD, preserving original layout | DeepSeek → Groq | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
-| 8 | **CV Reviewer** | `agents/reviewer.py` | Grades the tailored CV (0-100) against JD + original CV | Groq | Triggers retry cycles if score < 72 |
+| 8 | **CV Reviewer** | `agents/reviewer.py` | Grades the tailored CV (0-100) against JD + original CV | Groq | Triggers retry cycles if score < 65 |
 | 9 | **Cover-Letter Generator** | `agents/cover_letter_generator.py` | 3-paragraph letter tied to the top-scoring CV signals | DeepSeek → Groq | Consumes matcher scores + tailored-CV highlights |
 | 10 | **Cover-Letter Reviewer** | `agents/cover_letter_reviewer.py` | Grades fabrication (0-100) | Groq | Retries the generator with feedback if score < 70 |
 | 11 | **Email Agent** | `agents/email_agent.py` | Gmail SMTP delivery with PDF attachments | — | Preview mode gates sending; per-card manual send |
@@ -184,10 +184,14 @@ pip install -r requirements.txt
 # Create .env beside app.py
 @"
 GROQ_API_KEY=gsk_...
-GEMINI_API_KEY=your_gemini_key_here
+DEEPSEEK_API_KEY=sk-...
 EMAIL_ADDRESS=you@gmail.com
 EMAIL_APP_PASSWORD=your_16_char_app_password
 "@ | Out-File -Encoding utf8 .env
+
+# DeepSeek is the primary writing LLM. Without it, writing falls back
+# to Groq automatically (still works, but quality is lower).
+# GEMINI_API_KEY is optional — Gemini is bypassed by default (GEMINI_BYPASS=1).
 
 streamlit run app.py
 ```
@@ -234,9 +238,9 @@ First run downloads the MiniLM-L6 embedder (~80 MB) into
 | `GROQ_REVIEWER_MODEL` | inherits `GROQ_MODEL` | Override CV reviewer only |
 | `GROQ_COVER_REVIEWER_MODEL` | inherits `GROQ_MODEL` | Override cover-letter reviewer |
 | `MAX_LLM_CALLS_PER_RUN` | `20` | Per-run hard cap. Run aborts cleanly when hit |
-| `MAX_RATE_LIMIT_WAIT` | `60` | Max seconds to sleep on 429. Longer waits abort the run |
+| `MAX_RATE_LIMIT_WAIT` | `120` | Max seconds to sleep on 429. Longer waits abort the run |
 | `MAX_TAILOR_RETRIES` | `1` | How many times to retry a tailored CV that fails review |
-| `REVIEWER_ACCEPT_THRESHOLD` | `72` | Min reviewer score to accept a tailored CV |
+| `REVIEWER_ACCEPT_THRESHOLD` | `65` | Min reviewer score to accept a tailored CV |
 | `COVER_REVIEWER_ACCEPT_THRESHOLD` | `70` | Min fabrication score to accept a cover letter |
 | `LLM_SUPERVISOR` | `1` | Set `0` to skip the LLM supervisor (saves ~5 calls/run) |
 | `LLM_SUPERVISOR_SKIP_SINGLE` | `1` | Skip LLM when only one valid route exists |
@@ -246,7 +250,7 @@ First run downloads the MiniLM-L6 embedder (~80 MB) into
 | `APPLYSMART_SESSIONS_ROOT` | `sessions` | Root for per-session work dirs |
 | `APPLYSMART_MAX_RUNS_PER_SESSION` | `3` | Per-session run limit (browser session). Set `0` for unlimited |
 | `GROQ_TOKENS_PER_KEY_PER_DAY` | `100000` | Per-key daily token budget (free tier cap) |
-| `APPLYSMART_TOKENS_PER_RUN` | `110000` | Estimated tokens per full run (for "runs left" display) |
+| `APPLYSMART_TOKENS_PER_RUN` | `22000` | Estimated Groq tokens per full run (drives the "runs left today" display). Measured from real runs — Groq handles structured tasks (matcher / planner / supervisor / reviewers) only; DeepSeek writing is paid out-of-band and not counted here. |
 | `DOCX_PATH_ENABLED` | `1` | Enable PDF → DOCX → LibreOffice PDF path for format-safe tailoring. Set `0` to force the legacy PyMuPDF in-place path. Native `.docx` uploads always use this path regardless. |
 | `MIXPANEL_TOKEN` | _(unset)_ | Optional product analytics (events: runs, sends, downloads, applied). See `docs/MIXPANEL_DASHBOARD.md` |
 | `MIXPANEL_REGION` | `US` | Set to `EU` if your Mixpanel project was created with EU data residency |
@@ -357,7 +361,7 @@ failure mode it prevents and a precise location in the code.
    unlimited Groq quota.
 
 7. **Rate-limit wait cap.** `runtime.handle_rate_limit` intercepts every
-   Groq 429. Waits ≤60s (configurable via `MAX_RATE_LIMIT_WAIT`) are slept
+   Groq 429. Waits ≤120s (configurable via `MAX_RATE_LIMIT_WAIT`) are slept
    through; longer waits raise `BudgetExceeded` so the run aborts cleanly
    instead of hanging for 10-35 minutes.
 
@@ -370,8 +374,22 @@ failure mode it prevents and a precise location in the code.
 9. **Fabrication review.** Every generated cover letter is scored 0-100
    by a *second* LLM against the CV (`agents/cover_letter_reviewer.py`).
    Scores below 70 trigger a retry with feedback. The tailored CV path
-   has an equivalent reviewer (`agents/reviewer.py`, threshold 72). Both
+   has an equivalent reviewer (`agents/reviewer.py`, threshold 65). Both
    retry counts are capped by `MAX_TAILOR_RETRIES` (default 1).
+
+   On top of the LLM reviewers, a family of **deterministic bullet-level
+   preservation guards** in `cv_diff_tailor.py` runs before any rewrite
+   ships: identical-rewrite suppression (near-copies are kept-as-original,
+   not shipped as "rewrites"), length-fit guard (rewrite must occupy
+   roughly the original's slot so the in-place edit doesn't overflow),
+   concrete-term preservation (acronyms / proper nouns / named methods
+   from the original must survive — acronyms accept faithful expansions
+   like PRD → "product requirements document"), keyword-jam backstop
+   (catches "Made technical concepts trade-offs" — a JD keyword wedged
+   between verb and object — and keeps the clean original), summary
+   credential and project-name retention (a dropped award name, year-of
+   -experience claim, or project name triggers a targeted one-shot retry
+   before any wholesale revert).
 
 10. **Stub-summary handling.** `agents/cv_diff_tailor.py` adjusts word count
     bands for very short summaries (<20 words), prevents fabrication when no
