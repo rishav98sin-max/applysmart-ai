@@ -1969,9 +1969,14 @@ def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
         image_area  = 0.0
         page_area   = 0.0
 
+        # Count "big" filled rectangles (decorative colour blocks). Designer
+        # templates use these for sidebars and section banners; clean CVs
+        # use none. A "big" fill = ≥ 3% of one page's area.
+        big_fill_count = 0
         for pi in range(pages_to_check):
             page = doc[pi]
             page_area += float(page.rect.width) * float(page.rect.height)
+            this_page_area = float(page.rect.width) * float(page.rect.height)
 
             # Image area
             try:
@@ -1980,6 +1985,19 @@ def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
                     rects = page.get_image_rects(img[0]) or []
                     for r in rects:
                         image_area += float(r.width) * float(r.height)
+            except Exception:
+                pass
+
+            # Colour-block fills (decorative sidebars / banners)
+            try:
+                for dr in page.get_drawings():
+                    if dr.get("fill") is None:
+                        continue
+                    for item in dr.get("items", []):
+                        if item[0] == "re":
+                            r = item[1]
+                            if abs(r.width * r.height) > 0.03 * this_page_area:
+                                big_fill_count += 1
             except Exception:
                 pass
 
@@ -1998,6 +2016,7 @@ def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
 
         result["n_text_lines"] = n_lines
         result["image_ratio"]  = round(image_area / page_area, 3) if page_area > 0 else 0.0
+        result["big_fill_count"] = big_fill_count
 
         # Scanned / image-only PDF — almost no extractable text
         if n_lines < 8:
@@ -2005,21 +2024,42 @@ def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
             result["reason"] = "scanned"
             return result
 
-        # Image-heavy designer template — treat like rebuild candidate
-        if result["image_ratio"] > 0.30:
+        # Image-heavy designer template — treat like rebuild candidate.
+        # May 2026 (Run 25 fix): lowered 0.30 → 0.05. The old threshold only
+        # caught photo-dominant CVs (Kian Graham at 0.44); designer CVs with
+        # a small profile photo + colour blocks (Daniel 0.15, Donna 0.20,
+        # Silas 0.087) all slipped through and were attempted by the replica
+        # path, which then fell to the rebuild fallback with broken output.
+        # 0.05 is comfortably above a small logo / signature but well under
+        # any genuine designer photo.
+        if result["image_ratio"] > 0.05:
             result["compatible"] = False
             result["reason"] = "image-heavy"
             return result
 
+        # Colour-block sidebar / banner template — also a rebuild candidate.
+        # Even when the photo is tiny, a Canva-style CV with 2+ large filled
+        # rectangles for sidebars/section bands isn't safely editable in
+        # place. Clean CVs (Cormac, Rishav PM) have zero such rectangles.
+        if big_fill_count >= 2:
+            result["compatible"] = False
+            result["reason"] = "colour-blocks"
+            return result
+
         # Column detection: cluster x0 values into buckets of width 25pt and
-        # count how many buckets contain >= 15% of all lines. A single-column
-        # CV has one dominant cluster; a two-column CV has two.
+        # count how many buckets contain >= 25% of all lines. A single-column
+        # CV has one dominant cluster; a two-column CV has two with substantial
+        # text on BOTH sides. May 2026 (Run 25 fix): raised 0.15 → 0.25 so a
+        # sparse date sidebar or an education-table's 4-cell row does NOT
+        # false-positive as "multi-column" (Cormac's CV regressed on PyMuPDF
+        # version drift because page 2's education table tripped the looser
+        # 15% threshold). A genuine 2-column body easily clears 25% on both.
         if all_x0:
             buckets: Dict[int, int] = {}
             for x in all_x0:
                 key = int(x // 25)
                 buckets[key] = buckets.get(key, 0) + 1
-            min_for_col = max(3, int(0.15 * n_lines))
+            min_for_col = max(3, int(0.25 * n_lines))
             dominant = [b for b, c in buckets.items() if c >= min_for_col]
             # Cluster adjacent buckets — a wrapped paragraph spans 1-2
             # adjacent buckets but it's still ONE column. Group buckets
