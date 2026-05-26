@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://applysmart.ai/schemas/tailored_cv.json",
+  "title": "TailoredCV",
+  "description": "Structured output shape for the rebuild path's LLM tailor (cv_tailor.tailor_cv_structured). Maps 1:1 to the cv_modern.html Jinja template so no text parser sits between the LLM and the renderer — the bug surface that produced the Run 25 catastrophe is eliminated. Inspired by rendercv's typed-entry schema but trimmed to exactly what our template renders.",
+  "type": "object",
+  "required": ["candidate_name", "sections"],
+  "additionalProperties": false,
+  "properties": {
+    "candidate_name": {
+      "type": "string",
+      "minLength": 2,
+      "description": "Display name as it appears at the top of the CV."
+    },
+    "contact_bits": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Header contact line, split into pieces joined by a dot separator. Plain text only — do not include icon class names ('MOBILE-ALT', 'Envelope', etc.) which the renderer treats as literal characters."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Professional Summary paragraph. Empty string if none."
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/Section"},
+      "description": "Ordered list of CV sections. Each section renders as an <h2> followed by its roles and paragraphs."
+    }
+  },
+  "$defs": {
+    "Section": {
+      "type": "object",
+      "required": ["heading"],
+      "additionalProperties": false,
+      "properties": {
+        "heading": {
+          "type": "string",
+          "description": "Section title (e.g. 'Professional Experience', 'Education', 'Skills'). Case-preserving."
+        },
+        "roles": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Role"},
+          "description": "Role/entry blocks. Each renders as a title + dates + optional subtitle + bullet list. Use this for Experience, Education (treat degree as title), and Projects sections."
+        },
+        "paragraphs": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Free-form paragraphs for sections without role structure (e.g. Skills lines like 'Product: roadmap, OKRs, RICE'). Rendered as <p> blocks."
+        }
+      }
+    },
+    "Role": {
+      "type": "object",
+      "required": ["title"],
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Role / degree / project name (the primary identifier of this entry)."
+        },
+        "dates": {
+          "type": "string",
+          "description": "Date range (e.g. 'Jun 2021 - Present', 'Sep 2018 - Jul 2022'). Plain text — no en-dashes; the ATS normalizer strips them."
+        },
+        "sub": {
+          "type": "string",
+          "description": "Subtitle: organisation / institution / location / grade. Anything that belongs on a second line under the title."
+        },
+        "bullets": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Bullet points. Each will render as an <li>. Use one sentence per bullet."
+        }
+      }
+    }
+  }
+}

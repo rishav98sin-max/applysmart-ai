@@ -594,6 +594,43 @@ def _try_weasy_cv(
     )
 
 
+def generate_cv_pdf_styled_from_structured(
+    structured: dict,
+    job_title: str,
+    company: str,
+    output_dir: str,
+    style_profile: dict,
+) -> Optional[str]:
+    """Render a tailored CV from a TailoredCV-shaped dict (no text
+    parser in between). Returns the WeasyPrint PDF path on success,
+    ``None`` if the structured path can't run — callers should then
+    fall back to the legacy text path :func:`generate_cv_pdf_styled`.
+
+    See ``agents/schemas/tailored_cv.json`` for the expected shape and
+    ``cv_tailor.tailor_cv_structured`` for the LLM that produces it.
+    """
+    try:
+        from agents import pdf_formatter_weasy as _weasy
+    except Exception as e:
+        print(f"   ⚠️  pdf_formatter_weasy import failed: {e}")
+        return None
+    if not _weasy.is_available():
+        return None
+    target = int(style_profile.get("page_count") or 1)
+    path = _weasy.generate_cv_pdf_weasy_from_structured(
+        structured    = structured,
+        job_title     = job_title,
+        company       = company,
+        output_dir    = output_dir,
+        style_profile = style_profile,
+        target_pages  = max(1, target),
+    )
+    if path and os.path.exists(path) and os.path.getsize(path) > 0:
+        print(f"   🎨 CV rendered via WeasyPrint (structured) → {os.path.basename(path)}")
+        return path
+    return None
+
+
 def generate_cv_pdf_styled(
     cv_text: str,
     job_title: str,

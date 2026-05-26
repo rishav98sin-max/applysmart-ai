@@ -495,6 +495,66 @@ def _render_to_target_pages(
 # Public API
 # ─────────────────────────────────────────────────────────────
 
+def generate_cv_pdf_weasy_from_structured(
+    structured:     Dict[str, Any],
+    job_title:      str,
+    company:        str,
+    output_dir:     str,
+    style_profile:  Dict[str, Any],
+    target_pages:   int = 1,
+) -> Optional[str]:
+    """
+    Render the tailored CV from a TailoredCV-shaped dict (see
+    ``agents/schemas/tailored_cv.json``). Bypasses ``_parse_cv`` —
+    the dict is fed directly into the Jinja template, so the parser
+    bug class (Run 25 Cormac: "bullets collapsed inline as ○") cannot
+    occur on this path.
+
+    Always runs ``ats_normalize.normalise_structured`` on the input
+    first to strip smart Unicode (em-dashes, curly quotes) and drop
+    leaked Font Awesome class names from contact bits.
+
+    Returns the PDF path on success, or ``None`` if WeasyPrint isn't
+    available / rendering fails.
+    """
+    if not _WEASY_OK:
+        return None
+
+    try:
+        # Local import keeps this module free of an unconditional
+        # dependency on ats_normalize (tests don't need it loaded).
+        from agents.ats_normalize import normalise_structured
+        clean = normalise_structured(structured or {})
+        if not clean.get("candidate_name") or not clean.get("sections"):
+            print(
+                "   ⚠️  Structured PDF render: empty after normalisation "
+                "(missing candidate_name or sections)."
+            )
+            return None
+
+        os.makedirs(output_dir, exist_ok=True)
+        safe_co    = company.replace(" ", "_").replace("/", "-")
+        safe_title = job_title.replace(" ", "_").replace("/", "-")
+        filepath   = os.path.join(output_dir, f"CV_{safe_co}_{safe_title}.pdf")
+
+        def _ctx(scale: float) -> Dict[str, Any]:
+            ctx = _style_knobs(style_profile, scale=scale)
+            ctx.update(clean)
+            return ctx
+
+        pdf_bytes = _render_to_target_pages(
+            "cv_modern.html",
+            _ctx,
+            target_pages=max(1, int(target_pages or 1)),
+        )
+        with open(filepath, "wb") as f:
+            f.write(pdf_bytes)
+        return filepath
+    except Exception as e:
+        print(f"   ⚠️  WeasyPrint structured render failed: {type(e).__name__}: {e}")
+        return None
+
+
 def generate_cv_pdf_weasy(
     cv_text:        str,
     job_title:      str,

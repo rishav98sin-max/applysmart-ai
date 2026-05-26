@@ -20,7 +20,7 @@ from agents.cv_parser import parse_cv
 from agents.planner import build_plan
 from agents.job_scraper import boards_fallback_sequence, scrape_jobs
 from agents.job_matcher import match_cv_to_job
-from agents.cv_tailor import tailor_cv
+from agents.cv_tailor import tailor_cv, tailor_cv_structured
 from agents.cv_diff_tailor import tailor_cv_diff
 from agents.pdf_editor import (
     apply_edits as apply_pdf_edits,
@@ -41,6 +41,7 @@ from agents.cv_style_agent import build_style_profile
 from agents.pdf_formatter import (
     extract_cv_style,
     generate_cv_pdf_styled,
+    generate_cv_pdf_styled_from_structured,
     generate_cover_letter_pdf_styled,
 )
 from agents.email_agent import send_email
@@ -1775,19 +1776,62 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
 
             if not cv_pdf:
                 print(f"   📝 {tag} Tailoring CV (rebuild)...")
-                tcv_text = tailor_cv(
+                tcv_text = ""
+                # Structured-output path first (batch 22): LLM emits JSON
+                # matching the cv_modern.html template's slots, so no text
+                # parser sits between the LLM and the renderer — the bug
+                # class that flattened Cormac's CV into one paragraph
+                # cannot recur on this path. Falls back to the legacy
+                # text path on JSON failure so the rebuild always lands.
+                structured_doc = tailor_cv_structured(
                     cv_text         = state["cv_text"],
                     job_description = jd,
                     job_title       = title,
                     company         = company,
                 )
-                cv_pdf = generate_cv_pdf_styled(
-                    cv_text       = tcv_text,
-                    job_title     = title,
-                    company       = company,
-                    output_dir    = out_dir,
-                    style_profile = style_profile,
-                )
+                if structured_doc is not None:
+                    cv_pdf = generate_cv_pdf_styled_from_structured(
+                        structured    = structured_doc,
+                        job_title     = title,
+                        company       = company,
+                        output_dir    = out_dir,
+                        style_profile = style_profile,
+                    )
+                    # Reconstruct a text version for downstream callers
+                    # that expect the rewritten CV as a string (preview
+                    # box, snapshot). Cheap join of section headings +
+                    # bullets — not exact, but representative.
+                    if cv_pdf:
+                        _parts = [structured_doc.get("summary", "")]
+                        for _s in structured_doc.get("sections", []):
+                            _parts.append("\n" + _s.get("heading", ""))
+                            for _r in _s.get("roles", []) or []:
+                                _parts.append(_r.get("title", ""))
+                                for _b in _r.get("bullets", []) or []:
+                                    _parts.append(f"- {_b}")
+                            for _p in _s.get("paragraphs", []) or []:
+                                _parts.append(_p)
+                        tcv_text = "\n".join(p for p in _parts if p).strip()
+
+                # Fallback: legacy text-mode tailor + parser-based renderer.
+                # Triggers when structured JSON failed validation across
+                # all retries, or when the structured renderer returned None
+                # (e.g. WeasyPrint missing native deps locally).
+                if not cv_pdf:
+                    print(f"   ⤵️  {tag} Structured rebuild path unavailable — falling back to text mode.")
+                    tcv_text = tailor_cv(
+                        cv_text         = state["cv_text"],
+                        job_description = jd,
+                        job_title       = title,
+                        company         = company,
+                    )
+                    cv_pdf = generate_cv_pdf_styled(
+                        cv_text       = tcv_text,
+                        job_title     = title,
+                        company       = company,
+                        output_dir    = out_dir,
+                        style_profile = style_profile,
+                    )
                 if cv_pdf and os.path.exists(cv_pdf):
                     rmode = "rebuilt"
                     # B1: when we end up on rebuild path AND best_review
