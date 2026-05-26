@@ -841,9 +841,10 @@ with st.sidebar:
         # submit, so a conditional (num_jobs > 3) warning would always lag
         # one run behind. An always-visible caption sets the expectation
         # up-front instead.
-        st.caption(
+        st.info(
             "Recommended: **3 jobs** for a trial run. Higher counts may "
-            "exhaust the daily LLM quota."
+            "exhaust the daily LLM quota.",
+            icon="💡",
         )
         match_threshold = st.slider(
             "Minimum match score (JD vs CV %)",
