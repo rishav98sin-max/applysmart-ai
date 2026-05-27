@@ -594,6 +594,39 @@ def _try_weasy_cv(
     )
 
 
+def generate_cv_pdf_styled_via_typst(
+    structured: dict,
+    job_title: str,
+    company: str,
+    output_dir: str,
+) -> Optional[str]:
+    """Render a tailored CV via the Typst-based renderer (batch 23).
+
+    Highest-quality rebuild path: monochrome professional output, ATS-safe
+    layout, embedded fonts, auto tenure calculation, intelligent
+    pagination. Returns the PDF path on success, ``None`` on any failure
+    (callers should then fall back to
+    :func:`generate_cv_pdf_styled_from_structured`).
+    """
+    try:
+        from agents import cv_render_typst as _typst
+    except Exception as e:
+        print(f"   [!] cv_render_typst import failed: {e}")
+        return None
+    if not _typst.is_available():
+        return None
+    path = _typst.render_cv_to_pdf(
+        structured = structured,
+        job_title  = job_title,
+        company    = company,
+        output_dir = output_dir,
+    )
+    if path and os.path.exists(path) and os.path.getsize(path) > 0:
+        print(f"   ✨ CV rendered via Typst → {os.path.basename(path)}")
+        return path
+    return None
+
+
 def generate_cv_pdf_styled_from_structured(
     structured: dict,
     job_title: str,

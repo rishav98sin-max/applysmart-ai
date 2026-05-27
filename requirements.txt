@@ -41,3 +41,10 @@ mammoth>=1.6                # DOCX → HTML (preserves styles, paragraph structu
 # Per-call LLM telemetry. JSONL works without this dep; Langfuse adds the
 # pretty UI + remote persistence. See diagnostics/README.md.
 langfuse>=4.0,<5
+
+# ── Typst-based rebuild renderer (batch 23) ──
+# Polished PDF output for the rebuild path: monochrome, ATS-safe,
+# auto-tenure calculation, 4-corner role blocks. The `[full]` extra
+# bundles the Typst binary inside a Python wheel — no apt / packages.txt
+# / system dependencies needed. Adds ~104 MB to the deploy image.
+rendercv[full]>=2.8,<3

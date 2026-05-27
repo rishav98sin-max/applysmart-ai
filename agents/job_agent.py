@@ -42,6 +42,7 @@ from agents.pdf_formatter import (
     extract_cv_style,
     generate_cv_pdf_styled,
     generate_cv_pdf_styled_from_structured,
+    generate_cv_pdf_styled_via_typst,
     generate_cover_letter_pdf_styled,
 )
 from agents.email_agent import send_email
@@ -1790,13 +1791,24 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     company         = company,
                 )
                 if structured_doc is not None:
-                    cv_pdf = generate_cv_pdf_styled_from_structured(
-                        structured    = structured_doc,
-                        job_title     = title,
-                        company       = company,
-                        output_dir    = out_dir,
-                        style_profile = style_profile,
+                    # Preferred renderer (batch 23): Typst-based — polished
+                    # monochrome output, embedded fonts, auto-tenure calc,
+                    # 4-corner role layout. Falls through to the WeasyPrint
+                    # structured renderer on any failure.
+                    cv_pdf = generate_cv_pdf_styled_via_typst(
+                        structured = structured_doc,
+                        job_title  = title,
+                        company    = company,
+                        output_dir = out_dir,
                     )
+                    if not cv_pdf:
+                        cv_pdf = generate_cv_pdf_styled_from_structured(
+                            structured    = structured_doc,
+                            job_title     = title,
+                            company       = company,
+                            output_dir    = out_dir,
+                            style_profile = style_profile,
+                        )
                     # Reconstruct a text version for downstream callers
                     # that expect the rewritten CV as a string (preview
                     # box, snapshot). Cheap join of section headings +
