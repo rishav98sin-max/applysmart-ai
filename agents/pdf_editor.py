@@ -2029,11 +2029,30 @@ def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
         # Count "big" filled rectangles (decorative colour blocks). Designer
         # templates use these for sidebars and section banners; clean CVs
         # use none. A "big" fill = ≥ 3% of one page's area.
-        big_fill_count = 0
+        #
+        # Run 26 follow-up (May 2026 — Shrestha regression fix):
+        # the previous rule rejected any CV with ≥2 big fills TOTAL across
+        # pages. Shrestha's CV has 1 grey sidebar block per page (2 pages
+        # → 2 total) and was mis-classified as designer-template,
+        # bouncing her to rebuild despite having been successfully
+        # replica-edited since Run 12. Track two finer signals instead:
+        #   • max_big_fills_per_page — true Canva designer templates put
+        #     3+ decorative blocks on a SINGLE page (sidebar + banner +
+        #     section bands). Shrestha hits a max of 1 per page.
+        #   • max_fill_area_pct — true designer templates use full-page
+        #     background fills (100%+ of page). Shrestha's sidebar blocks
+        #     are ≤ 7.3% of page. Either of these signals at a high
+        #     threshold catches the actual designer pattern without
+        #     dragging legit 2-col candidate CVs into rebuild.
+        big_fill_count        = 0
+        max_big_per_page      = 0
+        max_fill_area_pct     = 0.0
         for pi in range(pages_to_check):
             page = doc[pi]
             page_area += float(page.rect.width) * float(page.rect.height)
             this_page_area = float(page.rect.width) * float(page.rect.height)
+            this_page_big   = 0
+            this_page_max_pct = 0.0
 
             # Image area
             try:
@@ -2053,10 +2072,20 @@ def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
                     for item in dr.get("items", []):
                         if item[0] == "re":
                             r = item[1]
-                            if abs(r.width * r.height) > 0.03 * this_page_area:
+                            area = abs(r.width * r.height)
+                            if area > 0.03 * this_page_area:
                                 big_fill_count += 1
+                                this_page_big   += 1
+                                pct = 100.0 * area / this_page_area
+                                if pct > this_page_max_pct:
+                                    this_page_max_pct = pct
             except Exception:
                 pass
+
+            if this_page_big > max_big_per_page:
+                max_big_per_page = this_page_big
+            if this_page_max_pct > max_fill_area_pct:
+                max_fill_area_pct = this_page_max_pct
 
             # Text lines and their x0 positions
             for block in page.get_text("dict")["blocks"]:
@@ -2071,9 +2100,11 @@ def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
                     all_x0.append(x0)
                     n_lines += 1
 
-        result["n_text_lines"] = n_lines
-        result["image_ratio"]  = round(image_area / page_area, 3) if page_area > 0 else 0.0
-        result["big_fill_count"] = big_fill_count
+        result["n_text_lines"]       = n_lines
+        result["image_ratio"]        = round(image_area / page_area, 3) if page_area > 0 else 0.0
+        result["big_fill_count"]     = big_fill_count
+        result["max_big_per_page"]   = max_big_per_page
+        result["max_fill_area_pct"]  = round(max_fill_area_pct, 1)
 
         # Scanned / image-only PDF — almost no extractable text
         if n_lines < 8:
@@ -2095,10 +2126,21 @@ def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
             return result
 
         # Colour-block sidebar / banner template — also a rebuild candidate.
-        # Even when the photo is tiny, a Canva-style CV with 2+ large filled
-        # rectangles for sidebars/section bands isn't safely editable in
-        # place. Clean CVs (Cormac, Rishav PM) have zero such rectangles.
-        if big_fill_count >= 2:
+        # Even when the photo is tiny, a Canva-style designer template
+        # stacks decorative blocks: ≥ 3 large filled rectangles on a
+        # single page, OR a single fill that covers half or more of the
+        # page (background banner). Either pattern indicates a layout the
+        # replica path cannot safely preserve.
+        #
+        # Run 26 (May 2026 — Shrestha regression fix): the old
+        # "total ≥ 2 across pages" rule wrongly caught Shrestha's CV
+        # (1 sidebar block per page, 2 pages → total 2) — a CV that has
+        # been successfully replica-edited since Run 12. Real designer
+        # templates measured: GraphicDes (9 fills, 188% page), FlightAtt
+        # (5 on one page, 100%), Rishav-Canva (3, 99.8%), SystemsDes (4,
+        # 100%), SalesRep (8, 100%). All score above the two new
+        # thresholds; Shrestha scores below both.
+        if max_big_per_page >= 3 or max_fill_area_pct >= 50.0:
             result["compatible"] = False
             result["reason"] = "colour-blocks"
             return result
