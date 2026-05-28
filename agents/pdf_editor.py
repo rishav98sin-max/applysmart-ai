@@ -2469,6 +2469,42 @@ def _is_block_justified(lines: List[Dict[str, Any]]) -> bool:
     return (max(x1s) - min(x1s)) <= 2.5
 
 
+def _verify_inserted_text(
+    page:           "fitz.Page",
+    rect:           "fitz.Rect",
+    expected_text:  str,
+    min_word_ratio: float = 0.7,
+) -> bool:
+    """
+    Run 26 (May 2026): per-bullet render self-check. After an insert,
+    re-extract the rect's text and confirm the expected wording actually
+    landed. Catches font-substitution glitches and partial clips that
+    `_insert_fitted` reports as success (positive return) but that render
+    as boxes / missing glyphs.
+
+    Conservative by design — returns True (assume OK) whenever it cannot
+    measure, so a real-but-hard-to-extract render is never falsely
+    reverted. Only returns False when extraction clearly shows the
+    expected words are mostly absent.
+    """
+    if not expected_text or not expected_text.strip():
+        return True
+    try:
+        got = page.get_text("text", clip=rect) or ""
+    except Exception:
+        return True  # cannot verify → assume OK
+    got_low = got.lower()
+    words = re.findall(r"[a-z0-9]{4,}", expected_text.lower())
+    if not words:
+        # No long words to match — fall back to a char-density check that
+        # tolerates extraction whitespace differences.
+        exp_chars = len(re.sub(r"\s+", "", expected_text))
+        got_chars = len(re.sub(r"\s+", "", got))
+        return got_chars >= max(1, int(exp_chars * 0.5))
+    present = sum(1 for w in words if w in got_low)
+    return present >= max(1, int(len(words) * min_word_ratio))
+
+
 def _render_block_textwriter(
     page:      fitz.Page,
     rect:      fitz.Rect,
@@ -3198,7 +3234,19 @@ def apply_edits(
                             y_slack=y_slack_pt,
                         )
                         _redraw_borders(page, saved_borders)
-                        if not sz_b or sz_b <= 0:
+                        # Run 26 (May 2026): per-bullet render self-check.
+                        # _insert_fitted returns a positive size on a
+                        # SUCCESSFUL draw, but a font-substitution glitch or
+                        # partial clip can still leave the rendered text
+                        # degraded. Re-extract the rect and verify the
+                        # expected words actually landed. If not, treat it
+                        # as a failed insert and restore the original via
+                        # the same path below — surgical, bullet-level
+                        # recovery, never a whole-CV failure.
+                        render_ok = bool(sz_b and sz_b > 0) and _verify_inserted_text(
+                            page, body_rect, insert_text
+                        )
+                        if not render_ok:
                             # Estimate passed but PyMuPDF still rejected
                             # (rare). Restore the original — it is no longer
                             # than the rewrite, so it fits — and never leave
@@ -3224,13 +3272,18 @@ def apply_edits(
                                     _redraw_borders(page, saved_borders)
                                 except Exception:
                                     pass
+                            _why = (
+                                "did not fit"
+                                if (not sz_b or sz_b <= 0)
+                                else "render self-check failed (degraded glyphs)"
+                            )
                             report.setdefault("skipped", []).append(
                                 f"bullets/{header}: bullet i={e['i']} rewrite "
-                                f"did not fit — kept original"
+                                f"{_why} — kept original"
                             )
                             print(
                                 f"   pdf_editor: bullet i={e['i']} in "
-                                f"{header[:40]!r} did not fit — kept original"
+                                f"{header[:40]!r} {_why} — kept original"
                             )
                         else:
                             n_rewrites_role += 1
