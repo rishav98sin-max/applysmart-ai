@@ -1151,6 +1151,37 @@ def _bbox_intersects_any(bbox: List[float], zones: List[fitz.Rect]) -> bool:
 _LAST_EXTRACT_STATS: Dict[str, int] = {"table_lines_filtered": 0, "tables_detected": 0}
 
 
+_DATE_TOKEN_RX = re.compile(
+    r"(?i)(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?|\d{4}|present|current|to|[–—-])"
+)
+
+
+def _is_bare_date_line(text: str) -> bool:
+    """
+    True when the whole line is just a date fragment — a month, a year, a
+    year-range, or a month/year combination ("June", "2021–Present",
+    "2019–June", "Feb"). Used to detect a left date-SIDEBAR column that
+    PyMuPDF emits as its own line on the same baseline as the content.
+
+    Precise by construction: after removing every date token + separator,
+    nothing meaningful may remain, AND at least one month or 4-digit year
+    must be present — so a real sentence that merely starts with a year
+    ("2024 was a record year…") does NOT match (it leaves residue).
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 28:
+        return False
+    residue = _DATE_TOKEN_RX.sub("", t)
+    residue = re.sub(r"[\s,.–—\-]+", "", residue)
+    if residue:
+        return False
+    return bool(re.search(
+        r"(?i)(\d{4}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", t
+    ))
+
+
 def _collect_page_lines(page: fitz.Page, pi: int) -> List[Dict[str, Any]]:
     """
     Return a y-sorted list of lines on a page, each with merged spans. Lines
@@ -1185,13 +1216,41 @@ def _collect_page_lines(page: fitz.Page, pi: int) -> List[Dict[str, Any]]:
             })
     raw.sort(key=lambda r: (round(r["bbox"][1], 1), round(r["bbox"][0], 1)))
 
+    # Run 26 follow-up (May 2026): left date-SIDEBAR exclusion. Some Word
+    # CVs (Cormac) put the date in a narrow LEFT column; PyMuPDF emits it
+    # as its own line on the same baseline as the role title / first
+    # bullet, at a lower x0. The same-y merge below would fuse it INTO the
+    # content ("2021–Present   Responsible for establishing…"), which (a)
+    # breaks role-header detection and strategist key-matching and (b)
+    # pulls the date column into the content bbox so in-place redaction
+    # would wipe the date. Detect a bare-date line that shares a baseline
+    # with a content line to its RIGHT and drop it from the logical line
+    # list: the date glyphs stay on the page (never redacted), and the
+    # content line parses clean. Precise — fires only on the sidebar
+    # signature, so single-column CVs (0 such lines) are unaffected.
+    Y_TOL = 1.2
+    _sidebar_ids: set = set()
+    for ln in raw:
+        if ln["is_marker"] or not _is_bare_date_line(ln["text"]):
+            continue
+        y = ln["bbox"][1]
+        for other in raw:
+            if other is ln or other["is_marker"]:
+                continue
+            if (abs(other["bbox"][1] - y) <= Y_TOL
+                    and other["bbox"][0] > ln["bbox"][2]
+                    and not _is_bare_date_line(other["text"])):
+                _sidebar_ids.add(id(ln))
+                break
+    if _sidebar_ids:
+        raw = [ln for ln in raw if id(ln) not in _sidebar_ids]
+
     # Merge lines at near-identical y (same visual row): concatenate text,
     # union the bbox, keep spans in x-order. This fixes 'role header + date'
     # appearing as two separate lines at the same y. We walk back past any
     # marker lines that sit between same-y visual neighbours.
     merged: List[Dict[str, Any]] = []
     prev_nm: Optional[Dict[str, Any]] = None
-    Y_TOL = 1.2
     for ln in raw:
         if (
             not ln["is_marker"]
