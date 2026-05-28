@@ -124,6 +124,63 @@ def _extract_json(text: str) -> dict:
     return {}
 
 
+def _extract_fact_atoms(text: str) -> List[str]:
+    """
+    Return the bullet's EVIDENCE ATOMS in display form — the concrete
+    facts a tailored rewrite must preserve. Mirrors exactly what the
+    deterministic guards enforce downstream (_rewrite_is_safe for
+    numbers, _check_content_preserved for terms), so the list shown to
+    the LLM is precisely what it cannot drop.
+
+    This is the anchor for fact-anchored free rewriting: the LLM is told
+    "keep these, rewrite everything else freely". Returns atoms with
+    ORIGINAL casing for readability in the prompt.
+
+    Atom classes:
+      • numeric outcomes — percentages, currency, scale (via _NUMBER_RX)
+      • acronyms (≥3 uppercase letters)
+      • mid-sentence proper nouns (tools / clients / employers / platforms)
+      • distinctive hyphenated compounds (≥2 hyphens)
+    """
+    if not text:
+        return []
+    atoms: List[str] = []
+    seen: set = set()
+
+    def _add(display: str):
+        key = display.lower()
+        if key and key not in seen:
+            seen.add(key)
+            atoms.append(display)
+
+    # Numeric outcomes (verbatim — these are the strongest evidence).
+    for m in _NUMBER_RX.finditer(text):
+        _add(m.group(0).strip())
+
+    # Acronyms (≥3 uppercase, optional trailing 's').
+    for m in re.finditer(r"\b([A-Z]{3,})s?\b", text):
+        _add(m.group(1))
+
+    # Mid-sentence proper nouns (skip sentence-initial capitals — those are
+    # syntactic, not signal). Captures tools / platforms / clients / names.
+    words = text.split()
+    for i, w in enumerate(words):
+        core = re.sub(r"[^A-Za-z]", "", w)
+        if len(core) < 3 or not core[0].isupper():
+            continue
+        if i == 0 or words[i - 1].rstrip().endswith((".", "!", "?", ":")):
+            continue
+        if core.isupper():               # already captured as acronym
+            continue
+        _add(core)
+
+    # Distinctive hyphenated compounds (≥2 hyphens, e.g. cross-time-zone).
+    for m in re.finditer(r"\b\w+(?:-\w+){2,}\b", text):
+        _add(m.group(0))
+
+    return atoms
+
+
 def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
     """
     Compact outline rendering for the cv_diff_tailor prompt.
@@ -152,15 +209,23 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
     parts.append("")
     parts.append("ROLES (0-indexed bullets — index 'i' is how the editor locates each bullet):")
     parts.append(
-        "Each bullet shows [keep ≈N words]. THE RULE: a tailored bullet has "
-        "the SAME word count as the original — match the N shown, within a "
-        "word or two, NEITHER longer NOR shorter. The editor drops each "
-        "rewrite into the exact slot the original occupies with no page "
-        "reflow: a same-length rewrite fits; a longer one overflows the slot "
-        "and a shorter one leaves a visible gap — BOTH are REJECTED. Tailor "
-        "by RE-WORDING the bullet's content end to end — re-word ALL of it, "
-        "keep every fact; never append a new clause and never drop content. "
-        "Re-aim the SAME amount of content at THIS job."
+        "HOW TO TAILOR A BULLET — FACT-ANCHORED FREE REWRITE:\n"
+        "Each bullet shows [≈N words, max=Mc | FACTS: ...]. The FACTS list "
+        "is the candidate's evidence — numbers, tools, employers, named "
+        "things. These are SACRED: every fact atom MUST appear in your "
+        "rewrite (a dropped fact reverts the bullet). EVERYTHING ELSE is "
+        "yours to rewrite freely — choose the verb, the order, the "
+        "emphasis, which facts to lead with, and which filler to cut. You "
+        "are NOT moving one phrase to the front; you are writing the BEST "
+        "possible version of this bullet for THIS job, anchored to its "
+        "facts. Lead with whatever the JD cares about most. Write natural "
+        "English a recruiter reads in seconds.\n"
+        "LENGTH: aim to fill the SAME NUMBER OF LINES as the original so "
+        "the slot stays visually intact — but TIGHTER IS BETTER. A sharper, "
+        "shorter rewrite (down to ~80% of the original) is a WIN, not a "
+        "loss. NEVER pad with filler or repeat a phrase to hit a length; a "
+        "crisp 18-word bullet beats a padded 25-word one. Stay at or under "
+        "max=Mc characters. Add NO fact that isn't in the original."
     )
     for r in outline.get("roles", []):
         parts.append(f'Role "{r["header"]}":')
@@ -181,8 +246,16 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
             # capacity. Same value the strategist receives — both
             # agents share one budget so plans + executions agree.
             max_chars = max(1, int(round(orig_len * 1.05)))
+            # Fact-anchored free rewrite (May 2026): surface the evidence
+            # atoms the rewrite MUST keep, so the LLM knows exactly what
+            # is sacred and can rewrite everything else freely. This is
+            # what the downstream guards enforce — showing it upfront
+            # turns post-hoc reverts into first-pass correctness.
+            atoms = _extract_fact_atoms(btext)
+            facts_str = ", ".join(atoms) if atoms else "(none — free rewrite)"
             parts.append(
-                f"  [{i}] [keep ≈{orig_words} words, max={max_chars}c] {btext}"
+                f"  [{i}] [≈{orig_words} words, max={max_chars}c | "
+                f"FACTS: {facts_str}] {btext}"
             )
         parts.append("")
     skills = outline.get("skills") or []
@@ -203,11 +276,11 @@ _PROMPT_TEMPLATE = """╔══════════════════�
 ║  text=null for EVERY bullet = failed tailoring. A rewrite that drops  ║
 ║  a concrete fact = also failed (reverts to original).                ║
 ║                                                                       ║
-║  THE LENGTH RULE: each rewrite must be ≈ the SAME LENGTH as its       ║
-║  original (within ±10% of the [target≈N chars] shown). The output    ║
-║  PDF places each rewrite in the original bullet's exact slot with    ║
-║  no reflow — a same-length rewrite fits perfectly; a longer one is    ║
-║  reverted (lost tailoring). Preserve every number + proper noun.      ║
+║  THE LENGTH RULE: fill the same NUMBER OF LINES as the original so    ║
+║  the slot stays intact — but TIGHTER IS BETTER. A sharper, shorter    ║
+║  rewrite (down to ~80% of original) is a WIN. Never pad or repeat to  ║
+║  hit a length. Stay at/under the [max=Mc] shown — a longer rewrite    ║
+║  overflows the slot and is reverted. Keep every FACT atom listed.     ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
 You are an EXECUTOR. A senior career strategist has already analysed
@@ -226,19 +299,23 @@ YOUR THINKING PROCESS (critical — do this BEFORE writing JSON):
    weave in the must_include_phrases (which are already in the CV);
    keep every credential (grade, YoE, employer, university) intact.
 3. For each bullet listed in the STRATEGY:
-     • action=rewrite_verb_led → the strategy gives a "LEAD WITH:"
-       directive naming a fact ALREADY IN that bullet. Produce a GENUINE
-       rewrite: REBUILD the sentence from scratch. OPEN it with a STRONG
-       PAST-TENSE ACTION VERB that mirrors the JD's language, and pull
-       the LEAD-WITH fact into the OPENING CLAUSE (early — within the
-       first ~8 words — but NOT necessarily the literal first word).
-       Example pattern: lead-with fact "40% efficiency gain" →
-       "Delivered 40% efficiency gain and 2x capacity by identifying a
+     • action=rewrite_verb_led → write the BEST possible version of this
+       bullet for THIS job — a FACT-ANCHORED FREE REWRITE. The bullet's
+       FACTS list (shown in the CV CONTENT block as "FACTS: …") is the
+       evidence you MUST keep verbatim — numbers, tools, employers, named
+       things. Everything else is yours: choose the verb, the order, the
+       emphasis, which fact to lead with, which filler to cut. REBUILD
+       the sentence from scratch, open with a STRONG PAST-TENSE ACTION
+       VERB mirroring the JD's language, and lead with whatever the JD
+       cares about most (the strategy's "LEAD WITH:" line, when present,
+       is a HINT pointing at the JD-relevant fact — use your judgment,
+       don't transplant it mechanically). Example: facts "40%, capacity"
+       → "Delivered 40% efficiency gain and 2x capacity by removing a
        critical bottleneck…" — verb first, fact early, natural sentence.
-       The wording changes; the FACTS do not. Keep every number, proper
-       noun and claim exactly as the original; build only from words in
-       that bullet or elsewhere in the CV; never use a JD term from the
-       FORBIDDEN list.
+       The wording changes freely; the FACTS do not. Build only from the
+       bullet's own content or elsewhere in the CV; never use a JD term
+       from the FORBIDDEN list. Tighter than the original is a WIN — do
+       not pad.
        ⚠️  TWO WAYS TO FAIL — avoid BOTH:
          (1) BROKEN GRAMMAR — shoving the fact to the literal front and
              leaving the original verb stranded ("Supervisor + workers
@@ -442,23 +519,23 @@ RULES (strict):
    buzzword-stuffed one that the candidate can't defend.
 
    ┌────────────────────────────────────────────────────────────────┐
-   │ SUMMARY LENGTH — MATCH THE ORIGINAL (HARD CONSTRAINT)          │
+   │ SUMMARY LENGTH — FILL THE BOX, BUT TIGHTER IS BETTER          │
    │                                                                │
    │   Original summary: {cur_word_count} words                     │
-   │   Your rewrite MUST be between {cur_word_min} and {cur_word_max} words │
-   │   — i.e. essentially THE SAME LENGTH as the original.          │
+   │   Target band: {cur_word_min}–{cur_word_max} words.            │
    │                                                                │
-   │   This is deliberate: a tailored summary is the SAME size as   │
-   │   the original, just RETARGETED. You are not summarising or    │
-   │   trimming — you are re-aiming the same amount of content at   │
-   │   THIS job. If your draft comes out short, you have dropped    │
-   │   CV detail — add it back: name more JD-relevant tools,        │
-   │   platforms, methods, outcomes that are already in the CV      │
-   │   until you reach the original word count.                     │
+   │   The summary occupies a fixed box in the PDF, so stay roughly │
+   │   within the band so the box neither overflows nor looks empty.│
+   │   But a SHARPER, slightly SHORTER summary is a WIN — do NOT    │
+   │   pad. NEVER repeat a phrase, never bolt on filler clauses,    │
+   │   never inflate to hit a word count. If you've surfaced the    │
+   │   JD-relevant content the CV proves and you're a little under  │
+   │   the original, that is CORRECT — ship it tight.               │
    │                                                                │
-   │   Below the floor → blank gap in the PDF, reads under-baked,   │
-   │   reverts to original. Above the ceiling → overflows the       │
-   │   layout, reverts. Land INSIDE the band.                       │
+   │   Above the ceiling → overflows the layout, reverts. A         │
+   │   drastically short summary (well below the floor) leaves a    │
+   │   visible gap — so land near the band, just lean tight not     │
+   │   padded.                                                      │
    └────────────────────────────────────────────────────────────────┘
 
    MUST-PRESERVE CREDENTIALS (HARD — drop one and your rewrite is
@@ -870,8 +947,8 @@ def _call_llm(prompt: str, max_tokens: int = 3000) -> str:
 # "9 guardrails", "~15 minutes", "2024" — these are descriptive, not
 # outcome metrics. Outcome metrics carry suffixes by convention.
 _NUMBER_RX = re.compile(
-    r"\d[\d.,]*%"            # percentages
-    r"|\$\d[\d.,]*[KMB]?"    # currency (optionally suffixed)
+    r"[$€£]\d[\d.,]*[KMB]?"  # currency (optionally suffixed) — incl € £
+    r"|\d[\d.,]*%"           # percentages
     r"|\d+[KMB]\+?"          # scale: 600K, 5M, 1B, 150K+
     r"|\d{1,4}\+",           # count-with-plus: 3+, 150+
     re.I,
@@ -889,8 +966,8 @@ _NUMBER_RX = re.compile(
 # new regex keeps % and $ enforcement; the bullet check still preserves
 # all numbers verbatim because that's where outcomes live.
 _CREDENTIAL_NUMBER_RX = re.compile(
-    r"\d[\d.,]*%"            # percentages (outcome credentials)
-    r"|\$\d[\d.,]*[KMB]?",   # currency (financial credentials)
+    r"[$€£]\d[\d.,]*[KMB]?"  # currency (financial credentials) — incl € £
+    r"|\d[\d.,]*%",          # percentages (outcome credentials)
     re.I,
 )
 
@@ -3651,14 +3728,16 @@ def tailor_cv_diff(
         _orig_word_max = min(_SUMMARY_STUB_CAP,
                              max(_orig_word_count + 10, int(_orig_word_count * 1.15)))
     else:
-        # May 2026 (user-driven): the tailored summary should be NEARLY
-        # THE SAME LENGTH as the original — same word count, retargeted
-        # content. A summary that shrinks to 70% of the original leaves
-        # a visible gap in the PDF and reads as under-baked. Tighten the
-        # band to 97%-108% so the rewrite stays close to the original
-        # footprint; the LLM fills any slack with JD-aligned CV detail
-        # rather than ending short.
-        _orig_word_min = max(1, int(round(_orig_word_count * 0.97)))
+        # May 2026 (Run 26 follow-up — fact-anchored free rewrite): the
+        # old 97%-108% band forced near-equal length, which made the LLM
+        # PAD (the Mohammed duplicate-phrase bug: it repeated "2+ years
+        # at EY GDS" to reach the floor). A tighter, sharper summary is a
+        # WIN, not a defect. Widen the floor to 0.82 so a crisp rewrite
+        # isn't rejected for being lean; keep the 1.08 ceiling (overflow
+        # is a real layout failure). The box still wants to look filled,
+        # so the floor isn't unbounded — but it no longer manufactures
+        # padding.
+        _orig_word_min = max(1, int(round(_orig_word_count * 0.82)))
         _orig_word_max = int(round(_orig_word_count * 1.08))
 
     # ── Proactive fabrication prevention (May 2026) ──────────────────
