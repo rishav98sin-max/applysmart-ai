@@ -78,3 +78,6 @@ diagnostics/_*.pdf
 
 # Audit reports (per-session — keep locally)
 AUDIT_REPORT_*.md
+
+# Per-run probe / render scratch dirs (Run 24/25/26 etc.)
+_r*render/

@@ -663,6 +663,14 @@ def _capture_borders_in_rect(
     for d in drawings:
         color = d.get("color")
         width = d.get("width") or 0.75
+        # Run 26 (May 2026): skip pure-fill drawings (no stroke colour).
+        # A white-filled cosmetic strip under a header has color=None +
+        # fill=(1,1,1); treating its 4 edges as borders and redrawing
+        # them via the (0,0,0) fallback paints two phantom black HRs
+        # at the strip's top + bottom edges. Only preserve drawings
+        # whose stroke colour is explicitly set.
+        if color is None:
+            continue
         for item in d.get("items", []) or []:
             try:
                 op = item[0]
@@ -851,6 +859,7 @@ def _estimate_text_fits(
     rect_height: float,
     fontsize:    float,
     line_gap:    float,
+    font_name:   Optional[str] = None,
 ) -> bool:
     """
     Estimate (without touching the page) whether `text` will fit inside a
@@ -863,15 +872,25 @@ def _estimate_text_fits(
     try (line_gap × 0.88, matching `_insert_fitted`'s gap ladder floor).
     If the text fits even at the tightest spacing, the real insertion is
     guaranteed a gap that works. Conservative by ~1pt.
+
+    Run 26 (May 2026): `font_name` selects the Base14 measuring font.
+    Falls back to "helv" — which is ~8-10% wider than Times/Calibri and
+    silently over-rejects rewrites in serif-bodied CVs. Callers that know
+    the slot's font (via `_pick_builtin(ref)`) should pass it for an
+    accurate measurement; that recovers rewrites in Times-Roman /
+    Liberation Serif / Garamond CVs.
     """
     if not text or not text.strip():
         return True
     if rect_width <= 0 or rect_height <= 0:
         return False
     try:
-        font = fitz.Font("helv")
+        font = fitz.Font(font_name or "helv")
     except Exception:
-        return True  # cannot measure — assume fits, let insertion decide
+        try:
+            font = fitz.Font("helv")
+        except Exception:
+            return True  # cannot measure — assume fits, let insertion decide
     words = text.split()
     if not words:
         return True
@@ -893,12 +912,50 @@ def _estimate_text_fits(
         else:
             n_lines += 1
             cur_w = ww
-    # helv is ~8-10% wider than typical CV body fonts (Calibri/Liberation),
-    # so this line count is a slight over-estimate — that's the safe
-    # direction (skip rather than redact-and-fail).
     tightest_gap = max(1.0, line_gap * 0.88)
     needed_h = n_lines * fontsize * tightest_gap
     return needed_h <= rect_height + 1.0
+
+
+_CLAUSE_SPLIT_RX = re.compile(r"(?<=[,;.])\s+")
+
+
+def _trim_to_fit(
+    text:        str,
+    rect_width:  float,
+    rect_height: float,
+    fontsize:    float,
+    line_gap:    float,
+    font_name:   Optional[str] = None,
+    min_ratio:   float = 0.55,
+) -> Optional[str]:
+    """
+    If `text` overflows the slot, drop trailing clauses (comma / semicolon /
+    period separated) until it fits. Returns the trimmed text, or None when
+    no acceptable trim ≥ min_ratio of the original length fits.
+
+    Trimming preserves the head — the most important information in a CV
+    bullet (action verb + headline metric) sits at the front; trailing
+    elaborations are the safest to drop. Strictly better than the
+    keep-original fallback, which discards a JD-tailored rewrite entirely.
+    """
+    if not text or not text.strip():
+        return None
+    if _estimate_text_fits(text, rect_width, rect_height, fontsize, line_gap, font_name=font_name):
+        return text
+    parts = _CLAUSE_SPLIT_RX.split(text.strip())
+    if len(parts) < 2:
+        return None
+    min_len = max(1, int(len(text) * min_ratio))
+    for k in range(len(parts) - 1, 0, -1):
+        candidate = " ".join(parts[:k]).rstrip(",;. ") + "."
+        if len(candidate) < min_len:
+            return None
+        if _estimate_text_fits(
+            candidate, rect_width, rect_height, fontsize, line_gap, font_name=font_name,
+        ):
+            return candidate
+    return None
 
 
 def _bullet_body_rect(
@@ -2383,6 +2440,7 @@ def _render_block_textwriter(
     align:     int = 0,
     ascender:  Optional[float] = None,
     right:     Optional[float] = None,
+    y_slack:   float = 0.0,
 ) -> bool:
     """
     Word-wrap `text` to the slot width (`rect.x1` - `left`) and draw it
@@ -2412,9 +2470,19 @@ def _render_block_textwriter(
     desc_abs = abs(float(font.descender))
     n        = len(lines)
     baseline0    = first_top + asc * fontsize
-    block_bottom = baseline0 + (n - 1) * pitch + desc_abs * fontsize
-    # Hard reject: an over-long rewrite must not spill past its slot.
-    if block_bottom > rect.y1 + 1.0:
+    # Run 26 (May 2026): compare against LAST BASELINE rather than block
+    # bottom. The last line's descender (~2pt at 10pt) spills into the
+    # next line's bbox-top ascender area, which is glyph-free whitespace
+    # by line-metric definition (PyMuPDF's bbox extends above the actual
+    # ascender by the descender amount). On dense layouts (Times-Roman
+    # 10pt, ~12.67pt pitch, line bboxes overlap glyph rows by ~2pt) this
+    # is the difference between accepting a same-line-count rewrite vs.
+    # rejecting it for a phantom 2pt overflow that never touches a
+    # neighbour glyph. The REDACTION rect remains tight via the caller,
+    # so we still never wipe next-bullet content.
+    last_baseline = baseline0 + (n - 1) * pitch
+    block_bottom  = last_baseline + desc_abs * fontsize  # kept for legacy callers
+    if last_baseline > rect.y1 + max(0.0, float(y_slack)):
         return False
     # Last non-empty line — a justified paragraph leaves it ragged (left);
     # only the lines above are stretched to the full width.
@@ -2473,6 +2541,7 @@ def _insert_fitted(
     orig_first_top: Optional[float] = None,
     orig_left: Optional[float] = None,
     orig_right: Optional[float] = None,
+    y_slack:   float = 0.0,
 ) -> float:
     """
     Insert `text` into `rect` in ref_span's exact style — original
@@ -2539,7 +2608,7 @@ def _insert_fitted(
                 ok = _render_block_textwriter(
                     page, rect, text, emb_font, base_size, color,
                     pitch, orig_first_top, orig_left, align,
-                    right=orig_right,
+                    right=orig_right, y_slack=y_slack,
                 )
                 # A non-None alias guarantees the embedded font installed
                 # and covers every glyph. Fit or not, do NOT fall through
@@ -2560,7 +2629,7 @@ def _insert_fitted(
         ok = _render_block_textwriter(
             page, rect, text, clone_font, base_size, color,
             pitch, orig_first_top, orig_left, align,
-            ascender=clone_ascender, right=orig_right,
+            ascender=clone_ascender, right=orig_right, y_slack=y_slack,
         )
         return base_size if ok else 0.0
 
@@ -2623,7 +2692,7 @@ def _insert_fitted(
     ok = _render_block_textwriter(
         page, rect, safe_text, b14_font, base_size, color,
         pitch, orig_first_top, orig_left, align,
-        right=orig_right,
+        right=orig_right, y_slack=y_slack,
     )
     return base_size if ok else 0.0
 
@@ -2920,11 +2989,28 @@ def apply_edits(
                         text_y0 = body_rect.y0
                         text_y1 = body_rect.y1
 
-                        own_y_min = body_rect.y0 - 0.5
-                        own_y_max = body_rect.y1 + 0.5
+                        # Run 26 (May 2026): identify "own" lines by exact
+                        # bbox match instead of by y-range. On densely-packed
+                        # CVs (Mohammed, Times-Roman 10pt, ~13pt line gap),
+                        # consecutive bullets' line bboxes overlap by ~1pt
+                        # because each bbox is the full line box, not the
+                        # glyph extent. The previous own_y range filter pulled
+                        # the *next* bullet's first line into "own", which
+                        # caused _next_y0_below to return the next bullet's
+                        # SECOND line — leaving room for the gap-below
+                        # extension to swallow the next bullet's first line
+                        # during redaction. The bbox-key filter is exact.
+                        own_keys = {
+                            (round(ln["bbox"][0], 1), round(ln["bbox"][1], 1),
+                             round(ln["bbox"][2], 1), round(ln["bbox"][3], 1))
+                            for ln in b_lines
+                        }
                         other_lines = [
                             ln for ln in page_lines
-                            if not (own_y_min <= ln["bbox"][1] <= own_y_max)
+                            if (
+                                round(ln["bbox"][0], 1), round(ln["bbox"][1], 1),
+                                round(ln["bbox"][2], 1), round(ln["bbox"][3], 1),
+                            ) not in own_keys
                         ]
                         body_rect.x1 = max(
                             body_rect.x1,
@@ -2932,13 +3018,24 @@ def apply_edits(
                         )
                         # Nearest line ABOVE (its bottom edge) and BELOW
                         # (its top edge), excluding this bullet's own lines.
+                        # Run 26 (May 2026): use other-line CENTROIDS vs.
+                        # this bullet's text rect edges. On dense layouts,
+                        # the NEXT bullet's first line bbox often overlaps
+                        # this bullet's text_y1 by ~1pt (line box > glyph
+                        # extent), so a top-edge filter (y_top > text_y1)
+                        # drops it. Its CENTROID is unambiguously below.
                         prev_y1 = max(
                             (ln["bbox"][3] for ln in other_lines
-                             if ln["bbox"][3] <= text_y0 + 0.5),
+                             if (ln["bbox"][1] + ln["bbox"][3]) / 2.0 < text_y0),
                             default=text_y0 - 6.0,
                         )
-                        next_y0 = _next_y0_below(
-                            body_rect, other_lines, page.rect.height
+                        _next_below = [
+                            ln["bbox"][1] for ln in other_lines
+                            if (ln["bbox"][1] + ln["bbox"][3]) / 2.0 > text_y1
+                        ]
+                        next_y0 = (
+                            min(_next_below) if _next_below
+                            else max(text_y1, page.rect.height - 36.0)
                         )
                         # Extend to this bullet's slot: half the gap on each
                         # side (whitespace, invisible). Clamp ≤6pt so we
@@ -2962,6 +3059,24 @@ def apply_edits(
                         ref = _pick_body_span(b_lines) or bullet_ref
                         fit_size = float(ref.get("size", 10) or 10) if ref else 10.0
 
+                        # Run 26 (May 2026): for the FIT measurement only,
+                        # allow the inserted block's descender to overflow
+                        # into the pure-whitespace strip above the next
+                        # line's glyph row. Line bboxes overlap glyph rows
+                        # by ~asc*fontsize (≈2pt for 10pt body); that strip
+                        # is empty ascender area. Marginal rewrites need
+                        # this slack to fit in dense layouts. The REDACTION
+                        # rect stays tight (body_rect.y1 unchanged), so we
+                        # never wipe the next bullet's glyphs.
+                        if next_y0 < page.rect.height - 36.0:
+                            _asc_pt   = max(0.0, fit_size * 0.20)
+                            y_slack_pt = max(
+                                0.0,
+                                (next_y0 - body_rect.y1) + _asc_pt - 2.0,
+                            )
+                        else:
+                            y_slack_pt = max(0.0, next_y0 - body_rect.y1)
+
                         if os.getenv("APPLYSMART_DEBUG_BULLETS") == "1":
                             print(
                                 f"   bullet i={e['i']}: rect "
@@ -2969,27 +3084,63 @@ def apply_edits(
                                 f"x1={body_rect.x1:.1f} y1={body_rect.y1:.1f} "
                                 f"w={body_rect.width:.1f} h={body_rect.height:.1f} | "
                                 f"n_lines={len(b_lines)} measured_gap={measured:.3f} | "
-                                f"insert_len={len(insert_text)} ref_size={fit_size}"
+                                f"insert_len={len(insert_text)} ref_size={fit_size} "
+                                f"y_slack={y_slack_pt:.2f}"
                             )
 
                         # PRE-CHECK: only redact if the rewrite will fit.
                         # Skipping a non-fitting rewrite leaves the original
                         # bullet PERFECTLY intact (no redaction, no blank
                         # gap). This is what prevents the empty-bullet bug.
+                        ref_font_b14 = _pick_builtin(ref) if ref else None
                         if not _estimate_text_fits(
                             insert_text, body_rect.width, body_rect.height,
                             fit_size, measured,
+                            font_name=ref_font_b14,
                         ):
-                            report.setdefault("skipped", []).append(
-                                f"bullets/{header}: bullet i={e['i']} rewrite "
-                                f"too long for its slot — kept original (untouched)"
-                            )
-                            print(
-                                f"   pdf_editor: bullet i={e['i']} in "
-                                f"{header[:40]!r} rewrite too long for slot — "
-                                f"kept original (untouched, no redaction)"
-                            )
-                            continue
+                            # Run 26 (May 2026): graceful degradation. Try
+                            # dropping trailing clauses to fit the slot
+                            # instead of silently discarding the rewrite.
+                            # A trimmed JD-tailored rewrite still beats the
+                            # untouched original.
+                            trimmed_body = _trim_to_fit(
+                                new_btext, body_rect.width, body_rect.height,
+                                fit_size, measured, font_name=ref_font_b14,
+                            ) if not has_inline_glyph else None
+                            if trimmed_body is None and has_inline_glyph:
+                                trimmed_full = _trim_to_fit(
+                                    insert_text, body_rect.width, body_rect.height,
+                                    fit_size, measured, font_name=ref_font_b14,
+                                )
+                                trimmed_body = trimmed_full
+                            if trimmed_body and trimmed_body != insert_text and trimmed_body != new_btext:
+                                report.setdefault("trimmed", []).append({
+                                    "role": header,
+                                    "i": e["i"],
+                                    "from_chars": len(new_btext),
+                                    "to_chars": (
+                                        len(trimmed_body) - len(f"{bullet_char}   ")
+                                        if has_inline_glyph else len(trimmed_body)
+                                    ),
+                                })
+                                print(
+                                    f"   pdf_editor: bullet i={e['i']} in "
+                                    f"{header[:40]!r} trimmed to fit slot "
+                                    f"({len(new_btext)}c → "
+                                    f"{len(trimmed_body) - len(f'{bullet_char}   ') if has_inline_glyph else len(trimmed_body)}c)"
+                                )
+                                insert_text = trimmed_body
+                            else:
+                                report.setdefault("skipped", []).append(
+                                    f"bullets/{header}: bullet i={e['i']} rewrite "
+                                    f"too long for its slot — kept original (untouched)"
+                                )
+                                print(
+                                    f"   pdf_editor: bullet i={e['i']} in "
+                                    f"{header[:40]!r} rewrite too long for slot — "
+                                    f"kept original (untouched, no redaction)"
+                                )
+                                continue
 
                         # Capture any table/divider border lines that pass
                         # through the redact rect, so we can re-draw them
@@ -3002,6 +3153,7 @@ def apply_edits(
                             line_gap=measured,
                             orig_first_top=body_true.y0, orig_left=body_true.x0,
                             doc=doc, font_cache=font_cache,
+                            y_slack=y_slack_pt,
                         )
                         _redraw_borders(page, saved_borders)
                         if not sz_b or sz_b <= 0:
@@ -3014,6 +3166,7 @@ def apply_edits(
                                 line_gap=measured,
                                 orig_first_top=body_true.y0, orig_left=body_true.x0,
                                 doc=doc, font_cache=font_cache,
+                                y_slack=y_slack_pt,
                             )
                             _redraw_borders(page, saved_borders)
                             if not restored or restored <= 0:
