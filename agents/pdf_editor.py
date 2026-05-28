@@ -1182,6 +1182,58 @@ def _is_bare_date_line(text: str) -> bool:
     ))
 
 
+# Role-title nouns used to recognise a JOB-TITLE line as a role-header
+# anchor even when the company name above it is not bold (Cormac's Word
+# CV). Kept deliberately specific to titles, not generic business words.
+_JOB_TITLE_WORDS = frozenset({
+    "analyst", "manager", "engineer", "associate", "director",
+    "administrator", "officer", "consultant", "specialist", "coordinator",
+    "executive", "developer", "designer", "architect", "advisor", "adviser",
+    "scientist", "supervisor", "controller", "accountant", "auditor",
+    "intern", "lead", "head", "president", "partner", "strategist",
+    "representative", "technician", "technologist", "planner", "examiner",
+})
+# A job-title line never STARTS with one of these — those open a bullet
+# sentence, not a title.
+_TITLE_NONSTARTERS = frozenset({
+    "responsible", "managed", "led", "developed", "built", "created",
+    "designed", "delivered", "drove", "provided", "ensured", "ensuring",
+    "partnered", "partner", "conducted", "coordinated", "maintained",
+    "implemented", "spearheaded", "optimised", "optimized", "authored",
+    "identified", "launched", "streamlined", "collaborated", "established",
+    "supported", "met", "achieved", "owning", "owned", "worked",
+})
+
+
+def _looks_like_job_title(text: str) -> bool:
+    """
+    True when a line reads like a role's JOB-TITLE header — e.g.
+    "Business Support Analyst (Senior Associate), GFSO Access Governance,
+    Dublin" or "General Manager, Warsaw, Poland". Used to anchor a role
+    when the company line above it is not bold (so the normal "bold line"
+    header rule misses it) — Cormac's Word CV.
+
+    Signature (all required, kept tight to avoid matching bullet
+    sentences): short (≤90 chars); contains a role-title noun; has the
+    "Title, place / Title (level)" comma/paren structure; and does NOT
+    open with a past-tense action verb (which marks a bullet sentence).
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 90:
+        return False
+    if t[0] in _BULLET_CHARS:
+        return False
+    words = re.findall(r"[A-Za-z]+", t.lower())
+    if not words:
+        return False
+    if words[0] in _TITLE_NONSTARTERS:
+        return False
+    if not any(w in _JOB_TITLE_WORDS for w in words):
+        return False
+    # Title structure: "Title, <place/dept>" or "Title (<level>)".
+    return ("," in t) or ("(" in t)
+
+
 def _collect_page_lines(page: fitz.Page, pi: int) -> List[Dict[str, Any]]:
     """
     Return a y-sorted list of lines on a page, each with merged spans. Lines
@@ -1457,8 +1509,17 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Ogilvy at x≈24, Genesis BCW at x≈107 on page 2). The signal-bypass
         # makes the guard layout-tolerant while still rejecting indented
         # bullet-body bold lines that lack a header signal.
+        # Run 26 follow-up (May 2026): a JOB-TITLE line is a header anchor
+        # even when the company line above it is not bold (Cormac's Word
+        # CV: "J.P. Morgan" plain, "Business Support Analyst …, Dublin"
+        # bold). It also overrides the continuation guard — otherwise the
+        # title gets absorbed as a continuation of the plain company line
+        # and the whole CV collapses into one empty-header role.
+        line_is_job_title = _looks_like_job_title(text)
         line_has_header_signal = bool(
-            _DATE_HINT_RX.search(text) or _COMPANY_DASH_RX.search(text)
+            _DATE_HINT_RX.search(text)
+            or _COMPANY_DASH_RX.search(text)
+            or line_is_job_title
         )
         indent_blocks_header = (
             header_baseline_x0 is not None
@@ -1468,7 +1529,7 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
         if (
             bold
             and not explicit_bullet
-            and not is_continuation
+            and (not is_continuation or line_is_job_title)
             and not indent_blocks_header
         ):
             # Adaptive parsing fix (May 2026 — Shrestha CV evidence):
@@ -1744,6 +1805,13 @@ def _role_header_has_signal(role: Dict[str, Any]) -> bool:
     if _DATE_HINT_RX.search(hdr):
         return True
     if _COMPANY_DASH_RX.search(hdr):
+        return True
+    # Run 26 follow-up (May 2026): a JOB-TITLE header is a real-role
+    # signal too (Cormac's Word CV: "Business Support Analyst …, Dublin"
+    # — no date after sidebar strip, no em-dash, no italic sub-line).
+    # Without this _merge_fragmented_roles collapses the title role back
+    # into the preceding empty company-line role.
+    if _looks_like_job_title(hdr):
         return True
     # Italic sub_lines under a header are almost always a job-title
     # subtitle on real role headers.
