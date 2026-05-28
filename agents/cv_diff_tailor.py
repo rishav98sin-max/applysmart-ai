@@ -1444,6 +1444,121 @@ def compute_jd_alignment_delta(
     }
 
 
+def _phrase_key_terms(phrase: str) -> List[str]:
+    """Significant content terms from a JD priority phrase (drops
+    stop-words + generic glue). 'Knowledge of risk assessment, control
+    testing and the three lines of defence' → ['risk','assessment',
+    'control','testing','lines','defence']."""
+    if not phrase:
+        return []
+    toks = re.findall(r"[A-Za-z][A-Za-z0-9+/#.\-]{2,}", phrase.lower())
+    out, seen = [], set()
+    for t in toks:
+        t = t.strip(".-/")
+        if len(t) < 3 or t in _STOPWORDS_FOR_TERMS:
+            continue
+        # generic JD glue that carries no matchable CV signal
+        if t in ("experience", "knowledge", "familiarity", "strong",
+                 "ability", "similar", "role", "years", "proficiency",
+                 "understanding", "skills", "across", "within"):
+            continue
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def compute_must_have_surfacing(
+    strategy:     Dict[str, Any],
+    outline:      Dict[str, Any],
+    diff:         Dict[str, Any],
+    cv_full_text: str = "",
+) -> Dict[str, Any]:
+    """
+    The real tailoring-quality measure: of the JD MUST-HAVES the candidate
+    can GENUINELY PROVE from their CV, how many are surfaced in the
+    tailored content (summary or a rewritten bullet)?
+
+    Why this and not keyword-overlap delta: leading a bullet with its
+    metric (good tailoring) reorders existing terms without adding new
+    JD vocab, so the delta metric scores it ~0 and false-flags it as
+    "low lift". This metric instead asks the right question — did we put
+    the CV-proven JD priorities where a recruiter sees them? It credits
+    reorder-for-prominence and only counts must-haves the CV actually
+    backs up (so it can never reward fabrication).
+
+    Returns {proven, surfaced, rate, detail} or {skipped} when there is
+    no strategy / no must-haves.
+    """
+    pri = (strategy or {}).get("jd_priorities") or {}
+    must = [m for m in (pri.get("must_have") or []) if str(m).strip()]
+    if not must:
+        return {"skipped": "no_must_haves"}
+
+    # CV corpus the candidate can prove from (original content + skills +
+    # raw text). Lower-cased.
+    cv_parts = [outline.get("summary") or ""]
+    for r in outline.get("roles", []) or []:
+        cv_parts.append(r.get("header") or "")
+        for b in r.get("bullets", []) or []:
+            cv_parts.append(b.get("text", "") if isinstance(b, dict) else str(b))
+    for sk in outline.get("skills", []) or []:
+        cv_parts.append(sk)
+    cv_parts.append(cv_full_text or "")
+    cv_corpus = " ".join(cv_parts).lower()
+
+    # Safe-relabels count as CV-proven (strategist verified the CV shows
+    # the thing under a different word).
+    relabel_terms = set()
+    for rl in _safe_relabels(strategy):
+        relabel_terms |= {w for w in re.split(r"[^a-z0-9]+", str(rl).lower()) if len(w) >= 3}
+
+    # Tailored high-visibility surface: PROMINENT positions only — the
+    # tailored summary (short, all prominent) + the LED-WITH opening
+    # (first 8 words) of each rewritten bullet. A term buried deep in a
+    # long bullet is not "surfaced" for a 6-second recruiter scan; the
+    # opening is. This makes the metric reward the tailoring move
+    # (leading with the priority) rather than mere presence anywhere.
+    surf_parts = [(diff.get("summary") or "")]
+    for _role, entries in (diff.get("bullets") or {}).items():
+        if isinstance(entries, list):
+            for e in entries:
+                if isinstance(e, dict) and isinstance(e.get("text"), str) and e["text"].strip():
+                    surf_parts.append(" ".join(e["text"].split()[:8]))
+    surface = " ".join(surf_parts).lower()
+
+    detail = []
+    n_proven = n_surfaced = 0
+    for mh in must:
+        terms = _phrase_key_terms(mh)
+        # CV-proven terms within this must-have (present in CV or a relabel).
+        proven_terms = [
+            t for t in terms
+            if t in cv_corpus or t in relabel_terms
+        ]
+        if not proven_terms:
+            # JD wants something the CV cannot back up — not our job to
+            # fabricate it; exclude from the denominator.
+            detail.append({"must_have": mh[:60], "cv_proven": False, "surfaced": None})
+            continue
+        n_proven += 1
+        surfaced = any(t in surface for t in proven_terms)
+        n_surfaced += 1 if surfaced else 0
+        detail.append({
+            "must_have": mh[:60], "cv_proven": True,
+            "proven_terms": proven_terms[:6], "surfaced": surfaced,
+        })
+
+    rate = round(n_surfaced / n_proven, 2) if n_proven else None
+    return {
+        "must_haves_total":   len(must),
+        "cv_provable":        n_proven,
+        "surfaced":           n_surfaced,
+        "surfacing_rate":     rate,
+        "detail":             detail,
+    }
+
+
 def _build_summary_constraint_block(
     orig_summary: str,
     outline:      Dict[str, Any],
@@ -4809,27 +4924,40 @@ def tailor_cv_diff(
     # — does NOT revert anything; a low-lift tailoring still ships, but
     # the caller / UI can flag it for the user to review.
     try:
+        # Keyword-overlap delta — kept for observability only (it
+        # under-credits reorder-tailoring, so it is NOT the quality gate).
         _align = compute_jd_alignment_delta(job_description, outline, diff)
         diff["_debug"]["jd_alignment"] = _align
-        if "delta" in _align:
-            _lift = _align["delta"]
-            _msg = (
-                f"   📊 cv_diff_tailor: JD-alignment {_align['orig_hits']}→"
-                f"{_align['tailored_hits']} / {_align['total_jd_terms']} terms "
-                f"(delta {_lift:+d}, {_align['delta_pct']:+.1f}%)"
+
+        # PRIMARY quality measure: of the JD must-haves the CV can prove,
+        # how many are surfaced in the tailored content? Credits leading
+        # with a CV-proven priority (the real tailoring move) which the
+        # keyword delta misses.
+        _surf = compute_must_have_surfacing(strategy or {}, outline, diff, cv_text)
+        diff["_debug"]["must_have_surfacing"] = _surf
+        if "surfacing_rate" in _surf and _surf.get("surfacing_rate") is not None:
+            print(
+                f"   📊 cv_diff_tailor: must-have surfacing "
+                f"{_surf['surfaced']}/{_surf['cv_provable']} CV-provable "
+                f"(rate {_surf['surfacing_rate']:.0%}) | "
+                f"kw-delta {_align.get('delta_pct', 0):+.1f}%"
             )
-            print(_msg)
-            # Low-lift signal: tailoring added < 2 new JD terms. Not a
-            # failure (we still ship), but worth flagging.
-            if _lift < 2:
+            # Low-lift = we surfaced under half the CV-provable must-haves.
+            if _surf["surfacing_rate"] < 0.5:
                 diff["_debug"]["low_jd_lift"] = True
                 print(
-                    "   ⚠️  cv_diff_tailor: low JD-alignment lift — the "
-                    "tailoring surfaced few new JD terms. Output ships but "
-                    "may read as a cosmetic re-aim; consider a sharper "
-                    "strategy on retry."
+                    "   ⚠️  cv_diff_tailor: low must-have surfacing — fewer "
+                    "than half the CV-provable JD priorities reached the "
+                    "tailored summary/bullets. Output ships; flagged for "
+                    "review."
                 )
+        else:
+            # No strategy / no must-haves → fall back to the delta signal.
+            print(
+                f"   📊 cv_diff_tailor: kw-delta {_align.get('delta_pct', 0):+.1f}% "
+                f"(no must-have list to score surfacing)"
+            )
     except Exception as _exc:
-        print(f"   ⚠️  cv_diff_tailor: JD-alignment delta failed ({_exc!r})")
+        print(f"   ⚠️  cv_diff_tailor: quality metrics failed ({_exc!r})")
 
     return diff

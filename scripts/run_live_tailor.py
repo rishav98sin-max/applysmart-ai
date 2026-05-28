@@ -52,12 +52,87 @@ Required Skills:
 - Exposure to cloud data platforms (Azure, Microsoft Fabric) is an advantage
 """
 
+JD_CORMAC = """\
+Internal Auditor — Financial Services (Dublin)
+A regulated financial services firm seeks an Internal Auditor to evaluate
+the effectiveness of internal controls, risk management, and governance
+processes across the business.
+
+Key Responsibilities:
+- Plan and perform risk-based audits across business and outsourcing arrangements
+- Test the design and operating effectiveness of internal controls
+- Assess compliance with regulatory requirements (CBI, EBA, DORA) and corporate policy
+- Document audit procedures and report findings and recommendations to management
+- Track remediation and follow up on control gaps
+- Apply data analytics / audit-automation tooling to improve audit coverage
+
+Required Skills:
+- 3+ years in internal audit, risk or controls in financial services
+- Knowledge of risk assessment, control testing and the three lines of defence
+- Familiarity with regulatory frameworks (CBI investment-firm regs, EBA guidelines, DORA)
+- Data analytics / control-automation experience (e.g. Alteryx) an advantage
+- Strong report writing and stakeholder communication
+"""
+
+JD_RISHAV = """\
+Product Manager — B2B SaaS (Remote)
+We're hiring a Product Manager to own the strategy, roadmap and feature
+definition for a B2B SaaS product, working across engineering, design and
+go-to-market teams.
+
+Key Responsibilities:
+- Create and maintain a prioritised product roadmap balancing short- and long-term goals
+- Define success metrics for every feature before build and track outcomes after launch
+- Run user research independently and translate insights into product decisions
+- Communicate vision, roadmap and progress to cross-functional stakeholders and leadership
+- Bridge engineering, design, marketing and support to ship end-to-end
+
+Required Skills:
+- 3+ years of Product Management in a B2B SaaS environment, agile framework
+- Data-driven decision-making and success-metric definition
+- User research and discovery experience
+- Strong stakeholder management and cross-functional leadership
+- Familiarity with agile tools (JIRA, Asana) and software development processes
+"""
+
+JD_SHRESTHA = """\
+Senior Account Executive — Brand & Communications (London)
+A marketing communications agency seeks a Senior Account Executive to lead
+advertising and brand campaigns end to end, owning client relationships and
+coordinating creative, media and analytics teams.
+
+Key Responsibilities:
+- Lead advertising/brand campaigns from strategy through execution and evaluation
+- Act as primary client contact, liaising throughout the campaign lifecycle
+- Coordinate creative, media planning, measurement and analytics stakeholders
+- Monitor project timelines and budgets, ensuring on-time, on-budget delivery
+- Track campaign performance and report results to clients and leadership
+
+Required Skills:
+- 3+ years in account management / brand or marketing communications
+- Strong project management, organisation and time management across multiple campaigns
+- Client and stakeholder communication and relationship management
+- Campaign analytics / performance measurement
+- Experience with brand, content and digital channels
+"""
+
 FIXTURES = {
     "mohammed": {
         "cv":    r"D:\Projects\job-application-agent\CVs\Run26\Resume.pdf",
-        "jd":    JD_MOHAMMED,
-        "title": "Data Analyst",
+        "jd":    JD_MOHAMMED, "title": "Data Analyst",
         "company": "Hays (Energy & Sustainability)",
+    },
+    "cormac": {
+        "cv":    r"D:\Projects\job-application-agent\CVs\Run25\Cormac Holleran CV 2026.pdf",
+        "jd":    JD_CORMAC, "title": "Internal Auditor", "company": "Financial Services",
+    },
+    "rishav": {
+        "cv":    r"D:\Projects\job-application-agent\CVs\Orignal Base CV\RishavSingh_ProductManagerCV.pdf",
+        "jd":    JD_RISHAV, "title": "Product Manager", "company": "B2B SaaS",
+    },
+    "shrestha": {
+        "cv":    r"D:\Projects\job-application-agent\CVs\Orignal Base CV\Shrestha Ghosh_CV.pdf",
+        "jd":    JD_SHRESTHA, "title": "Senior Account Executive", "company": "Brand & Communications",
     },
 }
 
@@ -134,7 +209,8 @@ def main() -> int:
 
     dbg = diff.get("_debug") or {}
     print("\n--- diagnostics ---")
-    print(f"  jd_alignment: {dbg.get('jd_alignment')}")
+    print(f"  must_have_surfacing: {dbg.get('must_have_surfacing')}")
+    print(f"  jd_alignment(kw):    {dbg.get('jd_alignment')}")
     print(f"  low_jd_lift:  {dbg.get('low_jd_lift', False)}")
     print(f"  summary_reverts: {dbg.get('summary_reverts')}")
     print(f"  bullet_reverts_count: {dbg.get('bullet_reverts_count')}")
