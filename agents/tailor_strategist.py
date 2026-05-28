@@ -278,6 +278,16 @@ HARD RULES — non-negotiable
 - For synthesised_bullets: every claim in the proposed text must be
   grounded in OTHER existing bullets of the SAME role. Provide
   grounding_evidence pointing to the source bullet indices.
+- SLOT BUDGET — HARD (Run 26 fix, May 2026): every bullet listed in
+  the outline shows "[orig=Nc, max=Mc]" where M is the CEILING the
+  rewrite may not exceed. The editor places each rewrite into the
+  ORIGINAL bullet's slot with NO page reflow — a rewrite longer than
+  `max` will be auto-trimmed (losing the trailing clause) or rejected.
+  When you set lead_with / jd_keyword, plan a rewrite that fits in
+  `max` characters. If the JD signal you want to surface needs more
+  room than `max` permits, pick a SHORTER lead_with or DO NOT list
+  the bullet. A bullet you cannot tailor inside its budget is
+  better left verbatim than auto-trimmed.
 ═══════════════════════════════════════════════════════════════════
 
 OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
@@ -474,6 +484,18 @@ def _format_outline_for_strategist(outline: Dict[str, Any]) -> str:
         wc = len(summary.split())
         parts.append(f"SUMMARY ({wc} words):\n{summary}")
 
+    # Run 26 (May 2026): per-bullet character budget. The editor places
+    # each rewrite into the ORIGINAL bullet's slot (no page reflow), so
+    # a rewrite must occupy the same line count as the original. The
+    # safe ceiling is roughly original_length × 1.05 — beyond that the
+    # auto-trim kicks in or the rewrite is reverted. Surfacing the
+    # ceiling per bullet lets the strategist plan rewrites that fit.
+    def _budget_for(b: Any) -> int:
+        if isinstance(b, dict):
+            t = b.get("text") or ""
+            return max(1, int(round(len(t.strip()) * 1.05)))
+        return max(1, int(round(len(str(b).strip()) * 1.05)))
+
     roles = outline.get("roles") or []
     if roles:
         parts.append("\nROLES:")
@@ -483,7 +505,12 @@ def _format_outline_for_strategist(outline: Dict[str, Any]) -> str:
             bullets = role.get("bullets") or []
             for idx, b in enumerate(bullets):
                 txt = (b.get("text") if isinstance(b, dict) else str(b)) or ""
-                parts.append(f"      [{idx}] {txt.strip()}")
+                orig_c = len(txt.strip())
+                budget = _budget_for(b)
+                parts.append(
+                    f"      [{idx}] [orig={orig_c}c, max={budget}c] "
+                    f"{txt.strip()}"
+                )
 
     projects = outline.get("projects") or []
     if projects:
@@ -494,7 +521,12 @@ def _format_outline_for_strategist(outline: Dict[str, Any]) -> str:
             bullets = proj.get("bullets") or []
             for idx, b in enumerate(bullets):
                 txt = (b.get("text") if isinstance(b, dict) else str(b)) or ""
-                parts.append(f"      [{idx}] {txt.strip()}")
+                orig_c = len(txt.strip())
+                budget = _budget_for(b)
+                parts.append(
+                    f"      [{idx}] [orig={orig_c}c, max={budget}c] "
+                    f"{txt.strip()}"
+                )
 
     skills = outline.get("skills") or []
     if skills:

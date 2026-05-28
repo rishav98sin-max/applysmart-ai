@@ -176,7 +176,14 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
             # target the LLM should hit (±10%).
             orig_len = len(btext.strip())
             orig_words = len(btext.split())
-            parts.append(f"  [{i}] [keep ≈{orig_words} words] {btext}")
+            # Run 26 (May 2026): publish the slot CHAR ceiling so the
+            # LLM plans rewrites within the editor's per-bullet
+            # capacity. Same value the strategist receives — both
+            # agents share one budget so plans + executions agree.
+            max_chars = max(1, int(round(orig_len * 1.05)))
+            parts.append(
+                f"  [{i}] [keep ≈{orig_words} words, max={max_chars}c] {btext}"
+            )
         parts.append("")
     skills = outline.get("skills") or []
     if skills:
@@ -305,9 +312,33 @@ CV CONTENT (structured):
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+{summary_constraints_block}
+
 RULES (strict):
 
 1. summary:
+   YOUR ACTUAL TASK — REORDER AND EMPHASISE, NOT REWRITE:
+   You are NOT generating a summary from scratch. You start from the
+   ORIGINAL summary (shown in the CV CONTENT block above) and produce
+   a re-aimed version of it. The mechanical model:
+
+     1. List the original summary's CLAUSES (split at commas, periods,
+        semicolons). Each clause carries one fact or framing.
+     2. REORDER the clauses to lead with the ones most relevant to
+        THIS JD. The first clause is the highest-priority match.
+     3. You MAY DROP up to one generic-filler clause (e.g.
+        "translating complex data into clear insights") if it adds no
+        JD-specific signal.
+     4. You MAY ADD up to one new clause built from a SPECIFIC CV
+        BULLET fact that strongly matches a JD requirement (cite the
+        concrete artefact / metric / tool — not a generic phrase).
+     5. NEVER substitute a concrete term. If the original named
+        "MS Fabric", your rewrite still names "MS Fabric" — you do
+        not swap it for "MS Excel" because the JD mentioned Excel.
+     6. The SUMMARY HARD CONSTRAINTS block above lists exactly which
+        terms must survive, which title clause is allowed, and which
+        sectors are CV-resident. Re-read it before you write.
+
    WHO YOU ARE WRITING FOR:
    A recruiter on a 6-second scan. They have a stack of CVs. Your
    summary either earns them another 30 seconds with this candidate or
@@ -1037,6 +1068,348 @@ def _summary_dropped_project(
             continue
         if name.lower() in o_l and name.lower() not in n_l:
             return name
+    return None
+
+
+# Generic stop-words & glue words to exclude from concrete-term extraction.
+_STOPWORDS_FOR_TERMS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "at", "to", "for",
+    "with", "via", "by", "from", "across", "into", "through", "as",
+    "is", "are", "was", "were", "be", "been", "being",
+    "i", "you", "he", "she", "we", "they", "it",
+    "my", "your", "our", "their", "its", "his", "her",
+    "this", "that", "these", "those",
+    "data", "analyst", "manager", "engineer", "developer", "designer",
+    "consultant", "specialist", "expert", "lead", "senior", "junior",
+    "advanced", "principal", "associate",
+    # Common sentence-initial CV verbs / adjectives — capitalisation is
+    # syntactic, not signal-bearing. Excluding these prevents the
+    # concrete-term guard from flagging trivial reorders.
+    "skilled", "built", "drove", "delivered", "led", "developed",
+    "created", "designed", "architected", "managed", "implemented",
+    "worked", "specialized", "specialising", "specialized", "specialised",
+    "responsible", "translated", "experienced", "talented", "passionate",
+    "driven", "results", "proven", "demonstrated", "accomplished",
+}
+
+
+# Pattern for concrete terms in a CV summary: multi-character proper nouns,
+# acronyms, and tech / tool names. Captures: "Power BI", "MS Fabric",
+# "Azure", "SQL", "GenAI", "Python", "AWS", "ETL", "Looker", "Tableau",
+# product names, framework names, etc. Single-letter tokens and pure
+# stop-words are excluded by the post-filter.
+_CONCRETE_TERM_RX = re.compile(
+    r"\b(?:[A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*)?|[A-Z]{2,}(?:\.[A-Z]+)*)\b"
+)
+
+
+def _extract_concrete_summary_terms(summary: str) -> List[str]:
+    """
+    Pull concrete tech / tool / proper-noun terms from a summary. These are
+    the recruiter-scannable signals (Power BI, MS Fabric, Azure, GenAI,
+    SQL, Python, AWS, …) that should survive any JD-aimed rewrite.
+
+    Returns a de-duplicated, lower-cased list.
+    """
+    if not summary:
+        return []
+    out: List[str] = []
+    seen: set = set()
+    for m in _CONCRETE_TERM_RX.finditer(summary):
+        tok = m.group(0).strip()
+        if len(tok) < 2:
+            continue
+        norm = tok.lower()
+        # Pure stop-word phrase → skip. Allows "MS Fabric" through but
+        # drops "Data Analyst" (job-title noise, not a tool / tech term).
+        words = [w for w in norm.split() if w]
+        if all(w in _STOPWORDS_FOR_TERMS for w in words):
+            continue
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+    return out
+
+
+# Seniority modifiers a summary's leading title may carry. If the
+# ORIGINAL summary has one, fine — preserve it. If the original does
+# not, the rewrite MUST NOT introduce one (over-claim).
+_SENIORITY_MODIFIERS = (
+    "senior", "advanced", "lead", "principal", "staff", "head", "chief",
+    "executive", "director", "vp", "vice president",
+)
+
+
+def _extract_summary_title_clause(summary: str) -> str:
+    """
+    Return the candidate's title phrase as it appears at the start of
+    the summary. Heuristic: the opening tokens before the first " with ",
+    " having ", " who ", " — ", "," or "." — typically the role title
+    line. Used to detect over-claim ("Data Analyst" → "Advanced Data
+    Analyst").
+    """
+    if not summary:
+        return ""
+    head = summary.strip()
+    # Cut at the first natural delimiter that separates title from the
+    # rest of the sentence.
+    for sep in (" with ", " having ", " who ", " — ", " - ", ",", "."):
+        idx = head.lower().find(sep)
+        if 0 < idx < 80:
+            head = head[:idx]
+            break
+    return head.strip()
+
+
+def _title_escalation(orig_summary: str, new_summary: str) -> Optional[str]:
+    """
+    Return the offending seniority modifier added by the rewrite, or
+    None when the rewrite's title clause introduces no new seniority.
+    Mohammed Run 26: original "Data Analyst", rewrite "Advanced Data
+    Analyst" — escalates entry-level → senior on an entry-level JD.
+    """
+    if not orig_summary or not new_summary:
+        return None
+    orig_title = _extract_summary_title_clause(orig_summary).lower()
+    new_title  = _extract_summary_title_clause(new_summary).lower()
+    if not orig_title or not new_title:
+        return None
+    for mod in _SENIORITY_MODIFIERS:
+        if (mod in new_title.split()
+                or new_title.startswith(mod + " ")) and mod not in orig_title:
+            return mod
+    return None
+
+
+# Common sector / industry vocabulary that recruiters expect to see
+# bound to the candidate's actual experience. Used to detect when a
+# rewrite invents a sector that's not present anywhere in the CV (e.g.
+# Mohammed rewrite added "financial services" — not in his CV).
+_SECTOR_VOCAB = {
+    "retail", "automotive", "energy", "finance", "financial", "banking",
+    "healthcare", "medical", "pharma", "pharmaceutical", "biotech",
+    "education", "edtech", "government", "public", "defense", "defence",
+    "telecom", "telecommunications", "media", "entertainment", "gaming",
+    "manufacturing", "logistics", "supply", "construction", "real estate",
+    "hospitality", "travel", "aviation", "aerospace", "agriculture",
+    "agritech", "fintech", "insurtech", "saas", "e-commerce", "ecommerce",
+    "consumer", "fmcg", "cpg", "industrial", "mining", "oil", "gas",
+}
+
+
+def _extract_sectors(text: str) -> List[str]:
+    """Return the set of sector / industry words present in `text`,
+    lower-cased and de-duplicated."""
+    if not text:
+        return []
+    lowered = text.lower()
+    found: List[str] = []
+    seen: set = set()
+    for sect in _SECTOR_VOCAB:
+        if sect in lowered and sect not in seen:
+            seen.add(sect)
+            found.append(sect)
+    return found
+
+
+def _check_sector_fabrication(
+    orig_summary:   str,
+    new_summary:    str,
+    outline:        Dict[str, Any],
+    cv_full_text:   str = "",
+) -> Optional[List[str]]:
+    """
+    Return the list of sector tokens the rewrite invented — present in
+    the new summary but absent from BOTH the original summary AND the
+    rest of the CV (outline bullets + full text). None when every
+    sector mentioned has CV support.
+    """
+    if not orig_summary or not new_summary:
+        return None
+    new_sectors  = set(_extract_sectors(new_summary))
+    if not new_sectors:
+        return None
+    # CV-resident sector pool: original summary + every bullet text +
+    # any role header + skills + the raw CV text if provided.
+    cv_pool_parts: List[str] = [orig_summary]
+    for r in outline.get("roles", []) or []:
+        cv_pool_parts.append(r.get("header") or "")
+        for b in r.get("bullets", []) or []:
+            t = b.get("text", "") if isinstance(b, dict) else str(b)
+            cv_pool_parts.append(t)
+    for sk in outline.get("skills", []) or []:
+        cv_pool_parts.append(sk)
+    cv_pool_parts.append(cv_full_text or "")
+    cv_sectors = set(_extract_sectors(" ".join(cv_pool_parts)))
+    invented = sorted(new_sectors - cv_sectors)
+    return invented or None
+
+
+def _check_concrete_terms_preserved(
+    orig_summary: str,
+    new_summary:  str,
+    max_drops:    int = 1,
+) -> Optional[List[str]]:
+    """
+    Return the list of concrete CV-resident terms (tech / tool / proper
+    nouns) that disappeared between original and rewrite, when the drop
+    count exceeds `max_drops`. Returns None when within the threshold.
+
+    Run 26 — Mohammed Humaam regression: the LLM dropped "MS Fabric",
+    "Azure" and "GenAI" from the summary (replacing them with "MS Excel")
+    while applying for a Data Analyst role where Fabric + Azure are the
+    closest JD matches. Reverting to the original summary preserves the
+    candidate's actual tech-stack signal.
+    """
+    if not orig_summary or not new_summary:
+        return None
+    new_lower = new_summary.lower()
+    orig_terms = _extract_concrete_summary_terms(orig_summary)
+    if not orig_terms:
+        return None
+    missing = [t for t in orig_terms if t not in new_lower]
+    if len(missing) <= max_drops:
+        return None
+    return missing
+
+
+def _build_summary_constraint_block(
+    orig_summary: str,
+    outline:      Dict[str, Any],
+    job_title:    str,
+) -> str:
+    """
+    Build the MUST-PRESERVE prompt block injected into the diff-tailor
+    LLM prompt. Captures three hard constraints derived from the
+    ORIGINAL summary + CV outline:
+
+      1. Concrete terms (tools / employers / proper nouns) that the
+         rewrite MUST keep verbatim — these are the candidate's actual
+         stack and a recruiter signal that survives any framing pass.
+      2. The original title clause — a bound on what the rewrite may
+         open with. Prevents over-claiming seniority.
+      3. The CV-resident sector pool — the rewrite may only mention
+         sectors present in the candidate's actual experience.
+
+    Returns the rendered text block. Empty string when there is no
+    original summary (zero constraints to enforce).
+    """
+    if not orig_summary:
+        return ""
+
+    terms = _extract_concrete_summary_terms(orig_summary)
+    title = _extract_summary_title_clause(orig_summary)
+
+    # CV-resident sector pool — what the rewrite may legitimately
+    # mention. Drawn from the original summary plus every bullet.
+    pool_parts: List[str] = [orig_summary]
+    for r in outline.get("roles", []) or []:
+        for b in r.get("bullets", []) or []:
+            pool_parts.append(b.get("text", "") if isinstance(b, dict) else str(b))
+    sectors = _extract_sectors(" ".join(pool_parts))
+
+    lines: List[str] = []
+    lines.append(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    lines.append("SUMMARY HARD CONSTRAINTS (derived from this CV's original summary):")
+    lines.append("")
+
+    if terms:
+        lines.append("• MUST-PRESERVE concrete terms — every one of these MUST")
+        lines.append("  appear in your rewrite VERBATIM (case-insensitive). These")
+        lines.append("  are the candidate's actual tools / stacks / employers /")
+        lines.append("  acronyms as written in the ORIGINAL summary. You may")
+        lines.append("  REORDER them (lead with the most JD-relevant) but may NOT")
+        lines.append("  drop or substitute any. Dropping one reverts the rewrite.")
+        lines.append("")
+        for t in terms:
+            lines.append(f"    • {t}")
+        lines.append("")
+        lines.append("  Substitution example to AVOID: original lists 'MS Fabric,")
+        lines.append("  Azure, GenAI' → rewriting as 'MS Excel' is a regression,")
+        lines.append("  not tailoring. Reorder the originals; do not swap them out.")
+        lines.append("")
+
+    if title:
+        lines.append(f"• ORIGINAL TITLE CLAUSE: \"{title}\"")
+        lines.append(
+            "  Open your rewrite with EITHER this exact title OR the JD's"
+        )
+        lines.append(
+            f"  title (\"{(job_title or '').strip() or '(unspecified)'}\") — "
+            "whichever is the LOWER seniority. You may NOT add"
+        )
+        lines.append(
+            "  seniority modifiers (Senior / Advanced / Lead / Principal /"
+        )
+        lines.append(
+            "  Staff / Head / Chief / Director) that were NOT in the"
+        )
+        lines.append(
+            "  original title. Doing so is an over-claim and reverts your"
+        )
+        lines.append("  rewrite.")
+        lines.append("")
+
+    if sectors:
+        lines.append("• ALLOWED SECTOR VOCABULARY (anywhere in this CV):")
+        lines.append(f"    {', '.join(sectors)}")
+        lines.append(
+            "  Mention only sectors from THIS list. Inventing a sector"
+        )
+        lines.append(
+            "  (e.g. naming 'financial services' when the CV never names it)"
+        )
+        lines.append("  reverts the rewrite.")
+        lines.append("")
+
+    lines.append("• NO REPETITION:")
+    lines.append(
+        "    No phrase of 4+ tokens may appear more than once in the"
+    )
+    lines.append(
+        "    rewrite. If your draft is short of the length floor, do NOT"
+    )
+    lines.append(
+        "    pad by repeating a phrase ('2+ years at EY GDS' twice). Add"
+    )
+    lines.append(
+        "    a NEW JD-relevant detail from a CV bullet, or accept the"
+    )
+    lines.append("    shorter length.")
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
+
+
+def _check_summary_duplicate_phrase(
+    new_summary: str,
+    min_words:   int = 4,
+) -> Optional[str]:
+    """
+    Return the repeated phrase (≥`min_words` tokens) when the summary
+    contains it more than once; else None. Mohammed Run 26: the LLM
+    repeated "2+ years at EY GDS" — once embedded mid-sentence and once
+    as a trailing stub — which is an obvious LLM artefact and a quality
+    regression. A single short duplicate phrase justifies a revert.
+    """
+    if not new_summary:
+        return None
+    tokens = re.findall(r"\S+", new_summary.lower())
+    if len(tokens) < min_words * 2:
+        return None
+    seen_grams: Dict[str, int] = {}
+    for i in range(len(tokens) - min_words + 1):
+        gram = " ".join(tokens[i : i + min_words])
+        # Skip n-grams that are just stop-words glued together
+        words = gram.split()
+        if all(w.strip(",.;:()[]\"'") in _STOPWORDS_FOR_TERMS for w in words):
+            continue
+        seen_grams[gram] = seen_grams.get(gram, 0) + 1
+        if seen_grams[gram] >= 2:
+            return gram
     return None
 
 
@@ -3266,6 +3639,9 @@ def tailor_cv_diff(
             jd_only_terms_block   = _jd_only_block,
             outline               = _format_outline_for_prompt(outline),
             strategy_block        = strategy_block_str or "(no strategy provided — use the legacy fallback floors in the RULES section below)",
+            summary_constraints_block = _build_summary_constraint_block(
+                orig_summary, outline, job_title or ""
+            ),
             cur_word_count        = _orig_word_count,
             cur_word_min          = _orig_word_min,
             cur_word_max          = _orig_word_max,
@@ -3368,6 +3744,133 @@ def tailor_cv_diff(
                 })
                 diff["summary"] = orig_summary
             else:
+                # Run 26 (May 2026): consolidated quality-regression
+                # check + ONE corrective retry. Each detected defect is
+                # an LLM execution slip the prompt already forbids; the
+                # right response is "name the slip and ask the model to
+                # fix THIS rewrite", not "throw the tailoring away".
+                # Reverting to the original is the LAST resort.
+                _qi: List[tuple] = []
+                _mt = _check_concrete_terms_preserved(orig_summary, new_sum)
+                if _mt:
+                    _qi.append(("concrete_terms_dropped", _mt))
+                _dp = _check_summary_duplicate_phrase(new_sum)
+                if _dp:
+                    _qi.append(("duplicate_phrase", _dp))
+                _te = _title_escalation(orig_summary, new_sum)
+                if _te:
+                    _qi.append(("title_escalation", _te))
+                _isct = _check_sector_fabrication(
+                    orig_summary, new_sum, outline, cv_text
+                )
+                if _isct:
+                    _qi.append(("sector_fabrication", _isct))
+
+                if _qi:
+                    _directives: List[str] = []
+                    for kind, payload in _qi:
+                        if kind == "concrete_terms_dropped":
+                            _directives.append(
+                                f"You DROPPED these terms that were in the "
+                                f"original summary: {payload}. RESTORE every "
+                                f"one of them VERBATIM (case-insensitive). "
+                                f"They are the candidate's actual stack — "
+                                f"reorder them to lead with the JD-relevant "
+                                f"ones, but never drop or substitute."
+                            )
+                        elif kind == "duplicate_phrase":
+                            _directives.append(
+                                f"Your summary REPEATS the phrase "
+                                f"{payload!r}. Remove the duplicate "
+                                f"occurrence. Each 4+ word phrase appears "
+                                f"at most once. If your draft was short, "
+                                f"add a NEW JD-relevant fact from a CV "
+                                f"bullet instead of repeating."
+                            )
+                        elif kind == "title_escalation":
+                            _directives.append(
+                                f"You ESCALATED the candidate's title — "
+                                f"you added the modifier '{payload}' that "
+                                f"was NOT in the original. Open with the "
+                                f"original title VERBATIM, or the JD's "
+                                f"title if simpler. Never add seniority "
+                                f"modifiers (Senior / Advanced / Lead / "
+                                f"Principal / Staff)."
+                            )
+                        elif kind == "sector_fabrication":
+                            _directives.append(
+                                f"You INVENTED sectors not in the CV: "
+                                f"{payload}. Remove them. Only mention "
+                                f"sectors that appear somewhere in the "
+                                f"candidate's actual CV (bullets or "
+                                f"original summary)."
+                            )
+                    _retry_msg = (
+                        "YOUR PREVIOUS SUMMARY REWRITE HAS DEFECTS:\n"
+                        + "\n".join(f"  • {d}" for d in _directives)
+                        + f"\n\nYour previous summary was:\n\n"
+                        f"\"{new_sum}\"\n\n"
+                        "Rewrite it FIXING ONLY the defects listed above. "
+                        "PRESERVE every bit of JD-aimed framing that was "
+                        "NOT called out as a defect. Do NOT revert to the "
+                        "original verbatim — the original was un-tailored. "
+                        "Your task is REORDER + EMPHASIZE, with the fixes "
+                        "above applied."
+                    )
+                    print(
+                        f"   ↻  summary regressions ("
+                        f"{', '.join(k for k,_ in _qi)}) — retrying once."
+                    )
+                    _retry_sum = (_sanitise_diff(
+                        _extract_json(_call_llm(_render_prompt(extra=_retry_msg))),
+                        outline, do_not_inject=strategy_dni, cv_text=cv_text,
+                    ).get("summary") or "").strip()
+
+                    # Re-check the retry output. We require ALL the
+                    # original defects to be gone AND no new ones.
+                    _retry_mt = _check_concrete_terms_preserved(
+                        orig_summary, _retry_sum
+                    ) if _retry_sum else None
+                    _retry_dp = _check_summary_duplicate_phrase(
+                        _retry_sum
+                    ) if _retry_sum else None
+                    _retry_te = _title_escalation(
+                        orig_summary, _retry_sum
+                    ) if _retry_sum else None
+                    _retry_sect = _check_sector_fabrication(
+                        orig_summary, _retry_sum, outline, cv_text
+                    ) if _retry_sum else None
+                    if (
+                        _retry_sum
+                        and not _retry_mt and not _retry_dp
+                        and not _retry_te and not _retry_sect
+                        and not _summary_absorbed_bullet(_retry_sum, outline)
+                    ):
+                        print(
+                            f"   ✓  retry resolved all defects "
+                            f"({len(_qi)} issue(s)) — kept tailored summary."
+                        )
+                        diff["summary"] = _retry_sum
+                        new_sum = _retry_sum
+                    else:
+                        _residual = []
+                        if _retry_mt:   _residual.append("concrete_terms")
+                        if _retry_dp:   _residual.append("duplicate_phrase")
+                        if _retry_te:   _residual.append("title_escalation")
+                        if _retry_sect: _residual.append("sector_fabrication")
+                        print(
+                            f"   ↺  retry still has defects "
+                            f"({_residual or 'absorbed_bullet'}) — "
+                            f"reverting to original as last resort."
+                        )
+                        diff["_debug"]["summary_reverts"].append({
+                            "reason":   "quality_regression_after_retry",
+                            "initial": [k for k, _ in _qi],
+                            "residual": _residual,
+                        })
+                        diff["summary"] = orig_summary
+                        new_sum = orig_summary
+
                 # Apr 30: credential-preservation guard. If the rewrite
                 # dropped a degree grade ("(2.1)"), YoE claim ("4+ years"),
                 # or numeric outcome present in the original summary,
