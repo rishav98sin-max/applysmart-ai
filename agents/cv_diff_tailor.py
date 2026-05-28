@@ -2946,6 +2946,19 @@ def _check_content_preserved(original: str, rewrite: str) -> Optional[str]:
     if not orig or not new_l:
         return None
 
+    # Run 26 follow-up (May 2026): exempt a leading decorative "Label:"
+    # prefix from preservation. Some CVs (Cormac) open every bullet with a
+    # bold category header — "Regulatory Alignment: Partner with…",
+    # "Control Enhancement: Identified…". Those label words (Alignment,
+    # Enhancement, Framework) are NOT facts the rewrite must keep — they
+    # are decorative section tags, and leading with the action instead is
+    # good tailoring. Only the prefix BEFORE the first ": " (within the
+    # first ~45 chars) is exempted; the bullet BODY still has every
+    # concrete term preserved.
+    _colon = orig.find(":")
+    if 0 < _colon <= 45 and " " in orig[:_colon]:
+        orig = orig[_colon + 1:].strip()
+
     required: List[str] = []
     # (a) acronyms
     for m in re.finditer(r"\b([A-Z]{3,})s?\b", orig):

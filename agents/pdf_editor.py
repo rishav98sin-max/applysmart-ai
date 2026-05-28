@@ -1667,13 +1667,23 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
     # apply_edits see the SAME bullets — otherwise the LLM's diff
     # indices (computed against build_outline's view) misalign with
     # apply_edits' raw view, sending rewrites to the wrong bullet slot.
+    def _is_real_bullet(b: Dict[str, Any]) -> bool:
+        t = (b.get("text") or "").strip()
+        if len(t) < 3:
+            return False
+        # Run 26 follow-up (May 2026): drop single-word wrap-orphans. A
+        # wrapped intro line can leave its trailing word stranded as its
+        # own "bullet" ("requirements.") — a fragment, not a real bullet.
+        # It pollutes the bullet index (shifting every subsequent rewrite
+        # by one). A genuine bullet is always a multi-word phrase, so a
+        # lone token with no internal whitespace and no digit is junk.
+        if " " not in t and not any(ch.isdigit() for ch in t):
+            return False
+        return True
+
     for role in roles:
         bullet_groups = role.get("bullet_groups") or []
-        role["bullet_groups"] = [
-            b for b in bullet_groups
-            if (b.get("text") or "").strip()
-            and len((b.get("text") or "").strip()) >= 3
-        ]
+        role["bullet_groups"] = [b for b in bullet_groups if _is_real_bullet(b)]
 
     # ── Post-merge fragmented roles (May 2026 / Run 12 fix) ─────────────
     # On 2-column layouts (left column = sub-section labels like
