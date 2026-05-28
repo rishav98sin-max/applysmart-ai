@@ -2924,17 +2924,20 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
     # Use the provided original_length if available, otherwise fall back to len(orig)
     orig_len = original_length if original_length is not None else len(orig)
 
-    # May 2026 (same-length tailoring): the tailored bullet must occupy
-    # roughly the SAME footprint as the original so the per-bullet
-    # in-place editor can drop it into the original slot without reflow.
-    # Band = 78%–108% of the original length.
-    #   • Floor 0.78 — a rewrite much shorter than the original leaves a
-    #     visible whitespace gap in its slot. A small absolute floor (45
-    #     chars) keeps very short bullets rewritable.
+    # Band = 62%–108% of the original length.
+    #   • Floor 0.62 (Run 26 follow-up, May 2026) — relaxed from 0.78.
+    #     The floor's ONLY job is to avoid a visible whitespace gap in
+    #     the slot, and a gap appears only when the rewrite drops a whole
+    #     LINE — i.e. roughly below ~60% of a 2-line bullet. A rewrite at
+    #     65-78% of a dense bullet still wraps to the same line count and
+    #     renders flush. The old 0.78 floor rejected genuinely-tighter
+    #     rewrites (live evidence: DeepSeek's isolated rewrites landed at
+    #     68-75% and were bounced). Dropped FACTS are caught separately by
+    #     the number-token + _check_content_preserved guards below, so the
+    #     floor does not need to police content — only gross under-fill.
     #   • Ceiling 1.08 (_REWRITE_LEN_MAX_RATIO) — longer than this risks
-    #     an extra wrapped line that overflows the slot. A small absolute
-    #     ceiling (95 chars) gives very short bullets room to JD-align.
-    lo = max(45, round(orig_len * 0.78))
+    #     an extra wrapped line that overflows the slot.
+    lo = max(45, round(orig_len * 0.62))
     # Ceiling carries a small absolute grace — a few chars over the ratio
     # still wraps into the same slot, and the apply-time slot check is the
     # real overflow gate. The floor stays strict (a short rewrite leaves a
@@ -3034,6 +3037,7 @@ def _normalise_bullet_list(
     section:       str = "experience",
     do_not_inject: Optional[List[str]] = None,
     cv_text:       str = "",
+    role_label:    str = "",
 ) -> List[Dict[str, Any]]:
     """
     Accept either:
@@ -3158,6 +3162,8 @@ def _normalise_bullet_list(
                     "bullet_index": idx,
                     "reason": reason,
                     "rewrite_preview": text,
+                    "role": role_label,
+                    "orig_text": orig_text,
                 })
                 text = None   # fall back to original wording
             else:
@@ -3451,6 +3457,7 @@ def _sanitise_diff(
                 section=section,
                 do_not_inject=do_not_inject,
                 cv_text=cv_text,
+                role_label=match_key,
             )
             if not normalised:
                 continue
@@ -3590,6 +3597,83 @@ def _build_feedback_addendum(
         "this retry."
     )
     return "\n".join(parts)
+
+
+def _focused_length_rewrite(
+    rejected:      List[Dict[str, Any]],
+    jd_priorities: Dict[str, Any],
+    job_title:     str,
+    forbidden:     List[str],
+) -> Dict[str, Dict[int, str]]:
+    """
+    Run 26 follow-up (May 2026): isolated focused rewrite of the bullets
+    that the main pass rejected on LENGTH. The whole-prompt retry fails
+    because the length signal is diluted under 16 bullets + the mega
+    prompt (live evidence: DeepSeek overshot 4× in a row). A STANDALONE
+    focused prompt — just the failing bullets, their facts, and slot
+    limits — makes the cheap model land in-band reliably (experiment:
+    isolated rewrites passed where the full-prompt retry failed).
+
+    Returns {role_header: {bullet_index: new_text}} for bullets whose
+    focused rewrite now passes _rewrite_is_safe. One LLM call total.
+    """
+    if not rejected:
+        return {}
+    must = (jd_priorities or {}).get("must_have") or []
+    nice = (jd_priorities or {}).get("nice_to_have") or []
+    lines: List[str] = [
+        f"Tighten {len(rejected)} CV bullet(s) to fit fixed PDF slots for a "
+        f"'{job_title or 'target'}' application. This is a FOCUSED fix — do "
+        f"NOT re-tailor anything else.",
+        f"JD MUST-HAVES (lead with these where the bullet proves them): {must}",
+        f"JD NICE-TO-HAVES: {nice}",
+    ]
+    if forbidden:
+        lines.append(
+            f"FORBIDDEN words — never use, they are not in this CV: "
+            f"{list(forbidden)[:25]}"
+        )
+    lines.append(
+        "\nFor EACH bullet below: rewrite it to land BETWEEN its min and max "
+        "characters (inclusive). KEEP every FACT verbatim — numbers, "
+        "percentages, currency (incl € £ ₹), tools, proper nouns. CUT filler, "
+        "adjectives and parenthetical asides to fit. Natural English; invent "
+        "nothing.\n"
+        "ONLY surface a JD priority that THIS bullet already proves, by "
+        "leading with it / choosing a verb that matches the JD. Do NOT bolt a "
+        "must-have phrase onto the end (e.g. '…utilising Advanced Excel "
+        "proficiency') — that reads as keyword stuffing and is worse than a "
+        "clean sentence. A relabel that only swaps a synonym (e.g. 'MS Fabric' "
+        "→ 'Microsoft Fabric') is NOT tailoring — re-aim the sentence or leave "
+        "it. If the bullet honestly proves no JD priority, just make it fit.\n"
+    )
+    for k, r in enumerate(rejected):
+        atoms = _extract_fact_atoms(r["orig_text"])
+        lines.append(
+            f'[{k}] min={r["lo"]} max={r["hi"]} chars | KEEP: {atoms}\n'
+            f'    ORIGINAL: {r["orig_text"]}'
+        )
+    lines.append(
+        '\nReturn ONLY this JSON (no prose): '
+        '{"rewrites":[{"k":<the [k] index above>,"text":"<rewritten bullet>"}]}'
+    )
+    prompt = "\n".join(lines)
+    raw = _call_llm(prompt, max_tokens=1200)
+    parsed = _extract_json(raw or "")
+    out: Dict[str, Dict[int, str]] = {}
+    for it in (parsed or {}).get("rewrites") or []:
+        try:
+            k = int(it.get("k"))
+            txt = (it.get("text") or "").strip().strip('"').strip()
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not (0 <= k < len(rejected)) or not txt:
+            continue
+        r = rejected[k]
+        ok, _reason = _rewrite_is_safe(r["orig_text"], txt)
+        if ok:
+            out.setdefault(r["role"], {})[r["idx"]] = txt
+    return out
 
 
 # ─────────────────────────────────────────────────────────────
@@ -4535,92 +4619,79 @@ def tailor_cv_diff(
     # a doom loop. We now split the two directions: compress the long
     # ones, EXPAND the short ones. First pass only.
     if not (feedback or previous_diff):
-        _too_long, _too_short = [], []
+        # Run 26 follow-up (May 2026): ISOLATED focused length retry.
+        # The old retry re-ran the whole diff prompt with the failing
+        # drafts appended — but the length signal stays diluted under the
+        # full 16-bullet outline + mega-rules, so the cheap model overshot
+        # 4× in a row (live evidence). Instead, collect the length-rejected
+        # bullets (record now carries role + orig_text) and rewrite them in
+        # a SINGLE standalone focused prompt that lists only those bullets
+        # + their facts + slot limits. The experiment proved this makes
+        # DeepSeek land in-band. Passing rewrites are spliced straight into
+        # the diff.
+        _rejected: List[Dict[str, Any]] = []
         for r in list(_LAST_BULLET_REVERTS):
             if not (isinstance(r, dict)
                     and str(r.get("reason", "")).startswith("length ")):
                 continue
             m = re.search(r"length (\d+) outside (\d+)-(\d+)",
                           str(r.get("reason", "")))
-            draft = (r.get("rewrite_preview") or "").strip()
-            if not m or not draft:
+            role = r.get("role")
+            orig = r.get("orig_text")
+            if not m or not role or not orig:
                 continue
-            n, lo, hi = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if n > hi:
-                _too_long.append((draft, n, hi))
-            elif n < lo:
-                _too_short.append((draft, n, lo))
-        _length_reverts = _too_long + _too_short
-        if len(_length_reverts) >= 1:
+            _rejected.append({
+                "role":      role,
+                "idx":       r.get("bullet_index"),
+                "orig_text": orig,
+                "lo":        int(m.group(2)),
+                "hi":        int(m.group(3)),
+            })
+        if _rejected:
             print(
-                f"   ↻  cv_diff_tailor: {len(_length_reverts)} bullet "
-                f"rewrite(s) rejected on length "
-                f"({len(_too_long)} too long, {len(_too_short)} too short) "
-                f"— retrying with a fit-to-slot directive (own drafts shown)."
+                f"   ↻  cv_diff_tailor: {len(_rejected)} bullet rewrite(s) "
+                f"rejected on length — focused isolated retry (standalone "
+                f"prompt, no full-CV dilution)."
             )
-            _parts = []
-            if _too_long:
-                _ll = "\n".join(
-                    f'  - TOO LONG by {n - hi} chars (limit {hi}, draft {n}):'
-                    f'\n    YOUR DRAFT: "{d}"'
-                    for d, n, hi in _too_long
-                )
-                _parts.append(
-                    "These rewrites are TOO LONG for the bullet's fixed PDF "
-                    "slot. SHORTEN each to AT OR BELOW its limit — cut "
-                    "adjectives, hedges and redundant words; keep every "
-                    "number and proper noun verbatim:\n\n" + _ll
-                )
-            if _too_short:
-                _ls = "\n".join(
-                    f'  - TOO SHORT by {lo - n} chars (floor {lo}, draft {n}):'
-                    f'\n    YOUR DRAFT: "{d}"'
-                    for d, n, lo in _too_short
-                )
-                _parts.append(
-                    "These rewrites are TOO SHORT — you compressed them "
-                    "below the bullet's slot, so they revert. EXPAND each to "
-                    "AT OR ABOVE its floor by restoring CV-grounded detail "
-                    "already true of that bullet (a metric, named tool, "
-                    "scope, or outcome the original bullet contained). Do "
-                    "NOT pad with filler and invent nothing:\n\n" + _ls
-                )
-            enforce_len = (
-                f"{len(_length_reverts)} of your bullet rewrites were "
-                f"REJECTED on length. Fix each YOUR DRAFT below — do NOT "
-                f"re-tailor from scratch.\n\n"
-                + "\n\n".join(_parts)
-                + "\n\nReturn the full bullets JSON again with these fixed. "
-                "A rewrite inside its slot SHIPS; one outside is DISCARDED."
+            _fixes = _focused_length_rewrite(
+                _rejected,
+                (strategy or {}).get("jd_priorities") or {},
+                job_title,
+                _jd_only_for_scrub or [],
             )
-            raw_text_lr = _call_llm(_render_prompt(extra=enforce_len))
-            raw_json_lr = _extract_json(raw_text_lr)
-            _LAST_BULLET_REVERTS.clear()
-            diff_lr = _sanitise_diff(
-                raw_json_lr, outline,
-                do_not_inject=strategy_dni, cv_text=cv_text,
-            )
-            n_rewrites_lr, n_dropped_lr = _count_diff_edits(diff_lr)
-            # Adopt the retry only if it landed MORE rewrites than the
-            # first pass. Otherwise keep the first pass (never regress).
-            _n_rewrites_before = n_rewrites
-            if n_rewrites_lr > n_rewrites:
-                lr_sum = (diff_lr.get("summary") or "").strip()
-                lr_sum_words = len(lr_sum.split()) if lr_sum else 0
-                # Keep whichever summary is closer to the original length.
-                if (lr_sum_words == 0
-                        or (new_words > 0 and lr_sum_words < new_words)) \
-                        and diff.get("summary"):
-                    diff_lr["summary"] = diff["summary"]
-                    lr_sum_words = new_words
-                diff       = diff_lr
-                n_rewrites = n_rewrites_lr
-                n_dropped  = n_dropped_lr
-                new_words  = lr_sum_words or new_words
+            _applied_fix = 0
+            _bul = diff.setdefault("bullets", {})
+            for _role, _idx_map in _fixes.items():
+                # Locate the role's entry list (tolerant key match).
+                _entries = _bul.get(_role)
+                if _entries is None:
+                    for _k in list(_bul.keys()):
+                        if _k.strip().lower() == _role.strip().lower():
+                            _entries = _bul[_k]
+                            break
+                if _entries is None:
+                    _entries = []
+                    _bul[_role] = _entries
+                for _idx, _txt in _idx_map.items():
+                    _hit = False
+                    for _e in _entries:
+                        if isinstance(_e, dict) and int(_e.get("i", -1)) == _idx:
+                            _e["text"] = _txt
+                            _hit = True
+                            _applied_fix += 1
+                            break
+                    if not _hit:
+                        _entries.append({"i": _idx, "text": _txt})
+                        _applied_fix += 1
+            if _applied_fix:
+                _n_before = n_rewrites
+                n_rewrites, n_dropped = _count_diff_edits(diff)
                 print(
-                    f"   ✓  length-fix retry: {_n_rewrites_before} "
-                    f"→ {n_rewrites_lr} bullet rewrites."
+                    f"   ✓  focused length retry: recovered {_applied_fix} "
+                    f"bullet(s) ({_n_before} → {n_rewrites} rewrites)."
                 )
+            else:
+                print("   ↺  focused length retry recovered 0 bullets.")
 
     tag = " (retry)" if feedback or previous_diff else ""
     # Apr 28 follow-up: include LLM source so we can see at a glance whether
