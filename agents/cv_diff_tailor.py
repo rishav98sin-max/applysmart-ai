@@ -1274,6 +1274,99 @@ def _check_concrete_terms_preserved(
     return missing
 
 
+def _jd_alignment_terms(job_description: str, max_terms: int = 60) -> set:
+    """Significant lower-cased terms from the JD for alignment scoring:
+    multi-char alphanumeric tokens minus stop-words. Deterministic; no
+    LLM. Used to measure whether a tailoring actually moved the CV
+    closer to the JD vs. just rearranged words."""
+    if not job_description:
+        return set()
+    toks = re.findall(r"[A-Za-z][A-Za-z0-9+/#.\-]{2,}", job_description.lower())
+    terms = [
+        t.strip(".-/") for t in toks
+        if t not in _STOPWORDS_FOR_TERMS and len(t.strip(".-/")) >= 3
+    ]
+    # Keep the most frequent distinct terms (signal over noise).
+    freq: Dict[str, int] = {}
+    for t in terms:
+        freq[t] = freq.get(t, 0) + 1
+    ranked = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {t for t, _ in ranked[:max_terms]}
+
+
+def _corpus_jd_hits(corpus: str, jd_terms: set) -> int:
+    """How many distinct JD terms appear in `corpus` (substring/word
+    membership, lower-cased)."""
+    if not corpus or not jd_terms:
+        return 0
+    low = corpus.lower()
+    return sum(1 for t in jd_terms if t in low)
+
+
+def compute_jd_alignment_delta(
+    job_description: str,
+    outline:         Dict[str, Any],
+    diff:            Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Measure whether the tailored output is genuinely more JD-aligned than
+    the original. Builds an ORIGINAL corpus (original summary + original
+    bullets) and a TAILORED corpus (tailored summary where changed +
+    rewritten bullet text where present, original otherwise), counts
+    distinct JD-term hits in each, and returns the delta.
+
+    A near-zero delta means the tailoring rearranged words without
+    surfacing new JD signal — a "cosmetic" tailoring. The caller can
+    surface this (low-lift warning) without reverting anything.
+    """
+    jd_terms = _jd_alignment_terms(job_description)
+    if not jd_terms:
+        return {"skipped": "no_jd_terms"}
+
+    orig_summary = (outline.get("summary") or "")
+    orig_parts = [orig_summary]
+    for r in outline.get("roles", []) or []:
+        for b in r.get("bullets", []) or []:
+            orig_parts.append(b.get("text", "") if isinstance(b, dict) else str(b))
+    orig_corpus = " ".join(orig_parts)
+
+    # Tailored corpus: use diff summary + each role's rewritten text where
+    # present, else original bullet text.
+    tail_parts = [(diff.get("summary") or orig_summary)]
+    diff_bullets = diff.get("bullets") or {}
+    # Map role header → {i: text} for quick lookup of rewrites.
+    rewrite_map: Dict[str, Dict[int, str]] = {}
+    for role_hdr, entries in diff_bullets.items():
+        m: Dict[int, str] = {}
+        if isinstance(entries, list):
+            for e in entries:
+                if isinstance(e, dict) and isinstance(e.get("text"), str) and e["text"].strip():
+                    try:
+                        m[int(e.get("i"))] = e["text"]
+                    except (TypeError, ValueError):
+                        pass
+        if m:
+            rewrite_map[role_hdr.strip().lower()] = m
+    for r in outline.get("roles", []) or []:
+        hdr = (r.get("header") or "").strip().lower()
+        rw = rewrite_map.get(hdr, {})
+        for i, b in enumerate(r.get("bullets", []) or []):
+            otext = b.get("text", "") if isinstance(b, dict) else str(b)
+            tail_parts.append(rw.get(i, otext))
+    tail_corpus = " ".join(tail_parts)
+
+    orig_hits = _corpus_jd_hits(orig_corpus, jd_terms)
+    tail_hits = _corpus_jd_hits(tail_corpus, jd_terms)
+    total = len(jd_terms)
+    return {
+        "total_jd_terms":  total,
+        "orig_hits":       orig_hits,
+        "tailored_hits":   tail_hits,
+        "delta":           tail_hits - orig_hits,
+        "delta_pct":       round(100.0 * (tail_hits - orig_hits) / total, 1) if total else 0.0,
+    }
+
+
 def _build_summary_constraint_block(
     orig_summary: str,
     outline:      Dict[str, Any],
@@ -4559,4 +4652,34 @@ def tailor_cv_diff(
                 "kept. The body of the CV is unchanged — caller should retry "
                 "with sharper JD-aligned bullet prompts."
             )
+
+    # JD-alignment delta (May 2026 — Run 26 follow-up). Measure whether
+    # the tailoring genuinely moved the CV toward the JD or just
+    # rearranged words. Deterministic, no LLM. Surfaced for observability
+    # — does NOT revert anything; a low-lift tailoring still ships, but
+    # the caller / UI can flag it for the user to review.
+    try:
+        _align = compute_jd_alignment_delta(job_description, outline, diff)
+        diff["_debug"]["jd_alignment"] = _align
+        if "delta" in _align:
+            _lift = _align["delta"]
+            _msg = (
+                f"   📊 cv_diff_tailor: JD-alignment {_align['orig_hits']}→"
+                f"{_align['tailored_hits']} / {_align['total_jd_terms']} terms "
+                f"(delta {_lift:+d}, {_align['delta_pct']:+.1f}%)"
+            )
+            print(_msg)
+            # Low-lift signal: tailoring added < 2 new JD terms. Not a
+            # failure (we still ship), but worth flagging.
+            if _lift < 2:
+                diff["_debug"]["low_jd_lift"] = True
+                print(
+                    "   ⚠️  cv_diff_tailor: low JD-alignment lift — the "
+                    "tailoring surfaced few new JD terms. Output ships but "
+                    "may read as a cosmetic re-aim; consider a sharper "
+                    "strategy on retry."
+                )
+    except Exception as _exc:
+        print(f"   ⚠️  cv_diff_tailor: JD-alignment delta failed ({_exc!r})")
+
     return diff

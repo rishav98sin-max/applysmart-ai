@@ -56,7 +56,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ─────────────────────────────────────────────────────────────
@@ -90,11 +90,23 @@ YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
 1. READ the JD twice.
    (a) Identify the 5-8 most concrete things this role actually wants:
        titles, frameworks, deliverables, domains.
-   (b) Extract the JD's THESIS — the ONE sentence that captures what
+   (b) RANK them into PRIORITIES (this drives everything downstream):
+       • MUST-HAVE — the JD signals these as essential: phrased as
+         "required", "must have", "essential", "you will", "X+ years
+         of…", or repeated across the posting. These are the things a
+         recruiter screens OUT for if missing. Aim for 2-4.
+       • NICE-TO-HAVE — phrased as "preferred", "bonus", "a plus",
+         "ideally", "nice to have", or mentioned once in passing. Aim
+         for 2-4.
+       Record both lists in `jd_priorities`. Use the JD's OWN words.
+       The summary's FIRST clause must address a MUST-HAVE the candidate
+       can prove. Bullets that prove MUST-HAVEs score highest (9-10);
+       bullets that prove NICE-TO-HAVEs score 7-8.
+   (c) Extract the JD's THESIS — the ONE sentence that captures what
        this role/team is really about. The JD usually states it: a
        mission line, a "what you'll do" framing, or a named workstream.
        Copy it near-verbatim into `jd_thesis`. The summary will echo it.
-   (c) Identify the JD's HOT ZONE — the 1-3 CV items (a specific
+   (d) Identify the JD's HOT ZONE — the 1-3 CV items (a specific
        project or role) that map most directly to this JD. Tailoring
        CONCENTRATES here. List `hot_zone` as the exact CV item label(s).
        CV items far from the JD get few actions or none.
@@ -202,21 +214,43 @@ YOUR THINKING PROCESS (silent — do this BEFORE producing JSON):
    Never name a JD word the CV lacks ("influencer", "ROI", ...) in
    lead_with — point at the candidate's real fact.
 
-   List every bullet that genuinely needs a rewrite — no target count,
-   no cap. But CONCENTRATE on the HOT ZONE: a real plan lists most or
-   all bullets of the 1-3 hot-zone items, and FEW or NONE elsewhere. A
-   role far from this JD whose bullets are already fine should get zero
-   actions — that is correct, not lazy.
+   RANK AND CAP — every candidate bullet gets a jd_relevance_score
+   (1-10) before you list it. THE BAR IS ≥ 7, THE TOTAL CAP IS 5.
+
+     • 9-10: bullet describes the candidate's ACTUAL work proving a JD
+             MUST-HAVE that the bullet currently BURIES. The rewrite
+             reveals a strong match the recruiter would otherwise miss.
+     • 7-8 : bullet proves a JD nice-to-have or addresses a secondary
+             priority. Rewrite is worthwhile.
+     • 5-6 : topic is JD-adjacent but the bullet doesn't strongly prove
+             it — a rewrite would feel forced. SKIP.
+     • 1-4 : irrelevant to this JD, or the bullet is already on-target.
+             SKIP.
+
+   STRICT RULES:
+     • List ONLY bullets scoring ≥ 7. A score-5/6 rewrite is a cosmetic
+       reorder dressed as tailoring — strictly worse than leaving the
+       bullet verbatim.
+     • TOTAL CAP across the entire CV: 5 bullets. If you have more than
+       5 candidates at ≥ 7, KEEP ONLY the top 5 by score. The rest stay
+       verbatim — that is correct, not lazy. A precisely-tailored CV
+       with 4 deeply re-aimed bullets beats one with 12 mediocre
+       rewrites every time. Recruiters scan; precision wins.
+     • You may go BELOW 5 — if only 2 bullets honestly score ≥ 7, list
+       only those 2. Padding to hit a target is failure.
+     • Different roles do NOT need equal coverage. A single hot-zone
+       role might contribute 4 of your 5 listings; that's correct.
+
    Two failure modes, equally bad:
-     • RATIONING — skipping a hot-zone bullet that buries a JD point
-       just to keep the plan short.
-     • OVER-LISTING — listing nearly every bullet of every role. If
-       your plan touches every role roughly equally, or lists ~all
-       bullets in the CV, you have STOPPED discriminating. Re-apply the
-       selection test: an already-on-target or JD-irrelevant bullet
-       must be OMITTED, never echoed back as a cosmetic non-change.
-   The only question per bullet: "does THIS one genuinely need it?" —
-   yes → list it; no → skip it.
+     • RATIONING — skipping a score-9 hot-zone bullet to spread your
+       listings across roles.
+     • OVER-LISTING — listing low-score bullets just to look thorough.
+       Every bullet you list with score < 7 produces a near-copy that
+       wastes the tailor's output.
+
+   Set jd_relevance_score honestly. The tailor's downstream guard
+   drops any listing with score < 7 AND enforces the cap of 5 — over-
+   listing fails silently.
 5. CONSIDER synthesising AT MOST ONE new bullet per role IF it would
    land 2+ JD keywords AND every claim is grounded in OTHER existing
    bullets of the SAME role. If you cannot ground it, omit.
@@ -297,6 +331,11 @@ OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
 
   "jd_thesis": "<the ONE sentence from the JD that captures what this role/team is really about — copied near-verbatim from the JD. The summary will be re-aimed to echo this.>",
 
+  "jd_priorities": {{
+    "must_have":     ["<2-4 essential requirements in the JD's own words — what a recruiter screens OUT for>"],
+    "nice_to_have":  ["<2-4 preferred/bonus requirements in the JD's own words>"]
+  }},
+
   "hot_zone": ["<exact CV item label(s) — the 1-3 projects/roles this JD maps to most directly; tailoring concentrates here>"],
 
   "summary_strategy": {{
@@ -319,6 +358,7 @@ OUTPUT — return ONLY this JSON object (no prose, no markdown fences):
       {{
         "i": 0,
         "action": "rewrite_verb_led",
+        "jd_relevance_score": 9,
         "lead_with": "<ONE specific buried element, 3-8 words — a metric / platform / project / outcome the bullet contains but does NOT open with>",
         "jd_keyword": "<the ONE CV-proven JD term this bullet should weave in — a relabel or a JD word the bullet genuinely proves; \"\" if none honestly fits>"
       }}
@@ -764,6 +804,7 @@ def _estimate_strategist_token_budget(outline: Dict[str, Any]) -> int:
 EMPTY_STRATEGY: Dict[str, Any] = {
     "narrative_angle": "",
     "jd_thesis": "",
+    "jd_priorities": {"must_have": [], "nice_to_have": []},
     "hot_zone": [],
     "summary_strategy": {},
     "project_reframings": [],
@@ -1009,6 +1050,7 @@ def build_tailor_strategy(
     for key in (
         "narrative_angle",
         "jd_thesis",
+        "jd_priorities",
         "hot_zone",
         "summary_strategy",
         "project_reframings",
@@ -1081,6 +1123,80 @@ def build_tailor_strategy(
             f"that would bolt onto the verb awkwardly."
         )
 
+    # Surgical bullet selection (May 2026 — Run 26 follow-up).
+    # Even with the score+cap prompt rule, the LLM can over-list. Enforce
+    # two deterministic rules on the LLM's output:
+    #
+    #   1. Drop any entry with jd_relevance_score < 7 (or unset). These
+    #      are cosmetic-reorder candidates that produce near-copies the
+    #      tailor's identical_rewrite guard reverts anyway — wasted
+    #      tokens and noise in the report.
+    #   2. Cap the total across the whole bullet_strategy at 5 entries,
+    #      keeping the highest-scoring ones. A precision-tailored CV with
+    #      4-5 strong rewrites beats one with 12 mediocre ones — scanning
+    #      recruiters spot the buried JD-aimed bullet faster when fewer
+    #      bullets compete for their attention.
+    _MIN_SCORE          = 7
+    _MAX_TOTAL_REWRITES = 5
+    _bs_in: Dict[str, List[Dict[str, Any]]] = normalised.get("bullet_strategy") or {}
+    # Flatten with (role, entry) for global ranking.
+    _all_entries: List[Tuple[str, Dict[str, Any], int]] = []
+    _kept_anyway: List[Tuple[str, Dict[str, Any]]] = []  # promote/deprioritise survive
+    for role, entries in _bs_in.items():
+        if not isinstance(entries, list):
+            continue
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            action = (e.get("action") or "").strip()
+            if action != "rewrite_verb_led":
+                # promote / deprioritise / reorder actions don't generate
+                # text — keep them outside the cap.
+                _kept_anyway.append((role, e))
+                continue
+            try:
+                score = int(e.get("jd_relevance_score") or 0)
+            except (TypeError, ValueError):
+                score = 0
+            _all_entries.append((role, e, score))
+
+    # Drop sub-threshold scores first.
+    _filtered = [(r, e, s) for (r, e, s) in _all_entries if s >= _MIN_SCORE]
+    _below_threshold = len(_all_entries) - len(_filtered)
+
+    # Apply the cap: keep the top _MAX_TOTAL_REWRITES by score (stable
+    # tiebreak: original role order, then original i).
+    _filtered.sort(
+        key=lambda re: (
+            -re[2],
+            list(_bs_in.keys()).index(re[0]),
+            int(re[1].get("i", 0)),
+        )
+    )
+    _capped = _filtered[:_MAX_TOTAL_REWRITES]
+    _over_cap = max(0, len(_filtered) - _MAX_TOTAL_REWRITES)
+
+    # Rebuild bullet_strategy preserving role grouping and original i-order
+    # within each role.
+    _bs_out: Dict[str, List[Dict[str, Any]]] = {}
+    for role, e in _kept_anyway:
+        _bs_out.setdefault(role, []).append(e)
+    for role, e, _s in _capped:
+        _bs_out.setdefault(role, []).append(e)
+    # Re-sort each role's entries by i so the downstream tailor's role-
+    # local iteration sees them in CV order.
+    for role, lst in _bs_out.items():
+        lst.sort(key=lambda x: int(x.get("i", 0)))
+    normalised["bullet_strategy"] = _bs_out
+
+    if _below_threshold or _over_cap:
+        print(
+            f"   ✂️  strategist: bullet selection pruned "
+            f"(below_threshold={_below_threshold}, "
+            f"over_cap={_over_cap}, kept={len(_capped)}/"
+            f"{_MAX_TOTAL_REWRITES})"
+        )
+
     angle = (normalised.get("narrative_angle") or "").strip()
     bullet_count = sum(
         len(v or []) for v in (normalised.get("bullet_strategy") or {}).values()
@@ -1134,6 +1250,29 @@ def render_strategy_for_tailor(strategy: Dict[str, Any]) -> str:
             "focus this JD is really hiring for, not a generic "
             "'<title> with <N> years of experience' opener. Use ONLY facts "
             "already in the CV; invent nothing."
+        )
+
+    # JD priorities (May 2026 — Run 26 follow-up): rank-ordered
+    # requirements so the tailor leads with what the JD screens-OUT for.
+    jd_pri = strategy.get("jd_priorities") or {}
+    must   = [m for m in (jd_pri.get("must_have") or []) if str(m).strip()]
+    nice   = [n for n in (jd_pri.get("nice_to_have") or []) if str(n).strip()]
+    if must or nice:
+        lines.append("\nJD PRIORITIES (rank-ordered — drive the summary + bullet emphasis):")
+        if must:
+            lines.append(f"  MUST-HAVE (screen-out criteria): {must}")
+            lines.append(
+                "    The SUMMARY's first clause MUST address a must-have the "
+                "candidate genuinely proves from the CV. Bullets proving a "
+                "must-have are the highest-value rewrites."
+            )
+        if nice:
+            lines.append(f"  NICE-TO-HAVE (secondary): {nice}")
+        lines.append(
+            "    Surface must-haves before nice-to-haves. Never claim a "
+            "priority the CV cannot back up — if the candidate lacks a "
+            "must-have, do NOT fabricate it; lead with the must-haves they "
+            "DO have."
         )
 
     hot_zone = strategy.get("hot_zone") or []
