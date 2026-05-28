@@ -947,10 +947,10 @@ def _call_llm(prompt: str, max_tokens: int = 3000) -> str:
 # "9 guardrails", "~15 minutes", "2024" — these are descriptive, not
 # outcome metrics. Outcome metrics carry suffixes by convention.
 _NUMBER_RX = re.compile(
-    r"[$€£]\d[\d.,]*[KMB]?"  # currency (optionally suffixed) — incl € £
-    r"|\d[\d.,]*%"           # percentages
-    r"|\d+[KMB]\+?"          # scale: 600K, 5M, 1B, 150K+
-    r"|\d{1,4}\+",           # count-with-plus: 3+, 150+
+    r"[$€£₹¥]\d[\d.,]*(?:cr|[kmbl])?"  # currency — $ € £ ₹ ¥ + K/M/B/L/Cr (lakh/crore)
+    r"|\d[\d.,]*%"                     # percentages
+    r"|\d+[KMB]\+?"                    # scale: 600K, 5M, 1B, 150K+
+    r"|\d{1,4}\+",                     # count-with-plus: 3+, 150+
     re.I,
 )
 
@@ -966,8 +966,8 @@ _NUMBER_RX = re.compile(
 # new regex keeps % and $ enforcement; the bullet check still preserves
 # all numbers verbatim because that's where outcomes live.
 _CREDENTIAL_NUMBER_RX = re.compile(
-    r"[$€£]\d[\d.,]*[KMB]?"  # currency (financial credentials) — incl € £
-    r"|\d[\d.,]*%",          # percentages (outcome credentials)
+    r"[$€£₹¥]\d[\d.,]*(?:cr|[kmbl])?"  # currency credentials — $ € £ ₹ ¥ + K/M/B/L/Cr
+    r"|\d[\d.,]*%",                    # percentages (outcome credentials)
     re.I,
 )
 
