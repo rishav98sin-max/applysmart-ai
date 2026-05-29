@@ -93,6 +93,37 @@ def build_outline_cached(pdf_path: str) -> Dict[str, Any]:
 
     # Parse the PDF and cache the result under the lock.
     outline = build_outline(pdf_path)
+
+    # ── Tier-2 fallback (Task 5 — "verify, don't predict") ──
+    # When the heuristic parse yields ZERO roles, the CV's experience was
+    # mis-classified upstream (e.g. swallowed into an oversized header/skills
+    # blob — see validate_parse_integrity) and the tailor would have nothing
+    # to re-aim. If the LLM reader is enabled, re-derive the outline with one
+    # Groq call. The reader self-validates and returns None on any failure, so
+    # this can only ever ADD roles to an empty parse — never corrupt a good
+    # one. Gated OFF by default (REPLICA_LLM_READER): zero behaviour change
+    # until switched on. Lazy import avoids a cv_structure_reader<->pdf_editor
+    # import cycle. Result is cached below, so the Groq call fires at most once
+    # per CV.
+    try:
+        if not outline.get("roles"):
+            from agents.cv_structure_reader import (
+                llm_reader_enabled, read_outline_llm,
+            )
+            if llm_reader_enabled():
+                llm_outline = read_outline_llm(pdf_path)
+                if llm_outline and llm_outline.get("roles"):
+                    # Keep heuristic skills if the reader recovered none.
+                    if not llm_outline.get("skills") and outline.get("skills"):
+                        llm_outline["skills"] = outline["skills"]
+                    print(f"   🧩 LLM structure reader recovered "
+                          f"{len(llm_outline['roles'])} role(s) "
+                          f"(heuristic parse found 0).")
+                    outline = llm_outline
+    except Exception as _llm_err:
+        print(f"   ⚠️  LLM structure reader skipped "
+              f"({type(_llm_err).__name__}: {_llm_err})")
+
     fresh_key = _get_cache_key(pdf_path)
     try:
         stat = os.stat(pdf_path)
@@ -1464,7 +1495,18 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
     # for that role's bullets.
     role_had_glyph_bullet: Dict[int, bool] = {}
 
-    for ln in lines:
+    # Run 26 follow-up (May 2026): for each line, whether the NEXT line is a
+    # recognised job-title header. Used to spot a plain (non-bold) COMPANY
+    # line that introduces the next role — Cormac's Word CV renders the
+    # company in plain text above a bold title ("IFDS (International Financial
+    # Data Services)" then "Transfer Agency Associate, Dublin"). Section lines
+    # never contain markers (extract_structure consumes them), so "next line"
+    # == next index. (Computed once; O(n).)
+    next_is_job_title: List[bool] = [False] * len(lines)
+    for _i in range(len(lines) - 1):
+        next_is_job_title[_i] = _looks_like_job_title(lines[_i + 1]["text"])
+
+    for idx, ln in enumerate(lines):
         text = ln["text"]
         bold = _line_is_bold(ln)
         italic = _line_is_italic(ln) and not bold
@@ -1593,6 +1635,39 @@ def _role_blocks(section: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Italic sub-title directly under a fresh role header (e.g. job title)
         if italic and cur is not None and not cur["bullet_groups"]:
             cur["sub_lines"].append(ln)
+            prev_was_bullet_text = False
+            prev_line = ln
+            continue
+
+        # Run 26 follow-up (May 2026): drop a plain COMPANY line that
+        # introduces the NEXT role. Cormac's Word CV puts the company in
+        # plain (non-bold) text on its own line ABOVE the bold job-title
+        # header: "IFDS (International Financial Data Services)" then
+        # "Transfer Agency Associate, Dublin". Because it is non-bold,
+        # non-glyph and the y-gap is normal, the line-walk would otherwise
+        # FUSE it onto the previous role's last bullet ("…access controls.
+        # IFDS (International…)") — corrupting that bullet's text, its bbox
+        # (so redaction wipes the company), and the bullet index. We drop
+        # it from the logical model here: the glyphs stay on the page
+        # (never redacted, like the date-sidebar strip) and both the prev
+        # bullet and the next role parse clean. Tight signature so it fires
+        # only on the company-above-title signature:
+        #   • non-bold, non-glyph, not itself a job title
+        #   • the NEXT line IS a recognised job-title header
+        #   • short, proper-noun-like (no sentence-ending punctuation)
+        #   • sits at the role-header baseline x0, not the bullet/continuation indent
+        _ct = text.strip()
+        if (
+            not bold
+            and not explicit_bullet
+            and not marker_bullet
+            and not line_is_job_title
+            and next_is_job_title[idx]
+            and 2 <= len(_ct) <= 65
+            and _ct[-1] not in ".!?;:,"
+            and (header_baseline_x0 is None
+                 or abs(ln["bbox"][0] - header_baseline_x0) <= 6)
+        ):
             prev_was_bullet_text = False
             prev_line = ln
             continue
@@ -2112,6 +2187,270 @@ def _measured_right_margin(
     return xs[-1]
 
 
+# ─────────────────────────────────────────────────────────────
+# PARSE-INTEGRITY VALIDATION  (Task 5 — "verify, don't predict")
+# ─────────────────────────────────────────────────────────────
+#
+# detect_replica_compatibility (below) sniffs only the visual LAYOUT
+# (columns, colour blocks, images) to decide replica-vs-rebuild. It never
+# checks whether the heuristic TEXT parse actually produced clean
+# roles/bullets. A CV can pass every layout check yet parse into garbage —
+# the whole experience section collapsed into one empty-header role, a single
+# giant bullet that swallowed a section, a role header that is just a stray
+# date fragment, or column text interleaved out of reading order. Those are
+# exactly the cases the replica path ships visibly broken. This function
+# detects them DIRECTLY by inspecting the parsed structure for catastrophe
+# *signatures*.
+#
+# Why signatures and not naive coverage: extract_structure / _role_blocks
+# DELIBERATELY drop some glyphs (bare date sidebars, plain company-above-title
+# lines) — they stay on the page but leave the logical model. A naive "every
+# character must appear in a bullet" rule would false-positive on every CV
+# that uses those layouts. So we score only structural pathologies that occur
+# on a genuinely broken parse, never on the deliberate drops.
+
+def validate_parse_integrity(sections: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Inspect the heuristic parse for catastrophe signatures and return a health
+    report. Pure function — no fitz, no I/O — so it is cheap, testable and safe
+    to call from inside detect_replica_compatibility.
+
+    Returns:
+      {
+        "ok":        bool,          # score >= PARSE_OK_THRESHOLD
+        "score":     int,           # 0..100, higher = cleaner parse
+        "issues":    [str, ...],    # human-readable catastrophe signatures
+        "n_roles":   int,           # usable roles (header + >=1 bullet)
+        "n_bullets": int,           # total bullets across exp/projects
+        "metrics":   {...},         # per-signature counts for calibration
+      }
+
+    `ok=True` does NOT assert a perfect parse — only that no catastrophe
+    signature fired. The caller treats a failing report as a reason to route to
+    the rebuild path (when the gate is enabled).
+    """
+    PARSE_OK_THRESHOLD = 60
+
+    issues: List[str] = []
+    metrics: Dict[str, int] = {
+        "empty_header_collapse": 0,
+        "empty_header_minor":    0,
+        "giant_bullet":          0,
+        "bare_date_header":      0,
+        "fragment_header":       0,
+        "bbox_interleave":       0,
+        "content_no_roles":      0,
+        "duplicate_bullet":      0,
+        "role_parse_crash":      0,
+        "oversized_blob":        0,
+        "zero_roles":            0,
+        "exp_sections":          0,
+    }
+
+    pen = 0.0                  # total penalty; score = 100 - pen, floored at 0
+    cap_interleave = 0         # per-category caps keep the breakdown readable
+    cap_fragment = 0
+    cap_minor = 0
+    cap_dup = 0
+
+    total_roles = 0            # usable roles (>=1 bullet) — matches build_outline
+    total_bullets = 0
+    seen_bullet_texts: Dict[str, int] = {}
+
+    exp_secs = [s for s in (sections or [])
+                if s.get("type") in ("experience", "projects")]
+    metrics["exp_sections"] = len(exp_secs)
+
+    # ── Top-level pass over ALL sections (not just experience) ──
+    # The heuristic classifier can dump several real sections — including the
+    # whole experience block — into ONE oversized "header"/"summary"/"skills"
+    # blob (corpus evidence: DebayudhRoy 6030-char header; CV_de 4805-char
+    # header; Saumyadeep 5684-char skills). When that happens build_outline
+    # yields ZERO roles, so the tailor sees no experience to re-aim and BOTH
+    # paths ship a CV with no work history. Flag the oversized blob here
+    # (corroborating signal) and the zero-roles catastrophe after role parsing.
+    total_content_chars = 0
+    cap_blob = 0
+    _BLOB_LIMITS = {"header": 1200, "summary": 1500, "skills": 3000, "other": 2500}
+    for sec in (sections or []):
+        _st = sec.get("type")
+        _chars = sum(len(ln.get("text", "")) for ln in (sec.get("lines", []) or []))
+        total_content_chars += _chars
+        _n_ln = len(sec.get("lines", []) or [])
+        _limit = _BLOB_LIMITS.get(_st)
+        if (_limit is not None and _chars > _limit) or (_st == "skills" and _n_ln > 45):
+            issues.append(f"oversized {_st} blob ({_chars} chars, {_n_ln} lines) "
+                          f"— likely swallowed other sections")
+            metrics["oversized_blob"] += 1
+            if cap_blob < 40:
+                add = min(20, 40 - cap_blob)
+                pen += add
+                cap_blob += add
+
+    for sec in exp_secs:
+        stype = sec.get("type")
+        try:
+            roles = _role_blocks(sec)
+        except Exception as e:
+            issues.append(f"role-parse crashed in {stype}: {type(e).__name__}")
+            metrics["role_parse_crash"] += 1
+            pen += 30
+            continue
+
+        sec_lines = sec.get("lines", []) or []
+        sec_content_chars = sum(len(ln.get("text", "")) for ln in sec_lines)
+        sec_has_content = sec_content_chars >= 40
+
+        # ---- Signature 5: content present but no usable role parsed ----
+        # The whole experience section would vanish from the outline — the
+        # LLM never sees it. Hard catastrophe.
+        usable = [r for r in roles if r.get("bullet_groups")]
+        if sec_has_content and not usable:
+            issues.append(f"{stype} section has {sec_content_chars} chars of "
+                          f"content but parsed 0 usable roles")
+            metrics["content_no_roles"] += 1
+            pen += 45
+            continue
+
+        # Flatten section bullets for the section-level giant-bullet test.
+        sec_bullets = []   # list of (bullet_group, char_len)
+        for r in roles:
+            for b in r.get("bullet_groups", []):
+                blen = b.get("total_char_length", len(b.get("text", "")))
+                sec_bullets.append((b, blen))
+        sec_bullet_chars = sum(bl for _, bl in sec_bullets)
+
+        # ---- Signature 2: section-swallowing giant bullet ----
+        # Bullet boundaries failed to split, fusing several bullets (or the
+        # whole section) into one blob. Trip when one bullet dominates the
+        # section's bullet text: >=60% AND large in absolute terms, with
+        # either >=2 bullets present (clearly meant to be more) or a single
+        # very long blob (everything fused).
+        if sec_bullet_chars > 300 and sec_bullets:
+            biggest_b, biggest_len = max(sec_bullets, key=lambda t: t[1])
+            swallow = (
+                biggest_len >= 0.6 * sec_bullet_chars
+                and (
+                    (len(sec_bullets) >= 2 and biggest_len > 350)
+                    or (len(sec_bullets) == 1 and biggest_len > 550)
+                )
+            )
+            if swallow:
+                snippet = (biggest_b.get("text", "") or "")[:60]
+                issues.append(
+                    f"giant bullet swallowed "
+                    f"{int(100 * biggest_len / sec_bullet_chars)}% of {stype} "
+                    f"({biggest_len} chars): {snippet!r}"
+                )
+                metrics["giant_bullet"] += 1
+                pen += 45
+
+        for r in roles:
+            bgs = r.get("bullet_groups", []) or []
+            header = (r.get("header_text") or "").strip()
+            n_b = len(bgs)
+            if not n_b:
+                continue
+            total_roles += 1
+            total_bullets += n_b
+
+            # ---- Signature 1: empty-header role holding bullets ----
+            if not header:
+                orphan_chars = sum(
+                    b.get("total_char_length", len(b.get("text", "")))
+                    for b in bgs
+                )
+                share = (orphan_chars / sec_bullet_chars) if sec_bullet_chars else 0.0
+                if n_b >= 2 and share >= 0.5:
+                    issues.append(
+                        f"empty-header role swallowed {int(share * 100)}% of "
+                        f"{stype} bullets (parse collapse)"
+                    )
+                    metrics["empty_header_collapse"] += 1
+                    pen += 45
+                else:
+                    metrics["empty_header_minor"] += 1
+                    if cap_minor < 24:
+                        add = min(12, 24 - cap_minor)
+                        pen += add
+                        cap_minor += add
+            else:
+                # ---- Signature 3: bare-date / fragment role header ----
+                if _is_bare_date_line(header):
+                    issues.append(f"role header is a bare date fragment: {header!r}")
+                    metrics["bare_date_header"] += 1
+                    pen += 45
+                elif len(header) < 3:
+                    issues.append(f"role header is a fragment: {header!r}")
+                    metrics["fragment_header"] += 1
+                    if cap_fragment < 40:
+                        add = min(20, 40 - cap_fragment)
+                        pen += add
+                        cap_fragment += add
+
+            # ---- Signature 6: duplicate bullet text across roles ----
+            for b in bgs:
+                key = re.sub(r"\s+", " ", (b.get("text", "") or "")).strip().lower()
+                if len(key) >= 25:
+                    seen_bullet_texts[key] = seen_bullet_texts.get(key, 0) + 1
+                    if seen_bullet_texts[key] == 2 and cap_dup < 24:
+                        add = min(8, 24 - cap_dup)
+                        pen += add
+                        cap_dup += add
+                        metrics["duplicate_bullet"] += 1
+                        issues.append("duplicate bullet text across roles: "
+                                      f"{(b.get('text', '') or '')[:50]!r}")
+
+            # ---- Signature 4: bbox non-monotonicity (column interleave) ----
+            # Bullets should run top-to-bottom on a page; a later bullet that
+            # starts well ABOVE an earlier one on the SAME page means two
+            # columns were merged out of reading order. Page-aware: y resets
+            # across page breaks, so only compare within one page.
+            starts = []   # list of (page, y0) for each bullet's first line
+            for b in bgs:
+                bl = b.get("lines", []) or []
+                if not bl:
+                    continue
+                first = bl[0]
+                pg = int(first.get("page", 0) or 0)
+                y0 = float((first.get("bbox") or [0, 0, 0, 0])[1])
+                starts.append((pg, y0))
+            interleaved = any(
+                p_a == p_b and y_b < y_a - 25
+                for (p_a, y_a), (p_b, y_b) in zip(starts, starts[1:])
+            )
+            if interleaved:
+                metrics["bbox_interleave"] += 1
+                if cap_interleave < 50:
+                    add = min(25, 50 - cap_interleave)
+                    pen += add
+                    cap_interleave += add
+                issues.append("bullet reading-order interleave in role: "
+                              f"{(header[:40] or '«empty»')!r}")
+
+    # ---- Signature 7: zero experience roles in a substantial CV ----
+    # A real CV always has work history; finding none across all experience /
+    # projects sections means the parse — or the section classifier upstream —
+    # collapsed it (see the oversized-blob signal above). The LLM tailor would
+    # have nothing to re-aim, so this is the catastrophe the whole check exists
+    # to catch. Hard penalty.
+    if total_content_chars >= 1000 and total_roles == 0:
+        issues.append(f"no experience roles parsed from a {total_content_chars}-char "
+                      f"CV (classification collapse — outline has 0 roles)")
+        metrics["zero_roles"] = 1
+        pen += 60
+
+    score = int(max(0, round(100 - pen)))
+    return {
+        "ok":        score >= PARSE_OK_THRESHOLD,
+        "score":     score,
+        "issues":    issues,
+        "n_roles":   total_roles,
+        "n_bullets": total_bullets,
+        "metrics":   metrics,
+    }
+
+
 def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
     """
     Sniff the PDF's layout to decide whether the in-place replica path is
@@ -2313,6 +2652,31 @@ def detect_replica_compatibility(pdf_path: str) -> Dict[str, Any]:
                     result["compatible"] = False
                     result["reason"] = "multi-column"
                     return result
+
+        # ── Parse-integrity check (Task 5 — "verify, don't predict") ──
+        # Layout looks replica-safe; now verify the TEXT actually parses into
+        # clean roles/bullets. A CV can clear every layout check above yet
+        # collapse into garbage structure (empty-header roles, giant fused
+        # bullets, bare-date headers, interleaved columns) that the replica
+        # path would ship visibly broken. We ALWAYS attach the report for
+        # observability, but only ROUTE on it when REPLICA_PARSE_GATE=1, so we
+        # can calibrate thresholds against the live corpus before changing
+        # behaviour. Default OFF = pure observation, zero routing change.
+        # Fail-open: any error in the check leaves compatible untouched.
+        try:
+            _sections = extract_structure(pdf_path)
+            _parse = validate_parse_integrity(_sections)
+        except Exception as _pe:
+            _parse = {
+                "ok": True, "score": -1,
+                "issues": [f"validate crashed: {type(_pe).__name__}"],
+                "n_roles": 0, "n_bullets": 0, "metrics": {},
+            }
+        result["parse_integrity"] = _parse
+        if os.getenv("REPLICA_PARSE_GATE", "0") == "1" and not _parse.get("ok", True):
+            result["compatible"] = False
+            result["reason"] = "parse-integrity"
+            return result
 
         return result
     finally:
@@ -2920,9 +3284,21 @@ def apply_edits(
     pdf_path:    str,
     edits:       Dict[str, Any],
     output_path: str,
+    structure_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Apply structured edits to the PDF in-place and save to output_path.
+
+    `structure_override` (geometry bridge, May 2026): when the heuristic
+    parser collapses (0 roles) but the LLM structure reader recovered the
+    layout WITH geometry, the caller passes
+        {"roles": [<_role_blocks-shaped role>, ...],
+         "summary_section": <extract_structure-shaped summary section>|None}
+    and we apply the diff against THOSE blocks instead of re-running the
+    heuristic `_role_blocks` (which would find nothing on a collapse CV).
+    The blocks carry real bboxes from `_collect_page_lines`, so the in-place
+    redact/redraw path works unchanged. None (the default) preserves the
+    original heuristic behaviour exactly.
 
     edits = {
       "summary":      "new summary text" | None,
@@ -2957,7 +3333,14 @@ def apply_edits(
         # ── SUMMARY ────────────────────────────────────────────
         new_summary = _normalize_for_ats((edits.get("summary") or "").strip())
         if new_summary:
-            sum_sec = next((s for s in sections if s["type"] == "summary"), None)
+            # Geometry bridge: prefer the LLM-recovered summary section when
+            # provided (a collapse CV's summary is mis-sectioned by the
+            # heuristic, so the lookups below would miss it).
+            sum_sec = None
+            if structure_override and structure_override.get("summary_section"):
+                sum_sec = structure_override["summary_section"]
+            if sum_sec is None:
+                sum_sec = next((s for s in sections if s["type"] == "summary"), None)
             if sum_sec is None:
                 sum_sec = _infer_summary_from_header(sections)
             if sum_sec and sum_sec["lines"]:
@@ -2996,8 +3379,29 @@ def apply_edits(
             n_rewrites_total = 0
             n_dropped_total  = 0
             exp_sections = [s for s in sections if s["type"] in ("experience", "projects")]
+            # Geometry bridge: when the caller supplies recovered role blocks,
+            # iterate those instead of re-running the heuristic `_role_blocks`
+            # (which returns nothing on a collapse CV). A synthetic experience
+            # section carrying every override bullet line keeps
+            # `_detect_section_bullet_glyph(sec)` and `_all_lines_on_page`
+            # working with no body change below.
+            _use_override = bool(structure_override and structure_override.get("roles"))
+            if _use_override:
+                _ovr_roles = structure_override["roles"]
+                _syn_sec = {
+                    "type": "experience", "heading": "", "page": 0,
+                    "heading_bbox": None,
+                    "lines": [
+                        ln
+                        for r in _ovr_roles
+                        for b in (r.get("bullet_groups") or [])
+                        for ln in (b.get("lines") or [])
+                    ],
+                }
+                exp_sections = [_syn_sec]
             for sec in exp_sections:
-                for role in _role_blocks(sec):
+                roles_in_sec = _ovr_roles if _use_override else _role_blocks(sec)
+                for role in roles_in_sec:
                     header = (role.get("header_text") or "").strip()
                     if not header:
                         continue

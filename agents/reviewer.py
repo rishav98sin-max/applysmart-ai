@@ -158,10 +158,13 @@ TAILORED CV (as the candidate would see it after the diff was applied)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RUBRIC (score 0-100)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-90-100: Summary mirrors the JD's exact keywords; MULTIPLE bullets REWRITTEN
-        to lead with JD verbs/keywords; no filler; no fabrication.
-70-89 : Summary is good AND at least some bullets are [REWRITTEN] to mirror
-        the JD, but 1-2 keywords missed or rewrites could be sharper.
+90-100: Summary re-aims the candidate's CV-true facts toward the JD's
+        priorities, surfacing the JD keywords the CV genuinely proves;
+        MULTIPLE bullets REWRITTEN to lead with JD-relevant facts in the
+        JD's vocabulary; no filler; no fabrication.
+70-89 : Summary is re-aimed AND at least some bullets are [REWRITTEN]
+        toward the JD, but 1-2 CV-provable priorities left buried or
+        rewrites could be sharper.
 50-69 : Summary was updated but bullets were barely touched (reorder only,
         no rewrites) OR rewrites are too generic to be role-specific.
 0-49  : Summary is off-theme OR fabrications present OR top bullets ignore
@@ -230,10 +233,14 @@ STRICT RULES
     * Tailored SUMMARY is byte-identical to original (no rewrite at all):
       DEDUCT 15 points. The summary is the most-read section; an
       untailored summary means the tailor effectively didn't run.
-    * More than 3 bullets across the whole CV are NOT marked [REWRITTEN]
-      when at least 8 bullets exist and the JD has specific responsibilities
-      the bullets could have been re-framed around: DEDUCT 10 points.
-      Pure reorder-without-rewrite is not real tailoring.
+    * Any bullet marked [REWRITTEN] is a COSMETIC near-copy of its
+      "(original: ...)" line — same facts in the same order, only a
+      synonym or word swapped, no buried fact surfaced and no JD term
+      earned: DEDUCT 5 per cosmetic rewrite (max 15). A precise tailor
+      rewrites FEW bullets deeply and leaves on-target bullets VERBATIM:
+      leaving a bullet unrewritten is CORRECT, not a failure, and must
+      NOT be penalised. Cosmetic churn — not verbatim restraint — is the
+      thing to dock here.
     * Any [REWRITTEN] bullet under section=projects contains relational
       fabrication ("collaborating with stakeholders", "partnered with
       engineering", "cross-functional team", "led a team", etc.) that

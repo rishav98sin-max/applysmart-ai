@@ -124,6 +124,87 @@ def _extract_json(text: str) -> dict:
     return {}
 
 
+# Function words that signal a NON-English source bullet/summary. When the
+# original is not English, the "mid-sentence Capitalised word = proper noun"
+# heuristic breaks (German capitalises ALL nouns; other languages capitalise
+# differently), so the proper-noun preservation arm of the fabrication guard
+# is unreliable and must be skipped — numbers, acronyms and hyphen-compounds
+# still guard the real facts. Kept dependency-free (no langdetect) and small:
+# we only need to recognise the major European languages our CVs appear in.
+_NON_EN_FUNCTION_WORDS = frozenset({
+    # German
+    "und", "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen",
+    "von", "mit", "für", "im", "zur", "zum", "auf", "aus", "bei", "durch",
+    "über", "unter", "sowie", "bzw", "bis", "nach", "vor", "wurde", "werden",
+    # French
+    "le", "la", "les", "une", "et", "avec", "pour", "dans", "sur", "par",
+    "aux", "ses", "sont", "été", "été",
+    # Spanish / Portuguese / Italian
+    "el", "los", "las", "una", "con", "para", "por", "del", "como", "más",
+    "dos", "uma", "che", "di", "il", "della", "delle", "degli", "nel", "gli",
+    # Dutch
+    "het", "een", "naar", "ook",
+})
+_EN_FUNCTION_WORDS = frozenset({
+    "the", "a", "an", "and", "of", "to", "for", "with", "on", "by", "at",
+    "as", "from", "into", "across", "over", "through", "per", "using", "that",
+    "this", "their", "our", "is", "are", "was", "were", "be", "been", "or",
+    "via", "within", "between",
+})
+
+
+def _looks_non_english(text: str) -> bool:
+    """Heuristic, dependency-free: is `text` predominantly NOT English?
+
+    Used to disable the proper-noun preservation arm of the fabrication
+    guards on translated CVs (e.g. a German source bullet tailored into
+    English). Returns True only when the evidence is clear — at least two
+    foreign function words AND foreign signal outweighing English signal —
+    so ordinary English text (even fact-dense bullets with few stopwords) is
+    never misclassified.
+    """
+    if not text:
+        return False
+    toks = re.findall(r"[A-Za-zÀ-ÿ]+", text.lower())
+    if len(toks) < 4:
+        return False
+    foreign = sum(1 for t in toks if t in _NON_EN_FUNCTION_WORDS)
+    english = sum(1 for t in toks if t in _EN_FUNCTION_WORDS)
+    return foreign >= 2 and foreign > english
+
+
+def _proper_noun_core(word: str) -> str:
+    """Extract a proper-noun candidate from a token WITHOUT gluing a
+    hyphenated/slashed compound into a non-word.
+
+    The old `re.sub('[^A-Za-z]', '', w)` turned "UGC-led" into "UGCled" and
+    then demanded the rewrite contain that fabricated token — an impossible
+    bar that reverted legitimate rewrites (live evidence: DebayudhRoy bullet
+    5, "dropped concrete term 'ugcled'"). Internal separators mean the token
+    is a compound: its proper-noun atom (if any) is the embedded acronym,
+    already caught by the acronym rule, and multi-hyphen compounds are caught
+    by the compound rule. So we only return a core for a SINGLE clean word;
+    compounds return "" (skip here).
+    """
+    core = re.sub(r"^[^0-9A-Za-zÀ-ÿ]+|[^0-9A-Za-zÀ-ÿ]+$", "", word or "")
+    if not core or any(sep in core for sep in ("-", "/", ".", "&")):
+        return ""
+    return re.sub(r"[^A-Za-z]", "", core)
+
+
+def _is_sentence_initial(text: str, pos: int) -> bool:
+    """True when character offset `pos` begins a sentence — position 0 or the
+    first non-space after a sentence-ending . ! ? — so a capitalised word
+    there is capitalised by orthography, not because it is a proper noun.
+    """
+    j = pos - 1
+    while j >= 0 and text[j].isspace():
+        j -= 1
+    if j < 0:
+        return True
+    return text[j] in ".!?"
+
+
 def _extract_fact_atoms(text: str) -> List[str]:
     """
     Return the bullet's EVIDENCE ATOMS in display form — the concrete
@@ -165,7 +246,7 @@ def _extract_fact_atoms(text: str) -> List[str]:
     # syntactic, not signal). Captures tools / platforms / clients / names.
     words = text.split()
     for i, w in enumerate(words):
-        core = re.sub(r"[^A-Za-z]", "", w)
+        core = _proper_noun_core(w)
         if len(core) < 3 or not core[0].isupper():
             continue
         if i == 0 or words[i - 1].rstrip().endswith((".", "!", "?", ":")):
@@ -394,25 +475,31 @@ CV CONTENT (structured):
 RULES (strict):
 
 1. summary:
-   YOUR ACTUAL TASK — REORDER AND EMPHASISE, NOT REWRITE:
-   You are NOT generating a summary from scratch. You start from the
-   ORIGINAL summary (shown in the CV CONTENT block above) and produce
-   a re-aimed version of it. The mechanical model:
+   YOUR ACTUAL TASK — RE-AIM THE SUMMARY FROM CV-TRUE FACTS:
+   You are NOT inventing a summary from scratch, and you are NOT doing a
+   cosmetic verbatim reorder of the old one. You are COMPOSING a tight,
+   JD-aimed professional summary out of facts that are TRUE for THIS
+   candidate — drawn from the ORIGINAL summary AND the CV bullets shown
+   in the CV CONTENT block above. Rewrite the wording freely; the
+   constraint is on FACTS, not on sentence shape:
 
-     1. List the original summary's CLAUSES (split at commas, periods,
-        semicolons). Each clause carries one fact or framing.
-     2. REORDER the clauses to lead with the ones most relevant to
-        THIS JD. The first clause is the highest-priority match.
-     3. You MAY DROP up to one generic-filler clause (e.g.
-        "translating complex data into clear insights") if it adds no
-        JD-specific signal.
-     4. You MAY ADD up to one new clause built from a SPECIFIC CV
-        BULLET fact that strongly matches a JD requirement (cite the
-        concrete artefact / metric / tool — not a generic phrase).
-     5. NEVER substitute a concrete term. If the original named
+     1. You MAY rephrase, merge, split, and re-sequence freely to lead
+        with what THIS JD cares about — exactly like a person re-pitching
+        themselves for this specific role. A genuine rewrite that
+        surfaces the JD-relevant truth beats a clause-shuffle of the
+        original.
+     2. Build it with THE 4-PART STRUCTURE below — that is the shape of a
+        strong re-aimed summary. Pull the JD-aligned material from the
+        STRATEGY block (title_to_lead_with, must_include_phrases,
+        jd_thesis) and the candidate's strongest CV-true proof.
+     3. Every FACT — every tool, employer, metric, acronym, domain,
+        sector — must already exist in the CV (see THE STRICT VOCABULARY
+        RULE below). You may re-word framing; you may NOT introduce a
+        fact the CV does not contain.
+     4. NEVER substitute a concrete term. If the original named
         "MS Fabric", your rewrite still names "MS Fabric" — you do
         not swap it for "MS Excel" because the JD mentioned Excel.
-     6. The SUMMARY HARD CONSTRAINTS block above lists exactly which
+     5. The SUMMARY HARD CONSTRAINTS block above lists exactly which
         terms must survive, which title clause is allowed, and which
         sectors are CV-resident. Re-read it before you write.
 
@@ -2416,6 +2503,15 @@ def _foreign_capitalized_terms(summary: str, cv_text_set: set,
         term = m.group(0).strip()
         if term in _CAPTERM_STOPWORDS:
             continue
+        # Sentence-initial single Title-Case word: capitalised by orthographic
+        # necessity (start of summary or right after . ! ?), NOT because it is
+        # a proper noun. Flagging these reverted legitimate summaries that
+        # merely opened with a CV-absent ordinary word ("Seeking…", "Focused…",
+        # "Grounded…"). Multi-word phrases and ALL-CAPS acronyms are still
+        # checked even at sentence start, so fabricated entities are caught.
+        if (" " not in term and not term.isupper()
+                and _is_sentence_initial(summary, m.start())):
+            continue
         key = term.lower()
         if key in seen:
             continue
@@ -2960,20 +3056,27 @@ def _check_content_preserved(original: str, rewrite: str) -> Optional[str]:
         orig = orig[_colon + 1:].strip()
 
     required: List[str] = []
-    # (a) acronyms
+    # (a) acronyms — language-invariant; always enforced.
     for m in re.finditer(r"\b([A-Z]{3,})s?\b", orig):
         required.append(m.group(1).lower())
-    # (b) capitalised proper nouns (skip sentence-initial capitals)
-    words = orig.split()
-    for i, w in enumerate(words):
-        core = re.sub(r"[^A-Za-z]", "", w)
-        if len(core) < 3 or not core[0].isupper():
-            continue
-        if i == 0 or words[i - 1].rstrip().endswith((".", "!", "?", ":")):
-            continue
-        if core.isupper():               # already captured as an acronym
-            continue
-        required.append(core.lower())
+    # (b) capitalised proper nouns (skip sentence-initial capitals).
+    #   ONLY for English source text. Languages like German capitalise EVERY
+    #   common noun, so on a translated CV (German source → English rewrite)
+    #   this arm flags every source noun as a "dropped fact" and reverts all
+    #   bullets (live evidence: CV_de shipped 0/23, dropping 'verwaltung'/
+    #   'planung'/'entwicklung'). Numbers, acronyms (a) and hyphen-compounds
+    #   (c) still guard the real facts on non-English CVs.
+    if not _looks_non_english(orig):
+        words = orig.split()
+        for i, w in enumerate(words):
+            core = _proper_noun_core(w)
+            if len(core) < 3 or not core[0].isupper():
+                continue
+            if i == 0 or words[i - 1].rstrip().endswith((".", "!", "?", ":")):
+                continue
+            if core.isupper():               # already captured as an acronym
+                continue
+            required.append(core.lower())
     # (c) distinctive hyphenated compounds (>=2 hyphens, e.g. sprint-over-sprint)
     for m in re.finditer(r"\b\w+(?:-\w+){2,}\b", orig):
         for part in m.group(0).lower().split("-"):
@@ -3292,6 +3395,7 @@ def _normalise_bullet_list(
                     "rewrite_preview": text,
                     "role": role_label,
                     "orig_text": orig_text,
+                    "orig_len": orig_len,
                 })
                 text = None   # fall back to original wording
             else:
@@ -3727,6 +3831,66 @@ def _build_feedback_addendum(
     return "\n".join(parts)
 
 
+def _trim_to_fit(text: str, lo: int, hi: int, orig_text: str,
+                 orig_len: Optional[int] = None) -> Optional[str]:
+    """Deterministically shorten an over-long rewrite to fit its PDF slot.
+
+    The focused LLM retry frequently fails to compress (live evidence:
+    "recovered 0 bullets" — the cheap model re-overshoots). This is the
+    deterministic backstop that KEEPS the tailoring instead of silently
+    reverting to the source bullet: drop a trailing parenthetical, then
+    trailing words, until the text fits within [lo, hi] — but NEVER remove a
+    fact atom or number token the guards require. Returns the trimmed text if
+    it fits and passes `_rewrite_is_safe`, else None (caller keeps original).
+    """
+    t = (text or "").strip()
+    if not t or hi <= 0:
+        return None
+
+    required = [a.lower() for a in _extract_fact_atoms(orig_text or "")]
+    orig_nums = {
+        m.group(0).strip().lower()
+        for m in _NUMBER_RX.finditer(orig_text or "")
+    }
+    must = {x for x in (set(required) | orig_nums) if x}
+
+    def _keeps_facts(s: str) -> bool:
+        sl = s.lower()
+        return all((tok in sl or tok.rstrip("s") in sl) for tok in must)
+
+    if len(t) <= hi:
+        return t if (len(t) >= lo and _keeps_facts(t)) else None
+
+    # 1) Drop a trailing parenthetical / bracketed aside first.
+    trial = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]\s*$", "", t).strip()
+    if trial and len(trial) <= hi and _keeps_facts(trial):
+        t = trial
+
+    # 2) Drop trailing words until it fits the slot ceiling.
+    if len(t) > hi:
+        words = t.split()
+        while words and len(" ".join(words)) > hi:
+            words.pop()
+        cand = " ".join(words)
+        # Repair a dangling connector / punctuation at the new end so the
+        # trimmed bullet reads as a clean sentence, not a cut-off fragment.
+        cand = re.sub(r"[\s,;:&/–—-]+$", "", cand).strip()
+        cand = re.sub(
+            r"\b(?:and|with|to|for|of|the|a|an|including|via|using|by|in|on|"
+            r"that|which|while)$",
+            "", cand, flags=re.IGNORECASE,
+        ).strip()
+        cand = re.sub(r"[\s,;:&/–—-]+$", "", cand).strip()
+        t = cand
+
+    if not t or not (lo <= len(t) <= hi) or not _keeps_facts(t):
+        return None
+    # Final authority: the same guard the apply path enforces (now language-
+    # and hyphen-aware after the B1/B2 fixes).
+    ok, _reason = _rewrite_is_safe(orig_text, t, original_length=orig_len)
+    return t if ok else None
+
+
 def _focused_length_rewrite(
     rejected:      List[Dict[str, Any]],
     jd_priorities: Dict[str, Any],
@@ -3801,6 +3965,25 @@ def _focused_length_rewrite(
         ok, _reason = _rewrite_is_safe(r["orig_text"], txt)
         if ok:
             out.setdefault(r["role"], {})[r["idx"]] = txt
+
+    # Deterministic fallback: for any bullet the LLM did NOT bring in-band,
+    # trim the original too-long rewrite to fit its slot WITHOUT dropping a
+    # fact. The cheap model reliably fails to compress here (live evidence:
+    # "recovered 0 bullets"); trimming keeps the tailoring rather than
+    # silently reverting to the source bullet.
+    for r in rejected:
+        role, idx = r.get("role"), r.get("idx")
+        if role in out and idx in out[role]:
+            continue
+        trimmed = _trim_to_fit(
+            r.get("rewrite") or "",
+            int(r.get("lo") or 0),
+            int(r.get("hi") or 0),
+            r.get("orig_text") or "",
+            r.get("orig_len"),
+        )
+        if trimmed:
+            out.setdefault(role, {})[idx] = trimmed
     return out
 
 
@@ -4772,6 +4955,8 @@ def tailor_cv_diff(
                 "role":      role,
                 "idx":       r.get("bullet_index"),
                 "orig_text": orig,
+                "rewrite":   r.get("rewrite_preview"),
+                "orig_len":  r.get("orig_len"),
                 "lo":        int(m.group(2)),
                 "hi":        int(m.group(3)),
             })

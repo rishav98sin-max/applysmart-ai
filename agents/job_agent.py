@@ -20,7 +20,7 @@ from agents.cv_parser import parse_cv
 from agents.planner import build_plan
 from agents.job_scraper import boards_fallback_sequence, scrape_jobs
 from agents.job_matcher import match_cv_to_job
-from agents.cv_tailor import tailor_cv, tailor_cv_structured
+from agents.cv_tailor import tailor_cv, tailor_cv_structured, review_rebuilt_structured
 from agents.cv_diff_tailor import tailor_cv_diff
 from agents.pdf_editor import (
     apply_edits as apply_pdf_edits,
@@ -1293,6 +1293,11 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
 
             best_diff:   Optional[Dict[str, Any]] = None
             best_review: Optional[Dict[str, Any]] = None
+            # Geometry bridge (May 2026): set to the LLM-recovered geometry
+            # when a collapse CV's layout is editable but its heuristic parse
+            # failed; passed to apply_pdf_edits so the in-place path can place
+            # edits it otherwise couldn't locate. None for every normal CV.
+            replica_geometry: Optional[Dict[str, Any]] = None
 
             # May 13 (DOCX path): reuse the job-scoped docx_route resolved
             # before the strategist call (so both agents see the same outline).
@@ -1349,6 +1354,40 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     }
                 else:
                     replica_check = _detect_replica_compatibility(state["cv_path"])
+
+                # ── Geometry-bridge rescue (May 2026) ────────────────
+                # A CV reaches a parse-integrity failure ONLY after passing
+                # every layout check (single-column, not image/scanned/
+                # colour-blocks) — so its layout IS editable; the heuristic
+                # just mis-sectioned its text. When the LLM structure reader
+                # also recovered usable GEOMETRY for it (outline._geometry,
+                # validated by validate_geometry_blocks), edit IN PLACE using
+                # that geometry instead of bouncing to rebuild. This keeps the
+                # MAIN (replica) path for ATS/Word CVs whose text collapsed.
+                # Genuinely incompatible layouts never carry a parse_integrity
+                # report (they early-return first), so they can't trip this.
+                _pi = replica_check.get("parse_integrity") or {}
+                _parse_collapsed = bool(_pi) and not _pi.get("ok", True)
+                _geo = (outline_cache or {}).get("_geometry")
+                if _parse_collapsed and _geo and _geo.get("roles"):
+                    replica_geometry = _geo
+                    # Reclaim the CV for in-place editing if the parse gate had
+                    # marked it incompatible (REPLICA_PARSE_GATE=1).
+                    if (not replica_check.get("compatible", True)
+                            and replica_check.get("reason") == "parse-integrity"):
+                        replica_check = {
+                            **replica_check,
+                            "compatible": True,
+                            "reason": "geometry-bridge",
+                        }
+                    print(
+                        f"   🧩 {tag} geometry bridge active — editing in "
+                        f"place via LLM-recovered structure "
+                        f"({len(_geo['roles'])} roles, "
+                        f"{sum(len(r.get('bullet_groups') or []) for r in _geo['roles'])} "
+                        f"bullets)."
+                    )
+
                 replica_skipped = not replica_check.get("compatible", True)
                 if replica_skipped:
                     reason = replica_check.get("reason", "unknown")
@@ -1724,7 +1763,10 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                                 f"({reason_docx}) — falling back to rebuild."
                             )
                     else:
-                        report = apply_pdf_edits(state["cv_path"], best_diff, replica_path)
+                        report = apply_pdf_edits(
+                            state["cv_path"], best_diff, replica_path,
+                            structure_override=replica_geometry,
+                        )
                     # Stash table-protection stats onto best_review so the UI
                     # job-card can show "N tables protected" in the insight
                     # expander — same plumbing-free strategy as _bullet_reverts.
@@ -1789,6 +1831,7 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     job_description = jd,
                     job_title       = title,
                     company         = company,
+                    strategy        = job_strategy,
                 )
                 if structured_doc is not None:
                     # Preferred renderer (batch 23): Typst-based — polished
@@ -1836,6 +1879,7 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                         job_description = jd,
                         job_title       = title,
                         company         = company,
+                        strategy        = job_strategy,
                     )
                     cv_pdf = generate_cv_pdf_styled(
                         cv_text       = tcv_text,
@@ -1846,35 +1890,38 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     )
                 if cv_pdf and os.path.exists(cv_pdf):
                     rmode = "rebuilt"
-                    # B1: when we end up on rebuild path AND best_review
-                    # carried over the optimistic empty-diff stub from an
-                    # earlier branch, override it so the UI shows truth.
-                    # The replica path was attempted but failed; the user is
-                    # getting a brand-new ReportLab PDF, not their original
-                    # layout with surgical edits.
-                    if best_review is None or best_review.get("verdict") in (
-                        "accept", None,
-                    ) and best_review.get("score", 0) >= 90 and not (
-                        best_diff and (
-                            best_diff.get("summary")
-                            or best_diff.get("bullets")
-                            or best_diff.get("skills_order")
+                    # Real fabrication / credential gate for the rebuild output
+                    # (batch 16) — replaces the old hardcoded score:65 stub.
+                    # We only reach here when the replica path produced NO PDF,
+                    # so any prior best_review reflects a FAILED replica attempt
+                    # and is superseded by this honest rebuild verdict. The gate
+                    # runs the same deterministic guards the replica path trusts
+                    # (credentials / concrete terms / sector fabrication /
+                    # do_not_inject leakage) with NO extra LLM call.
+                    try:
+                        best_review = review_rebuilt_structured(
+                            structured_doc   = structured_doc,
+                            rebuilt_text     = tcv_text,
+                            original_summary = (outline_cache or {}).get("summary") or "",
+                            original_cv_text = state["cv_text"],
+                            job_description  = jd,
+                            job_title        = title,
+                            company          = company,
+                            do_not_inject    = (job_strategy or {}).get("do_not_inject") or [],
+                            outline          = outline_cache,
                         )
-                    ):
+                    except Exception as _gate_err:
+                        print(f"   ⚠️  {tag} rebuild gate failed ({_gate_err}); using neutral score.")
                         best_review = {
                             "score": 65,
                             "verdict": "rebuild_fallback",
                             "feedback": (
-                                "Used rebuild path (LLM-rewritten text + ReportLab "
-                                "PDF) — your original layout was not preserved. "
-                                "Content IS tailored but visual fidelity differs "
-                                "from your uploaded CV."
+                                "Rebuild path used (original layout not preserved); "
+                                "content IS tailored. Quality gate unavailable."
                             ),
                             "strengths": [], "weaknesses": [],
                             "_rebuild_mode": True,
                         }
-                    elif best_review is not None:
-                        best_review["_rebuild_mode"] = True
             return cv_pdf, tcv_text, best_review, rmode
 
         # ── Sequential execution: cover-letter THEN CV-tailor ────────
