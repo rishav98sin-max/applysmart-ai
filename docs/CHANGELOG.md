@@ -9,6 +9,26 @@
 
 ---
 
+## v1.4.4 — Line-aware length floor + multi-point block handling (batch 16) (30 May 2026)
+
+**Bet under test:** Will making the in-place length-fit floor *line-aware* stop the replica path from silently underfilling a long bullet's slot — shipping a rewrite that drops a whole scope clause yet still "fits"?
+
+### Shipped
+
+**Replica / in-place tailoring (batch 16):**
+
+- **Line-aware length floor** (`_rewrite_is_safe`, `cv_diff_tailor.py`) — the old floor was a flat 62% of original length, which contradicted the guard's own documented rule: a slot is the union of a bullet's physical lines, so a gap only appears when the rewrite drops a whole *line*. The floor is now `1 − 1/N` (N = estimated wrapped lines at ~90 chars/line), so a rewrite may drop at most one line of a multi-line block. No-op for short (≤2-line) bullets; tightens as blocks grow.
+- **Multi-point "·" block contract** (`_format_outline_for_prompt`) — some ATS CVs run multiple achievements in one wrapped flow separated by " · " (U+00B7). The whole role block is the only renderable unit, so the tailor prompt now names it as a single contract and the point separators must survive intact.
+- **WORK HISTORY routing fix** (`pdf_editor.py`) — the section-anchor regex now routes a "WORK HISTORY" heading to the roles parser correctly.
+
+### Why
+
+Run 3 on Saumyadeep's CV: ROLE-3 (a 411-char, ~5-line block) compressed to 280 chars (68%) — it passed the flat 62% floor but underfilled its slot *and* silently dropped the scope clause "…overseeing other deployments by the team". The flat floor reasoned about a 2-line bullet but applied to all. The line-aware floor reverts ROLE-3 to full parity and caught a second latent underfill (ROLE-4, 528 chars / 77.5%) → re-aimed to 95.4%. Review score 70 → 80, 0 fabrications, no overflow or gaps in the rendered PDF.
+
+> Note: this entry covers the **replica-path** batch-16 work only (`cv_diff_tailor.py`, `pdf_editor.py`). The parallel **rebuild-path** batch-16 changes (`cv_tailor.py`, `cv_render_typst.py`, `job_agent.py`) are tracked separately.
+
+---
+
 ## v1.4.3 — Preservation-first tailoring + matcher fixes (18 May 2026)
 
 **Bet under test:** Will a *preservation-first* discipline — a rewrite RE-FRAMES but never REMOVES — stop the pipeline from shipping bullets that are *worse* than the original?

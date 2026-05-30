@@ -278,6 +278,13 @@ reads from both.
 - **CV formats.** Text-based PDFs only. Scanned PDFs, password-protected
   files, and sub-500-char CVs are rejected by the pre-flight validator
   with a human-readable reason. See `docs/SUPPORTED_CV_FORMATS.md`.
+- **In-place text-layer order.** The replica path edits a bullet by
+  redacting the old text and re-flowing the rewrite via `insert_textbox`,
+  which appends it to the end of the PDF content stream. The result is
+  *visually* correct (text is coordinate-placed) and reads correctly in
+  layout-aware extractors (pdfminer.six, pdfplumber, and Workday /
+  Greenhouse-class ATS), but a naive stream-order scraper may read edited
+  bullets out of order. Unedited (reverted) blocks stay in place.
 - **File size limit.** CV upload limited to 7 MB.
 - **Per-browser run limit.** 3 runs per anonymous id per day. The id is
   stored in the URL (`?aid=<uuid>`) so it survives refreshes; a new
@@ -381,7 +388,10 @@ failure mode it prevents and a precise location in the code.
    preservation guards** in `cv_diff_tailor.py` runs before any rewrite
    ships: identical-rewrite suppression (near-copies are kept-as-original,
    not shipped as "rewrites"), length-fit guard (rewrite must occupy
-   roughly the original's slot so the in-place edit doesn't overflow),
+   roughly the original's slot so the in-place edit neither overflows nor
+   leaves a gap — the floor is **line-aware**: a rewrite may drop at most
+   one wrapped line of a multi-line bullet, so a long block can't silently
+   shrink and underfill its slot),
    concrete-term preservation (acronyms / proper nouns / named methods
    from the original must survive — acronyms accept faithful expansions
    like PRD → "product requirements document"), keyword-jam backstop

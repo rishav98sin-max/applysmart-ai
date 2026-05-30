@@ -492,8 +492,17 @@ _HEADINGS: Dict[str, re.Pattern] = {
         r"^\s*(professional\s+summary|career\s+summary|executive\s+summary|summary|profile)\s*$",
         re.I,
     ),
+    # May 2026 (Saumyadeep CV evidence): added "work history", bare
+    # "employment", and "career history". His ATS-friendly CV headed its jobs
+    # section "WORK HISTORY" — not in the old list — so the line failed heading
+    # classification and all three roles (58 lines) were absorbed into the
+    # preceding SKILLS section, collapsing the parse to 0 roles and bouncing a
+    # clean single-column CV off the replica path. These are common real-world
+    # experience-section synonyms; the strict ^...$ anchor keeps them from
+    # matching prose.
     "experience": re.compile(
-        r"^\s*(professional\s+experience|work\s+experience|employment\s+history|"
+        r"^\s*(professional\s+experience|work\s+experience|work\s+history|"
+        r"employment\s+history|employment|career\s+history|"
         r"relevant\s+experience|experience)\s*$",
         re.I,
     ),

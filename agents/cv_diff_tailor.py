@@ -301,12 +301,21 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
         "possible version of this bullet for THIS job, anchored to its "
         "facts. Lead with whatever the JD cares about most. Write natural "
         "English a recruiter reads in seconds.\n"
-        "LENGTH: aim to fill the SAME NUMBER OF LINES as the original so "
-        "the slot stays visually intact — but TIGHTER IS BETTER. A sharper, "
-        "shorter rewrite (down to ~80% of the original) is a WIN, not a "
-        "loss. NEVER pad with filler or repeat a phrase to hit a length; a "
-        "crisp 18-word bullet beats a padded 25-word one. Stay at or under "
-        "max=Mc characters. Add NO fact that isn't in the original."
+        "LENGTH — MATCH THE ORIGINAL, BOTH DIRECTIONS: re-word the bullet at "
+        "the SAME length so the slot stays visually intact. A rewrite that "
+        "compresses or drops part of the content UNDER-fills the slot and "
+        "leaves a visible gap — that is reverted, exactly like an over-long "
+        "one. NEVER pad with filler or repeat a phrase, but never condense a "
+        "dense bullet into a shorter summary either. Stay at or under max=Mc "
+        "characters. Add NO fact that isn't in the original.\n"
+        "MULTI-POINT BLOCK: a bullet flagged 'MULTI-POINT BLOCK — N "
+        "achievements' is several achievements run together in ONE wrapped "
+        "text flow, separated by ' · ' (they have NO per-point slot). Re-word "
+        "EACH of the N points in place — re-aim its wording toward the JD and "
+        "keep its facts — KEEP the ' · ' separators and ALL N points, and "
+        "hold the SAME total length. Condensing the points into one tight "
+        "sentence drops achievements and underfills the slot; the editor "
+        "reverts it to the original."
     )
     for r in outline.get("roles", []):
         parts.append(f'Role "{r["header"]}":')
@@ -334,10 +343,31 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
             # turns post-hoc reverts into first-pass correctness.
             atoms = _extract_fact_atoms(btext)
             facts_str = ", ".join(atoms) if atoms else "(none — free rewrite)"
-            parts.append(
-                f"  [{i}] [≈{orig_words} words, max={max_chars}c | "
-                f"FACTS: {facts_str}] {btext}"
-            )
+            # Inline-separated multi-point block (May 2026 — Saumyadeep CV).
+            # Some ATS CVs run several achievements together in ONE wrapped
+            # text flow, separated inline by " · " — the points do NOT sit on
+            # their own physical lines, so the editor can only re-flow the
+            # WHOLE block into its rectangle (there is no per-point slot). The
+            # reliable failure is the LLM condensing N points into one tight
+            # sentence: that underfills the slot, the length guard reverts the
+            # whole block, and it ships verbatim. Flag the block, show the
+            # point count, and publish BOTH length bounds so the LLM aims for
+            # parity (re-word every point) instead of compression.
+            points = [p for p in re.split(r"\s+[·•‣∙]\s+", btext.strip()) if p.strip()]
+            if len(points) >= 2:
+                min_chars = max(1, int(round(orig_len * 0.9)))
+                parts.append(
+                    f"  [{i}] [MULTI-POINT BLOCK — {len(points)} achievements "
+                    f"joined by ' · '; re-word EACH point in place, KEEP the "
+                    f"' · ' separators and ALL {len(points)} points, hold total "
+                    f"length {min_chars}-{max_chars}c (≈{orig_words} words) — do "
+                    f"NOT condense or drop points | FACTS: {facts_str}] {btext}"
+                )
+            else:
+                parts.append(
+                    f"  [{i}] [≈{orig_words} words, max={max_chars}c | "
+                    f"FACTS: {facts_str}] {btext}"
+                )
         parts.append("")
     skills = outline.get("skills") or []
     if skills:
@@ -358,8 +388,8 @@ _PROMPT_TEMPLATE = """╔══════════════════�
 ║  a concrete fact = also failed (reverts to original).                ║
 ║                                                                       ║
 ║  THE LENGTH RULE: fill the same NUMBER OF LINES as the original so    ║
-║  the slot stays intact — but TIGHTER IS BETTER. A sharper, shorter    ║
-║  rewrite (down to ~80% of original) is a WIN. Never pad or repeat to  ║
+║  the slot stays intact. MATCH the length BOTH ways: a too-short      ║
+║  rewrite under-fills it and is reverted too. Never pad or repeat to  ║
 ║  hit a length. Stay at/under the [max=Mc] shown — a longer rewrite    ║
 ║  overflows the slot and is reverted. Keep every FACT atom listed.     ║
 ╚══════════════════════════════════════════════════════════════════════╝
@@ -3072,7 +3102,22 @@ def _check_content_preserved(original: str, rewrite: str) -> Optional[str]:
             core = _proper_noun_core(w)
             if len(core) < 3 or not core[0].isupper():
                 continue
-            if i == 0 or words[i - 1].rstrip().endswith((".", "!", "?", ":")):
+            _prev = words[i - 1].rstrip() if i > 0 else ""
+            # Sentence-initial capitals are positional, not proper nouns —
+            # skip them. A word following an inline bullet separator (· • ‣ ∙)
+            # is the START of a new point in a run-together multi-point block
+            # (e.g. "…layer. · Worked as an IICS developer…"), so its capital
+            # is positional too. Without this, every point's leading verb
+            # ("Worked", "Performed", "Actively") is flagged as a dropped
+            # "concrete term" and the rewrite reverts — blocking all tailoring
+            # of inline-separated ATS bullets (Saumyadeep CV). Real proper
+            # nouns mid-point and acronyms (arm a) stay protected.
+            if (
+                i == 0
+                or _prev.endswith((".", "!", "?", ":"))
+                or _prev in ("·", "•", "‣", "∙")
+                or _prev[-1:] in ("·", "•", "‣", "∙")
+            ):
                 continue
             if core.isupper():               # already captured as an acronym
                 continue
@@ -3155,20 +3200,29 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
     # Use the provided original_length if available, otherwise fall back to len(orig)
     orig_len = original_length if original_length is not None else len(orig)
 
-    # Band = 62%–108% of the original length.
-    #   • Floor 0.62 (Run 26 follow-up, May 2026) — relaxed from 0.78.
-    #     The floor's ONLY job is to avoid a visible whitespace gap in
-    #     the slot, and a gap appears only when the rewrite drops a whole
-    #     LINE — i.e. roughly below ~60% of a 2-line bullet. A rewrite at
-    #     65-78% of a dense bullet still wraps to the same line count and
-    #     renders flush. The old 0.78 floor rejected genuinely-tighter
-    #     rewrites (live evidence: DeepSeek's isolated rewrites landed at
-    #     68-75% and were bounced). Dropped FACTS are caught separately by
-    #     the number-token + _check_content_preserved guards below, so the
-    #     floor does not need to police content — only gross under-fill.
-    #   • Ceiling 1.08 (_REWRITE_LEN_MAX_RATIO) — longer than this risks
-    #     an extra wrapped line that overflows the slot.
-    lo = max(45, round(orig_len * 0.62))
+    # Band: dynamic LINE-AWARE floor … 1.08 ceiling.
+    #   • Floor — the slot is the union of the bullet's physical lines, so a
+    #     visible whitespace gap appears only when the rewrite drops a whole
+    #     wrapped LINE. The old flat 0.62 (relaxed from 0.78 in Run 26 to let
+    #     genuinely-tighter rewrites of SHORT bullets through) was reasoned on
+    #     a 2-line bullet but applied to EVERY bullet — so on a long block it
+    #     silently allowed dropping 2+ lines (live evidence: ROLE-3, a ≈5-line
+    #     411-char block, compressed to 68% / ~3 lines, leaving a gap AND
+    #     dropping the "overseeing other deployments" scope clause). Encode the
+    #     real rule instead — keep ALL-BUT-ONE line: ratio = 1 - 1/N for an
+    #     N-line block. That is ≤0.62 (a no-op) for N≤2 — short bullets stay as
+    #     permissive as before — and tightens as the block grows, forcing a
+    #     length-matched RE-AIM (which retains content) or a clean revert to
+    #     the full-length original, never a lossy half-fill. N is estimated
+    #     from length at this CV's body width (~90 chars/wrapped line). Dropped
+    #     FACTS are still caught by the number-token + _check_content_preserved
+    #     guards below, so the floor only polices under-fill.
+    #   • Ceiling 1.08 (_REWRITE_LEN_MAX_RATIO) — longer risks an extra wrapped
+    #     line that overflows the slot.
+    _est_lines = max(1, round(orig_len / 90))   # ~90 chars per wrapped body line
+    _line_floor = (1.0 - 1.0 / _est_lines) if _est_lines >= 2 else 0.0
+    _floor_ratio = max(0.62, _line_floor)
+    lo = max(45, round(orig_len * _floor_ratio))
     # Ceiling carries a small absolute grace — a few chars over the ratio
     # still wraps into the same slot, and the apply-time slot check is the
     # real overflow gate. The floor stays strict (a short rewrite leaves a
