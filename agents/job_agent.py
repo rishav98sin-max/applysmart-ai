@@ -20,7 +20,10 @@ from agents.cv_parser import parse_cv
 from agents.planner import build_plan
 from agents.job_scraper import boards_fallback_sequence, scrape_jobs
 from agents.job_matcher import match_cv_to_job
-from agents.cv_tailor import tailor_cv, tailor_cv_structured, review_rebuilt_structured
+from agents.cv_tailor import (
+    tailor_cv, tailor_cv_structured, review_rebuilt_structured,
+    apply_authoritative_identity,
+)
 from agents.cv_diff_tailor import tailor_cv_diff
 from agents.pdf_editor import (
     apply_edits as apply_pdf_edits,
@@ -1834,6 +1837,24 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     strategy        = job_strategy,
                 )
                 if structured_doc is not None:
+                    # Identity is ground truth from the form, never the model
+                    # (batch 16). Prevents "Full Name" / "email@example.com"
+                    # placeholders shipping in a rebuild when the CV text was
+                    # too sparse for the LLM to extract a real name/email.
+                    apply_authoritative_identity(
+                        structured_doc,
+                        name  = state.get("candidate_name", ""),
+                        email = state.get("user_email", ""),
+                    )
+                    # Summary carry-forward (no fabrication): if the rebuild
+                    # dropped the summary entirely, fall back to the candidate's
+                    # ORIGINAL summary so the CV still opens with one — their
+                    # own words, zero fabrication risk. Renderers place the
+                    # summary at the top (WeasyPrint template / Typst reorder).
+                    if not str(structured_doc.get("summary") or "").strip():
+                        _orig_sum = str((outline_cache or {}).get("summary") or "").strip()
+                        if _orig_sum:
+                            structured_doc["summary"] = _orig_sum
                     # Preferred renderer (batch 23): Typst-based — polished
                     # monochrome output, embedded fonts, auto-tenure calc,
                     # 4-corner role layout. Falls through to the WeasyPrint
@@ -1922,6 +1943,97 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                             "strengths": [], "weaknesses": [],
                             "_rebuild_mode": True,
                         }
+
+                    # Never-ship retry (batch 16): the gate's CV cross-check
+                    # confirms a leaked term is a TRUE fabrication (present in the
+                    # rebuild AND absent from the real CV). Re-run the structured
+                    # tailor ONCE with a hardened, NAMED prohibition, then GATE the
+                    # retry on its reconstructed text BEFORE rendering — so we never
+                    # overwrite the good first attempt on disk, and skip a wasted
+                    # render when the retry is no better. Adopt the retry only if it
+                    # scores higher. One extra free-tier call, only when a real leak
+                    # fires (0 across the current corpus).
+                    _leaked = (best_review or {}).get("_leaked_terms") or []
+                    if _leaked and structured_doc is not None:
+                        print(f"   🔁 {tag} rebuild leaked {_leaked}; retrying once (hardened prohibition).")
+                        try:
+                            _retry_doc = tailor_cv_structured(
+                                cv_text            = state["cv_text"],
+                                job_description    = jd,
+                                job_title          = title,
+                                company            = company,
+                                strategy           = job_strategy,
+                                extra_prohibitions = _leaked,
+                                # Higher temperature than the first pass (0.2):
+                                # a low-temp retry reproduces the same draft and
+                                # re-leaks. More variance + the hardened ban lets
+                                # the model find a different, leak-free phrasing.
+                                temperature        = 0.55,
+                            )
+                        except Exception as _re:
+                            _retry_doc = None
+                            print(f"   ⚠️  {tag} rebuild retry tailor failed ({_re}); keeping first attempt.")
+                        if _retry_doc is not None:
+                            apply_authoritative_identity(
+                                _retry_doc,
+                                name  = state.get("candidate_name", ""),
+                                email = state.get("user_email", ""),
+                            )
+                            if not str(_retry_doc.get("summary") or "").strip():
+                                _rs = str((outline_cache or {}).get("summary") or "").strip()
+                                if _rs:
+                                    _retry_doc["summary"] = _rs
+                            _rparts = [_retry_doc.get("summary", "")]
+                            for _s in _retry_doc.get("sections", []):
+                                _rparts.append("\n" + _s.get("heading", ""))
+                                for _r in _s.get("roles", []) or []:
+                                    _rparts.append(_r.get("title", ""))
+                                    for _b in _r.get("bullets", []) or []:
+                                        _rparts.append(f"- {_b}")
+                                for _p in _s.get("paragraphs", []) or []:
+                                    _rparts.append(_p)
+                            _retry_text = "\n".join(p for p in _rparts if p).strip()
+                            try:
+                                _retry_review = review_rebuilt_structured(
+                                    structured_doc   = _retry_doc,
+                                    rebuilt_text     = _retry_text,
+                                    original_summary = (outline_cache or {}).get("summary") or "",
+                                    original_cv_text = state["cv_text"],
+                                    job_description  = jd,
+                                    job_title        = title,
+                                    company          = company,
+                                    do_not_inject    = (job_strategy or {}).get("do_not_inject") or [],
+                                    outline          = outline_cache,
+                                )
+                            except Exception as _re2:
+                                _retry_review = None
+                                print(f"   ⚠️  {tag} rebuild retry gate failed ({_re2}); keeping first attempt.")
+                            if _retry_review and _retry_review.get("score", 0) > best_review.get("score", 0):
+                                _retry_pdf = generate_cv_pdf_styled_via_typst(
+                                    structured = _retry_doc,
+                                    job_title  = title,
+                                    company    = company,
+                                    output_dir = out_dir,
+                                )
+                                if not _retry_pdf:
+                                    _retry_pdf = generate_cv_pdf_styled_from_structured(
+                                        structured    = _retry_doc,
+                                        job_title     = title,
+                                        company       = company,
+                                        output_dir    = out_dir,
+                                        style_profile = style_profile,
+                                    )
+                                if _retry_pdf and os.path.exists(_retry_pdf):
+                                    print(f"   ✅ {tag} retry improved {best_review.get('score')}→{_retry_review.get('score')}; adopted.")
+                                    cv_pdf         = _retry_pdf
+                                    tcv_text       = _retry_text
+                                    structured_doc = _retry_doc
+                                    best_review    = _retry_review
+                                else:
+                                    print(f"   ↩️  {tag} retry render failed; keeping first attempt.")
+                            else:
+                                _rsc = _retry_review.get("score") if _retry_review else "n/a"
+                                print(f"   ↩️  {tag} retry not better ({_rsc} <= {best_review.get('score')}); keeping first attempt.")
             return cv_pdf, tcv_text, best_review, rmode
 
         # ── Sequential execution: cover-letter THEN CV-tailor ────────

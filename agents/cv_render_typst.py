@@ -234,6 +234,14 @@ def _build_renderer_dict(structured: Dict[str, Any]) -> Dict[str, Any]:
         if s and "summary" not in sections:
             sections["summary"] = [s]
 
+    # Summary FIRST (batch 16): a rebuilt CV must open with the professional
+    # summary — matching the WeasyPrint template (which renders it above the
+    # section loop) and canonical ATS order. The renderer emits sections in
+    # YAML order, and dict-insertion order above puts a root-level summary
+    # LAST, so force it to the front whatever its source.
+    if "summary" in sections:
+        sections = {"summary": sections.pop("summary"), **sections}
+
     cv_block["sections"] = sections
 
     # Monochrome design block, hardcoded. classic theme = tightest ATS layout.
@@ -334,9 +342,14 @@ def render_cv_to_pdf(
             typst_path = generate_typst(model)
             pdf_path   = generate_pdf(model, typst_path)
 
-            # The renderer wrote to its own naming scheme; rename to ours.
+            # The renderer wrote to its own naming scheme; move to ours.
+            # os.replace (not Path.rename) so a pre-existing target — e.g. a
+            # prior replica/text-path attempt that already wrote this filename
+            # in the same session dir — is overwritten atomically instead of
+            # raising FileExistsError on Windows, which would otherwise force
+            # a silent demotion to the inferior text-path fallback.
             if pdf_path and Path(pdf_path).exists():
-                Path(pdf_path).rename(out_pdf)
+                os.replace(pdf_path, out_pdf)
                 return out_pdf
             return None
         finally:

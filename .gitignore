@@ -79,5 +79,10 @@ diagnostics/_*.pdf
 # Audit reports (per-session — keep locally)
 AUDIT_REPORT_*.md
 
+# E2E audit harness run outputs (generated PDFs/PNGs/.typ + real candidate CVs —
+# never commit; the harness + tests in _audit_e2e/ ARE tracked)
+_audit_e2e/out/
+_audit_e2e/bridge_out/
+
 # Per-run probe / render scratch dirs (Run 24/25/26 etc.)
 _r*render/

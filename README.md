@@ -19,14 +19,20 @@ sees them.
 - **In-place PDF editing** — tailored CVs preserve the user's original
   layout, fonts, and colours via byte-level PyMuPDF edits. No generic
   template swap.
-- **WeasyPrint HTML/CSS rebuild fallback** — when a designer or
-  multi-column template can't be edited in place, we rebuild into an
-  ATS-safe, page-count-preserving PDF via semantic HTML instead of the
-  older ReportLab path.
+- **Structured rebuild fallback** — when a designer or multi-column
+  template can't be edited in place, we rebuild into an ATS-safe,
+  page-count-preserving PDF. A Typst renderer (embedded fonts, monochrome
+  ATS layout, auto-tenure calc) is preferred, falling through to a
+  WeasyPrint HTML/CSS path and then ReportLab. Identity (name + email) is
+  forced from the validated form fields, so a sparse CV can never ship a
+  placeholder name.
 - **Honest tailoring** — prompt-level fabrication bans plus post-gen
   guards that scan every summary and cover letter for tool/framework
   names absent from the CV and auto-retry or revert. Works identically
-  on the Groq fallback path.
+  on the Groq fallback path. The clean-slate rebuild path is held to the
+  same bar: a deterministic credential / sector / JD-leak gate (cross-
+  checked against the real CV) replaces the old fixed-score stub, and a
+  confirmed fabrication triggers one hardened-prohibition retry.
 - **High-yield, non-cosmetic rewrites** — the strategist flags every
   bullet that genuinely needs a rewrite (no artificial per-role cap) and
   walks every role; a deterministic `lead_with` guard plus an
@@ -483,12 +489,15 @@ agents/
   tailor_strategist.py        # LLM → per-role bullet strategy (promote / rewrite / drop)
   cv_diff_tailor.py           # LLM → structured JSON diff {summary, bullets, skills_order};
                               #   10+ fabrication guardrails; DeepSeek primary → Groq fallback
-  cv_tailor.py                # Legacy full-CV rewrite path (unused in main pipeline)
+  cv_tailor.py                # Rebuild-path tailor: structured JSON rewrite (strategy-aimed)
+                              #   + authoritative identity resolver + deterministic rebuild review gate
 
   ── PDF editing & rendering ─────────────────────────────────────────────────
   pdf_editor.py               # In-place PDF edits via PyMuPDF (coordinate-level text swap)
   cv_style_agent.py           # Extracts font/size/margin/colour style profile from CV PDF
                               #   for use by ReportLab rebuild path
+  cv_render_typst.py          # Preferred rebuild renderer: structured CV → Typst → PDF
+                              #   (embedded fonts, monochrome ATS layout, summary-first ordering)
   pdf_formatter.py            # Rebuild router: tries WeasyPrint → falls back to ReportLab
   pdf_formatter_weasy.py      # HTML+CSS → PDF via WeasyPrint (ATS-safe, page-count-preserving)
   templates/                  # Jinja2 HTML templates for WeasyPrint rebuild

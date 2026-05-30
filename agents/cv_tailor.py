@@ -3,6 +3,7 @@
 import os
 import re
 import time
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -32,24 +33,32 @@ ORIGINAL CV (reproduce this EXACTLY with only the edits below):
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+{strategy_block}
+
 YOU MUST DO ALL 4 OF THESE EDITS — SKIPPING ANY ONE IS A FAILURE:
 
 ════════════════════════════════════════
-EDIT 1 — BULLET POINTS (most critical):
+EDIT 1 — BULLET POINTS (re-aim the high-value ones, do NOT churn):
 ════════════════════════════════════════
-- Go through EVERY bullet point under EVERY job role
-- Rewrite each bullet to naturally include keywords and skills from the JD
-- Keep the same facts, companies, dates, and metrics — do NOT invent anything
-- Lead each bullet with a strong action verb
-- The bullet meaning stays the same — only the phrasing changes to mirror the JD
-- Every single bullet must be reviewed and updated — not just the first one
+- Re-aim the bullets that PROVE a JD priority so each LEADS with the
+  JD-relevant fact, phrased in the JD's vocabulary.
+- Rewrite FEW bullets deeply rather than lightly rewording all of them. A
+  bullet that is already on-target should be left VERBATIM — leaving it
+  unchanged is CORRECT, not a failure.
+- Keep the same facts, companies, dates, and metrics — do NOT invent anything.
+- Lead each rewritten bullet with a strong action verb.
+- Do NOT cosmetically swap a synonym into every bullet just to look "tailored";
+  surface a buried, JD-relevant fact or leave the bullet alone.
 
 ════════════════════════════════════════
 EDIT 2 — PROFESSIONAL SUMMARY:
 ════════════════════════════════════════
-- Rewrite the summary (2-4 lines) to reflect THIS role and THIS company
-- Use keywords from the JD naturally
-- Reference only what is already in the CV — no fabrication
+- Re-aim the summary (2-4 lines) at THIS role using facts already true in the
+  CV. Lead with the identity / focus this JD is really hiring for.
+- Use JD keywords the CV genuinely proves — reference only what is already in
+  the CV; no fabrication.
+- Preserve every degree grade, years-of-experience claim, and numeric outcome
+  from the original summary VERBATIM.
 
 ════════════════════════════════════════
 EDIT 3 — SKILLS SECTION:
@@ -132,6 +141,7 @@ def _build_prompt(
     job_title:       str,
     company:         str,
     safety_preamble: str,
+    strategy_block:  str = "",
 ) -> str:
     return CV_TAILOR_PROMPT.format(
         cv_text         = cv_text,
@@ -139,6 +149,7 @@ def _build_prompt(
         job_title       = job_title,
         company         = company,
         safety_preamble = safety_preamble,
+        strategy_block  = strategy_block,
     )
 
 
@@ -166,7 +177,11 @@ def _validate_bullets_changed(original_cv: str, tailored_cv: str) -> bool:
     )
     pct = changed / len(original_bullets)
     print(f"   🔍 Bullet change rate: {changed}/{len(original_bullets)} = {pct:.0%}")
-    return pct >= 0.5
+    # Precision philosophy: a precise tailor re-aims FEW bullets deeply and
+    # leaves already-on-target bullets verbatim, so a low change rate is not
+    # itself a failure. Only a COMPLETE no-op (nothing changed at all) means
+    # the tailor effectively didn't run — that is the one case worth a retry.
+    return changed >= 1
 
 
 # ─────────────────────────────────────────────────────────────
@@ -179,6 +194,7 @@ def tailor_cv(
     job_title:       str = "",
     company:         str = "",
     retries:         int = 3,
+    strategy:        Optional[Dict[str, Any]] = None,
 ) -> str:
     from agents.runtime       import track_llm_call, handle_rate_limit
     from agents.prompt_safety import wrap_untrusted_block, untrusted_block_preamble
@@ -187,12 +203,24 @@ def tailor_cv(
     jd_wrapped = wrap_untrusted_block(job_description, label="JOB_DESCRIPTION")
     preamble   = untrusted_block_preamble(["JOB_DESCRIPTION"])
 
+    # Strategy parity (batch 16): the rebuild path now receives the same
+    # binding strategy block the replica diff path does, so a designer-CV
+    # rebuild is JD-aimed instead of generically reworded. Empty strategy
+    # → "" → the prompt keeps its default behaviour.
+    strategy_block = ""
+    try:
+        from agents.tailor_strategist import render_strategy_for_tailor
+        strategy_block = render_strategy_for_tailor(strategy or {})
+    except Exception:
+        strategy_block = ""
+
     prompt = _build_prompt(
         cv_text         = cv_text,
         job_description = jd_wrapped,
         job_title       = job_title,
         company         = company,
         safety_preamble = preamble,
+        strategy_block  = strategy_block,
     )
 
     # Token budget scales with CV length: ~4 chars per token on average.
@@ -246,13 +274,14 @@ def tailor_cv(
             # ── Bullet validation ──────────────────────────────
             if not _validate_bullets_changed(cv_text, tailored):
                 if attempt < retries - 1:
-                    print("   ⚠️  Bullets unchanged — retrying with stronger instruction...")
+                    print("   ⚠️  No bullet re-aimed — retrying with a sharper instruction...")
                     stronger = prompt.replace(
                         "OUTPUT: The complete tailored CV as plain text.",
-                        "CRITICAL REMINDER: You did NOT rewrite the bullet points "
-                        "in your last attempt. This time you MUST rewrite EVERY "
-                        "bullet point under EVERY role to include JD keywords. "
-                        "This is the most important part of the task.\n\n"
+                        "CRITICAL REMINDER: your last attempt re-aimed NO bullet "
+                        "at all. Re-aim the FEW highest-value bullets — the ones "
+                        "that prove a JD priority — so each leads with the "
+                        "JD-relevant fact in the JD's vocabulary. You do NOT need "
+                        "to touch every bullet; leave on-target bullets verbatim.\n\n"
                         "OUTPUT: The complete tailored CV as plain text."
                     )
                     tailored = chat_quality(stronger, max_tokens=budget, temperature=0.3)
@@ -306,6 +335,8 @@ ORIGINAL CV:
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+{strategy_block}
+
 REQUIRED JSON SHAPE
 ═══════════════════
 
@@ -349,8 +380,15 @@ RULES
 ═════
 1. EVERY job, project, qualification and skill in the original CV MUST appear
    in your JSON output. Do NOT drop sections, roles, or bullets.
-2. Rewrite the summary and bullets to weave in JD-relevant verbs and skills.
-   The candidate's facts, employers, dates, and metrics MUST stay accurate.
+2. RE-AIM, DON'T CHURN. Re-aim the summary and the highest-value bullets at
+   the JD's priorities using facts ALREADY TRUE in the original CV. Rewrite
+   FEW bullets deeply (the ones that prove a JD must-have) and leave
+   already-on-target bullets VERBATIM — a bullet left unchanged because it is
+   already aligned is CORRECT, not a miss. Do NOT cosmetically reword every
+   bullet. The candidate's facts, employers, dates, and metrics MUST stay
+   accurate; invent nothing the CV cannot back up. If a STRATEGY block appears
+   above, it is BINDING — follow its narrative angle, JD thesis, and the
+   must-haves it tells you to surface.
 3. Plain text in every string. NO icon class names (no "MOBILE-ALT", no
    "Envelope", no "linkedin-in"), NO em-dashes or smart quotes — the renderer
    normalises punctuation but icon-classes leak through and look wrong.
@@ -368,11 +406,14 @@ Return the JSON object only.
 
 
 def tailor_cv_structured(
-    cv_text:         str,
-    job_description: str,
-    job_title:       str = "",
-    company:         str = "",
-    retries:         int = 2,
+    cv_text:            str,
+    job_description:    str,
+    job_title:          str = "",
+    company:            str = "",
+    retries:            int = 2,
+    strategy:           Optional[Dict[str, Any]] = None,
+    extra_prohibitions: Optional[List[str]] = None,
+    temperature:        float = 0.2,
 ):
     """Tailor a CV and return a TailoredCV-shaped dict (see
     ``agents/schemas/tailored_cv.json``) instead of plain text.
@@ -401,12 +442,43 @@ def tailor_cv_structured(
     jd_wrapped = wrap_untrusted_block(job_description, label="JOB_DESCRIPTION")
     preamble   = untrusted_block_preamble(["JOB_DESCRIPTION"])
 
+    # Strategy parity (batch 16): inject the same binding strategy directive
+    # the replica diff path uses, so a clean-slate rebuild is JD-aimed rather
+    # than generically reworded. Empty/absent strategy → "" (no-op).
+    strategy_block = ""
+    try:
+        from agents.tailor_strategist import render_strategy_for_tailor
+        strategy_block = render_strategy_for_tailor(strategy or {})
+    except Exception:
+        strategy_block = ""
+
+    # Hardened retry prohibition (batch 16): when a previous rebuild leaked a
+    # TRUE fabrication (a JD-only term the CV does not support), the caller
+    # re-invokes with those terms in `extra_prohibitions`. We append a loud,
+    # NAMED ban to the strategy block so the model cannot reuse them. These are
+    # gate-confirmed absent from the real CV, so banning them never strips a
+    # genuine skill.
+    if extra_prohibitions:
+        _banned = ", ".join(sorted({
+            str(t).strip() for t in extra_prohibitions if str(t).strip()
+        }))
+        if _banned:
+            strategy_block += (
+                "\n\nCRITICAL — RETRY ATTEMPT. A previous draft WRONGLY included "
+                "these JD-only terms that the candidate's CV does NOT support. You "
+                "MUST NOT use ANY of them, in ANY section, in ANY form — this is "
+                f"non-negotiable: {_banned}. Re-derive every line strictly from "
+                "facts the ORIGINAL CV proves. Any reuse of a banned term causes "
+                "immediate rejection."
+            )
+
     prompt = _STRUCTURED_PROMPT.format(
         cv_text         = cv_text.strip(),
         job_description = jd_wrapped,
         job_title       = job_title or "",
         company         = company or "",
         safety_preamble = preamble,
+        strategy_block  = strategy_block,
     )
 
     # JSON output is generally tighter than free-form rewrite, but bullets
@@ -441,7 +513,7 @@ def tailor_cv_structured(
             # DeepSeek first (JSON-mode native); on empty / parse fail,
             # fall through to Groq for a retry attempt.
             raw = chat_deepseek(
-                prompt, max_tokens=budget, temperature=0.2, json_mode=True
+                prompt, max_tokens=budget, temperature=temperature, json_mode=True
             )
             doc = _parse_validate(raw)
             if doc is not None:
@@ -453,7 +525,7 @@ def tailor_cv_structured(
 
             # Groq fallback — no JSON mode, but it's instructed to emit pure
             # JSON in the prompt and the _parse_validate strips fences.
-            raw = chat_quality(prompt, max_tokens=budget, temperature=0.2)
+            raw = chat_quality(prompt, max_tokens=budget, temperature=temperature)
             doc = _parse_validate(raw)
             if doc is not None:
                 print(
@@ -484,6 +556,232 @@ def tailor_cv_structured(
         "fall back to text-mode tailor_cv()."
     )
     return None
+
+
+# ─────────────────────────────────────────────────────────────
+# Rebuild-path identity resolver (batch 16)
+# ─────────────────────────────────────────────────────────────
+#
+# The rebuild renderers (Typst + WeasyPrint structured) take the candidate's
+# NAME and CONTACT line straight from the LLM's TailoredCV dict. When the CV
+# text is sparse or garbled the model can echo the prompt's example
+# placeholders ("Full Name", "email@example.com") into its output, so the
+# rebuilt PDF ships with a fake identity. The application already HAS the
+# candidate's real name + email (required, validated form fields), so identity
+# must come from THERE — never from the model. This overwrites the doc's
+# identity in place so both rebuild renderers emit the real person.
+
+_PLACEHOLDER_NAMES = frozenset({
+    "full name", "candidate name", "candidate", "your name", "name",
+    "first last", "firstname lastname", "john doe", "jane doe",
+})
+_EMAIL_RE = re.compile(r"[^@\s,;|]+@[^@\s,;|]+\.[^@\s,;|]+")
+
+
+def apply_authoritative_identity(
+    doc:   Optional[Dict[str, Any]],
+    name:  str = "",
+    email: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Force the candidate's real name/email into a TailoredCV dict.
+
+    The form-supplied ``name``/``email`` are ground truth; the LLM's
+    extracted identity (which may be a copied prompt placeholder) is
+    overwritten. The first email-looking ``contact_bits`` entry is replaced
+    in place (preserving contact order); if none exists the real email is
+    appended. Mutates and returns ``doc``. No-ops on a falsy/non-dict doc.
+
+    Args:
+        doc:   the TailoredCV dict from ``tailor_cv_structured``.
+        name:  authoritative candidate name (form field).
+        email: authoritative candidate email (form field).
+    """
+    if not isinstance(doc, dict):
+        return doc
+    name  = (name or "").strip()
+    email = (email or "").strip()
+
+    if name:
+        doc["candidate_name"] = name
+
+    if email:
+        bits = [str(b) for b in (doc.get("contact_bits") or [])]
+        replaced = False
+        for i, b in enumerate(bits):
+            if _EMAIL_RE.search(b):
+                bits[i] = email          # overwrite the model's (maybe fake) email
+                replaced = True
+                break
+        if not replaced:
+            bits.append(email)           # CV had no email line — add the real one
+        doc["contact_bits"] = bits
+
+    return doc
+
+
+# ─────────────────────────────────────────────────────────────
+# Rebuild-path review gate (batch 16)
+# ─────────────────────────────────────────────────────────────
+#
+# The standard reviewer (agents.reviewer.review_tailored_cv) is DIFF-coupled:
+# it reads the [REWRITTEN] / "(original: ...)" markers that only the replica
+# diff path emits. A clean-slate rebuild produces a flat TailoredCV dict with
+# no such markers, so review_tailored_cv would mis-score it (e.g. cap at 70
+# for "zero bullets rewritten" even though every bullet was rewritten). The
+# rebuild path therefore used a hardcoded score:65 stub — no real check.
+#
+# This gate runs the deterministic INVENTION / CREDENTIAL guards the replica
+# path trusts — credential preservation, sector fabrication, and do_not_inject
+# leakage — directly on the rebuilt summary + body text, with NO extra LLM
+# call. (It deliberately skips the replica-only summary term-OMISSION check;
+# see the note at the import below.) It returns a review dict shaped like
+# review_tailored_cv's so it slots straight into best_review.
+
+def review_rebuilt_structured(
+    structured_doc:   Optional[Dict[str, Any]] = None,
+    rebuilt_text:     str = "",
+    original_summary: str = "",
+    original_cv_text: str = "",
+    job_description:  str = "",
+    job_title:        str = "",
+    company:          str = "",
+    do_not_inject:    Optional[List[str]] = None,
+    outline:          Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Deterministic fabrication / credential gate for the REBUILD path.
+
+    Args:
+        structured_doc:   the TailoredCV dict from tailor_cv_structured, or
+                          None when only the text fallback produced output.
+        rebuilt_text:     flat rebuilt CV text (used when structured_doc is
+                          None) for do_not_inject leak detection.
+        original_summary: the candidate's ORIGINAL summary (for credential /
+                          concrete-term / sector guards).
+        original_cv_text: full original CV text (sector guard CV pool).
+        do_not_inject:    JD terms the strategist flagged as absent from the
+                          real CV — these must NOT surface in the rebuild.
+        outline:          original CV outline (sector guard needs role bullets).
+
+    Returns:
+        review dict: {score, strengths, weaknesses, feedback, verdict,
+                      _rebuild_mode: True}.
+    """
+    try:
+        from agents.reviewer import ACCEPT_THRESHOLD
+    except Exception:
+        ACCEPT_THRESHOLD = 65
+
+    doc = structured_doc or {}
+    new_summary = str(doc.get("summary") or "").strip()
+
+    # Flatten the rebuilt body to one searchable string for leak detection.
+    if doc:
+        body_parts: List[str] = [new_summary]
+        for _s in doc.get("sections", []) or []:
+            for _r in _s.get("roles", []) or []:
+                body_parts.append(str(_r.get("title") or ""))
+                for _b in _r.get("bullets", []) or []:
+                    body_parts.append(str(_b))
+            for _p in _s.get("paragraphs", []) or []:
+                body_parts.append(str(_p))
+        flat_text = "\n".join(p for p in body_parts if p)
+    else:
+        flat_text = rebuilt_text or ""
+
+    score = 80
+    strengths:  List[str] = []
+    weaknesses: List[str] = []
+
+    # Lazy-import the guards so a rebuild that never runs costs nothing.
+    #
+    # NOTE: we deliberately do NOT run `_check_concrete_terms_preserved` here.
+    # That guard is a summary→summary term-OMISSION check built for the REPLICA
+    # in-place diff (where the summary is edited in situ and must retain its
+    # terms). On a clean-slate REBUILD, content legitimately reorganises across
+    # sections — the structured prompt's rule 1 already forces every skill to
+    # reappear somewhere CV-wide — so a summary-to-summary comparison fires on
+    # noise: it flagged the candidate's own NAME and contact-block words as
+    # "dropped concrete terms" because outline_cache.summary is sometimes a
+    # garbled header rather than a real summary. A trust gate must flag
+    # INVENTION (do_not_inject / sector) and CREDENTIAL LOSS, not omission.
+    try:
+        from agents.cv_diff_tailor import (
+            _check_credentials_preserved,
+            _check_sector_fabrication,
+        )
+    except Exception:
+        _check_credentials_preserved = None
+        _check_sector_fabrication = None
+
+    if original_summary and new_summary:
+        if _check_credentials_preserved:
+            missing = _check_credentials_preserved(original_summary, new_summary)
+            if missing:
+                toks = [t for v in missing.values() for t in v]
+                score = min(score, ACCEPT_THRESHOLD)
+                weaknesses.append("credential lost: " + ", ".join(toks[:5]))
+        if _check_sector_fabrication and outline:
+            invented = _check_sector_fabrication(
+                original_summary, new_summary, outline, original_cv_text or ""
+            )
+            if invented:
+                score = min(score, 50)
+                weaknesses.append(
+                    "sector fabricated in summary: " + ", ".join(invented[:5])
+                )
+
+    # do_not_inject leakage: a rebuilt CV must not surface JD terms the
+    # strategist flagged as absent from the candidate's real CV.
+    #
+    # CV cross-check (batch 16): a do_not_inject term that ALSO appears in the
+    # ORIGINAL CV is NOT a fabrication. The strategist sometimes over-flags a
+    # term the candidate genuinely has, and rule 1 of the rebuild prompt
+    # ("every skill MUST reappear") then correctly carries it forward — so a
+    # naive presence check would cap an honest rebuild at 55/retry for shipping
+    # the candidate's OWN skill (e.g. "SQL" on a real data CV). Only a term that
+    # is present in the rebuild AND absent from the real CV is an invention.
+    # If original_cv_text is empty we degrade to the old presence-only behaviour
+    # (treat every match as a leak), which is the conservative direction.
+    leaked: List[str] = []
+    low      = flat_text.lower()
+    orig_low = (original_cv_text or "").lower()
+    for term in (do_not_inject or []):
+        t = str(term).strip().lower()
+        if not t:
+            continue
+        pat = r"\b" + re.escape(t) + r"\b"
+        if re.search(pat, low) and not re.search(pat, orig_low):
+            leaked.append(str(term))
+    if leaked:
+        score = min(score, 55)
+        weaknesses.append("fabricated JD term present: " + ", ".join(leaked[:5]))
+
+    if not weaknesses:
+        strengths.append(
+            "Rebuilt content passed deterministic fabrication / credential checks."
+        )
+
+    score = max(0, min(100, score))
+    verdict = "accept" if score >= ACCEPT_THRESHOLD else "retry"
+    feedback = (
+        "Rebuild path (clean-slate render) — original layout NOT preserved; "
+        "content IS tailored. "
+        + ("Issues: " + "; ".join(weaknesses)
+           if weaknesses else
+           "Passed deterministic fabrication / credential checks.")
+    )
+    return {
+        "score":         score,
+        "strengths":     strengths,
+        "weaknesses":    weaknesses,
+        "feedback":      feedback[:500],
+        "verdict":       verdict,
+        "_rebuild_mode": True,
+        # Confirmed TRUE fabrications (present in rebuild AND absent from the
+        # real CV). The caller uses this to retry the rebuild with a hardened,
+        # named prohibition so flagged terms never ship.
+        "_leaked_terms": leaked,
+    }
 
 
 # ─────────────────────────────────────────────────────────────

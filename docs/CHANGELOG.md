@@ -9,6 +9,36 @@
 
 ---
 
+## v1.4.5 — Rebuild-path parity: honesty gate + identity ground-truth (batch 16) (30 May 2026)
+
+**Bet under test:** Can the clean-slate REBUILD path be held to the same honesty + JD-aim bar as the in-place replica path — without a paid-tier model — so designer / multi-column CVs that can't be edited in place still tailor *safely*?
+
+### Shipped
+
+**Rebuild tailoring (`cv_tailor.py`):**
+
+- **Strategy parity** — the rebuild tailor (`tailor_cv`, `tailor_cv_structured`) now receives the same binding strategy block the replica diff path uses, so a rebuild is JD-aimed, not generically reworded. Prompts rewritten "RE-AIM, DON'T CHURN": re-aim the few highest-value bullets deeply and leave on-target bullets verbatim (the replica preservation discipline). `_validate_bullets_changed` relaxed from ≥50% to ≥1 — a precise tailor leaves most bullets alone; only a *total* no-op is a failure.
+- **`review_rebuilt_structured` — a real review gate.** The rebuild path used a hardcoded `score:65` stub because the standard reviewer is diff-coupled (it reads `[REWRITTEN]` markers the rebuild never emits). It now runs the deterministic credential-preservation + sector-fabrication + `do_not_inject` leak guards directly on the rebuilt text, with **no extra LLM call**. The leak check cross-references the ORIGINAL CV, so a term the candidate genuinely has (e.g. "SQL" on a real data CV) is not mis-flagged as fabricated.
+- **`apply_authoritative_identity`** — name + email are forced from the validated form fields, never the model, so a sparse or garbled CV can't ship a "Full Name" / "email@example.com" placeholder in the rebuilt PDF.
+
+**Rebuild orchestration (`job_agent.py`):**
+
+- **Never-ship retry** — when the gate confirms a TRUE fabrication (a leaked term present in the rebuild AND absent from the real CV), the structured tailor reruns ONCE with a named, hardened prohibition at higher temperature, is re-gated on its reconstructed text BEFORE rendering, and is adopted only if it scores higher — so a good first attempt is never overwritten and no wasted render fires. 0 leaks across the current corpus; the path is a safety net.
+- **No-fabrication summary carry-forward** — if a rebuild drops the summary entirely, fall back to the candidate's ORIGINAL summary (their own words) so the CV still opens with one.
+
+**Rebuild rendering (`cv_render_typst.py`):**
+
+- **Summary-first ordering** — a rebuilt CV now always opens with the professional summary (matches the WeasyPrint template + canonical ATS order); the renderer previously emitted a root-level summary last.
+- **Atomic output move** — `Path.rename` → `os.replace`, so a pre-existing target filename from a prior same-session attempt is overwritten instead of raising `FileExistsError` on Windows (which silently demoted the run to the inferior text fallback).
+
+### Why
+
+v1.4.3 made the *replica* path safe (preserve every fact, re-frame only), but the *rebuild* path — the fallback for designer / multi-column CVs the byte-editor can't touch — was still generative-first: a hardcoded review score, no identity guarantee, prompts that told the model to reword every bullet. Batch 16 brings it to parity. The replica path stays the main path (`cv_diff_tailor.py`); this makes the fallback trustworthy so that *any* CV format produces a safe, tailored result.
+
+> Replica-path batch-16 work is in v1.4.4 below (`cv_diff_tailor.py`, `pdf_editor.py`).
+
+---
+
 ## v1.4.4 — Line-aware length floor + multi-point block handling (batch 16) (30 May 2026)
 
 **Bet under test:** Will making the in-place length-fit floor *line-aware* stop the replica path from silently underfilling a long bullet's slot — shipping a rewrite that drops a whole scope clause yet still "fits"?
@@ -25,7 +55,7 @@
 
 Run 3 on Saumyadeep's CV: ROLE-3 (a 411-char, ~5-line block) compressed to 280 chars (68%) — it passed the flat 62% floor but underfilled its slot *and* silently dropped the scope clause "…overseeing other deployments by the team". The flat floor reasoned about a 2-line bullet but applied to all. The line-aware floor reverts ROLE-3 to full parity and caught a second latent underfill (ROLE-4, 528 chars / 77.5%) → re-aimed to 95.4%. Review score 70 → 80, 0 fabrications, no overflow or gaps in the rendered PDF.
 
-> Note: this entry covers the **replica-path** batch-16 work only (`cv_diff_tailor.py`, `pdf_editor.py`). The parallel **rebuild-path** batch-16 changes (`cv_tailor.py`, `cv_render_typst.py`, `job_agent.py`) are tracked separately.
+> Note: this entry covers the **replica-path** batch-16 work only (`cv_diff_tailor.py`, `pdf_editor.py`). The parallel **rebuild-path** batch-16 changes (`cv_tailor.py`, `cv_render_typst.py`, `job_agent.py`) are in v1.4.5 above.
 
 ---
 
