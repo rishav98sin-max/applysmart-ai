@@ -47,4 +47,12 @@ langfuse>=4.0,<5
 # auto-tenure calculation, 4-corner role blocks. The `[full]` extra
 # bundles the Typst binary inside a Python wheel — no apt / packages.txt
 # / system dependencies needed. Adds ~104 MB to the deploy image.
-rendercv[full]>=2.8,<3
+#
+# DISABLED for Streamlit Cloud deploy (2026-05-31): rendercv>=2.4 requires
+# Python>=3.12, but runtime.txt pins python-3.11 (Cloud's stable default), so
+# this pin made `pip install` unsatisfiable and failed the entire deploy.
+# The Typst import in agents/cv_render_typst.py is guarded (is_available()
+# returns False when the package is absent), so the rebuild path cleanly falls
+# back to WeasyPrint with zero code change. To re-enable the Typst renderer,
+# bump runtime.txt to python-3.12 and uncomment the line below.
+# rendercv[full]>=2.8,<3
