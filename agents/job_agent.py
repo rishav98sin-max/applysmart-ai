@@ -224,6 +224,43 @@ class AgentState(TypedDict):
     progress_callback:   Any              # ✅ NEW
 
 
+def _norm_key(s: str) -> str:
+    """Lower-cased, whitespace-collapsed key for company/title comparison."""
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def _desc_tokens(s: str) -> set:
+    """Word-set of a job description for near-duplicate detection."""
+    return set(re.findall(r"[a-z0-9]+", (s or "").lower()))
+
+
+def _is_same_role(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """
+    True when two scraped postings are the SAME role cross-listed under a
+    different URL — e.g. one job posted in two cities (the TBWA\\Media Arts
+    Lab "Account Manager" case: same role in two Indian cities, two LinkedIn
+    URLs). Tailoring both wastes a full LLM session producing a byte-identical
+    CV + cover letter.
+
+    Conservative by design: requires identical company AND title, and (when
+    both have descriptions) a Jaccard word-overlap >= 0.80. Two *different*
+    openings that happen to share a generic title (e.g. two distinct
+    "Account Manager" roles) have different descriptions -> low overlap ->
+    kept as separate jobs. City/location is deliberately NOT part of the key,
+    so the same role in two cities collapses to one.
+    """
+    if _norm_key(a.get("company", "")) != _norm_key(b.get("company", "")):
+        return False
+    if _norm_key(a.get("title", "")) != _norm_key(b.get("title", "")):
+        return False
+    ta, tb = _desc_tokens(a.get("description", "")), _desc_tokens(b.get("description", ""))
+    if not ta or not tb:
+        # Same company + title and nothing to differentiate on -> treat as dup.
+        return True
+    overlap = len(ta & tb) / (len(ta | tb) or 1)
+    return overlap >= 0.80
+
+
 def _append_handoff(state: AgentState, entry: Dict[str, Any]) -> List[Dict[str, Any]]:
     out = list(state.get("messages", []))
     out.append(entry)
@@ -887,12 +924,23 @@ def scrape_jobs_node(state: AgentState) -> AgentState:
         existing = state.get("jobs_found") or []
         seen_urls = {j.get("url") for j in existing if j.get("url")}
         merged = list(existing)
+        _dupes_skipped = 0
         for j in jobs:
             u = j.get("url")
             if u and u in seen_urls:
                 continue
+            # Same role cross-listed under a different URL (e.g. one posting
+            # in two cities) — skip so it isn't matched + tailored twice.
+            if any(_is_same_role(j, e) for e in merged):
+                _dupes_skipped += 1
+                continue
             seen_urls.add(u)
             merged.append(j)
+        if _dupes_skipped:
+            print(
+                f"   🧹 Skipped {_dupes_skipped} duplicate posting(s) "
+                f"(same role, different URL/city)."
+            )
 
         if not merged:
             return {

@@ -845,9 +845,17 @@ RULES (strict):
 
    Rewriting guidance:
    - Start with a strong verb that matches the JD's language (e.g. if JD says
-     "shipped", "delivered", "owned", mirror that verb).
+     "shipped", "delivered", "owned", mirror that verb). But NEVER downgrade an
+     existing strong finite verb (Orchestrated, Led, Directed, Drove,
+     Spearheaded, Built, Managed) into a weak participle/gerund (Delivering,
+     Working, Helping, Assisting) — the rewrite's opening verb must be at
+     least as strong and specific as the original's.
    - Move JD-relevant keywords to the front of the bullet.
-   - Keep the factual core (numbers, tech, outcomes) identical.
+   - Keep the factual core (numbers, tech, outcomes) identical — AND preserve
+     the bullet's concrete descriptive specifics: named techniques and
+     distinctive method/scope qualifiers (e.g. "video-first", "always-on",
+     "multi-platform", "360-degree", "full-cycle"). These are evidence; do
+     not generalise them into vaguer wording or drop them.
    - Prefer concrete over abstract: "authored 12 PRDs" not "produced many documents".
    - SAFE RELABELS: if the STRATEGY block lists SAFE RELABELS, you MAY use
      those JD terms inside a bullet where they fit naturally — they are

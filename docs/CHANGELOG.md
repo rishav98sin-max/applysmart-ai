@@ -9,6 +9,22 @@
 
 ---
 
+## v1.4.6 — Tailoring-quality fixes from Run27 analysis (31 May 2026)
+
+**Bet under test:** A faithful replica run (Shrestha Ghosh CV → Social Media Account Manager / India) was analysed end-to-end. Format replication is excellent and the cover letters are strong + per-job distinct, but two issues surfaced: the same role cross-listed in two Indian cities was tailored twice (byte-identical duplicate CV + cover letter), and some rewritten bullets *weakened* (a strong lead verb downgraded to a participle; descriptive specifics generalised away). What can be fixed **without** loosening the honesty/format guards?
+
+### Shipped
+
+- **Duplicate-posting dedup (`job_agent.py`).** The scrape-merge deduped by URL only, so one role posted in two cities (two LinkedIn URLs) survived as two pool entries → two full LLM tailoring sessions producing a byte-identical CV + cover letter (≈120K wasted tokens in Run27). New `_is_same_role`: same company + title **and** ≥0.80 Jaccard description overlap collapses cross-city duplicates to one. City is deliberately excluded from the key; differing descriptions keep genuinely distinct same-title roles separate.
+- **Rewrite quality (`cv_diff_tailor.py` prompt).** Bullet guidance told the model to mirror the JD's verb with no floor, which downgraded strong finite verbs ("Orchestrated") into weak participles ("Delivering"); and the preservation rule covered only numbers/tech. Both extended: never downgrade an existing strong verb, and preserve distinctive method/scope qualifiers ("video-first", "always-on", "multi-platform").
+
+### Evidence / deliberately NOT done
+
+- A local probe (`tailor_cv_diff` on the real CV) showed the dominant bullet-revert reason is **`identical_rewrite`** — the model returns most bullets *unchanged*, and the guards correctly demote those no-ops. So the previously-planned "loosen/reorder the guards" change was **dropped**: the guards are doing their job; loosening them would ship untailored bullets *as if* tailored. The real lever — getting the model to genuinely re-word at the original length — is a prompt/model experiment left to a measured follow-up.
+- The "stop resending the full CV on summary-only retries" token fix is largely subsumed by the dedup win (one fewer full tailoring session per duplicate). A focused summary-retry prompt remains a future optimisation.
+
+---
+
 ## v1.4.5 — Rebuild-path parity: honesty gate + identity ground-truth (batch 16) (30 May 2026)
 
 **Bet under test:** Can the clean-slate REBUILD path be held to the same honesty + JD-aim bar as the in-place replica path — without a paid-tier model — so designer / multi-column CVs that can't be edited in place still tailor *safely*?
