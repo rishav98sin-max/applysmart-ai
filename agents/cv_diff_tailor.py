@@ -4134,6 +4134,36 @@ def tailor_cv_diff(
             },
         }
 
+    # ── RE-AIM ENGINE (best-of-N, APPLYSMART_REAIM flag) ────────────────
+    # When enabled, produce the diff via the best-of-N re-aim engine: for each
+    # bullet + the summary it generates N candidate re-aims and a deterministic
+    # selector keeps the best VALID one (facts + length + genuinely-changed +
+    # third-person + no-fabrication — the SAME guards, used as SELECTORS rather
+    # than one-shot reverters). This is the A/B-validated path that gets deep
+    # tailoring WITH replication (Run27: ~5 bullets -> ~18 + a faithful summary).
+    # First pass only — reviewer-driven retries (feedback / previous_diff) and
+    # any engine failure fall through to the legacy targeted loop below.
+    if not (feedback or previous_diff):
+        try:
+            from agents import cv_reaim
+            if cv_reaim.is_enabled():
+                _re = cv_reaim.reaim_diff(
+                    outline=outline, job_description=job_description,
+                    job_title=job_title, company=company, cv_full_text=cv_text,
+                )
+                if _re and (_re.get("summary") or _re.get("bullets")):
+                    print(
+                        f"   ✨ cv_reaim: best-of-N re-aim used "
+                        f"(bullets={_re['_debug'].get('bullets_reaimed')}, "
+                        f"summary={_re['_debug'].get('summary_reaimed')})"
+                    )
+                    return _re
+        except Exception as _re_err:
+            print(
+                f"   ⚠️  cv_reaim failed ({type(_re_err).__name__}: {_re_err}) "
+                f"— falling back to legacy tailor"
+            )
+
     # ── JD-only forbidden list + strategy scrub (May 2026) ──────────
     # Compute the deterministic "JD words absent from the CV" list, then
     # pre-emptively scrub any such term the strategist named in a bullet

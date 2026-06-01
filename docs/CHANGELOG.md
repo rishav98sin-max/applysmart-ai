@@ -9,6 +9,33 @@
 
 ---
 
+## v1.4.7 — Best-of-N "re-aim" tailoring engine (experimental, flag-gated) (31 May 2026)
+
+**Bet under test:** Replication is the moat — faithful format **and** real tailoring, the thing no competitor does. The replica path was faithful-but-*light* because "keep every fact + same length + reword" is over-constrained, so a single-shot rewrite collapses toward the original (`identical_rewrite`). Can we get DEEP tailoring (summary **and** bullets) *without* conceding replication or honesty?
+
+**The reframe:** stop asking the model to "rewrite" (impossible under the constraints) and ask it to **re-aim** — re-frame the emphasis toward the JD, reuse the same facts, same length. Then flip the loop from *single-shot + revert* to **best-of-N + select**: generate N candidate re-aims per target and let the existing honesty guards act as **selectors** (pick the best valid one) instead of one-shot reverters.
+
+### Shipped — `agents/cv_reaim.py` (new), gated behind `APPLYSMART_REAIM` (OFF by default)
+
+- **Best-of-N candidate generation** (DeepSeek-direct — it re-aims honestly rather than faking alignment with canned suffixes the way Llama does) + a **deterministic selector** reusing the existing guards: facts preserved (`_extract_fact_atoms`), credentials preserved for the summary (`_check_credentials_preserved`), length-fits-slot, genuinely-changed, third-person, and a **relabel-aware** fabrication check (a JD term is only fabrication if *none* of its content words appear in the real CV — so "managing accounts" → "account management" is allowed, inventing a skill is not).
+- **Isolated, length-anchored summary pass** — the summary is re-aimed in a call that never sees the bullets (so it can't pad with one), with a hard "match the original length, rework every clause" instruction (the model otherwise compresses to ~half and underfills the box).
+- **Style filters:** first-person rejection, opening-verb diversity, narrow comma-splice rejection (kept deliberately narrow so it never touches legitimate proper nouns like "Alco-Bev" or a relabelled "Account Management" title).
+- **Wiring (`cv_diff_tailor.py`):** first pass only; reviewer-driven retries and any engine failure fall through to the legacy targeted loop. Flag OFF ⇒ behaviour is byte-for-byte the legacy path.
+
+### Evidence (A/B, Shrestha Ghosh CV → Account Manager, same model chain)
+
+| | Legacy (single-shot) | Best-of-N re-aim |
+|---|---|---|
+| Bullets genuinely re-aimed | ~5 | **~23** |
+| Summary tailored | flaky / reverts | **yes — faithful, same length** |
+| Facts/credentials dropped | 0 | 0 (selector-enforced) |
+| Format replication (rendered) | faithful | **faithful (both pages)** |
+
+### Known refinement (tracked, not yet fixed)
+`apply_edits` can produce a clause-level splice ("…platforms, Strengthened …") when a re-aim's clause structure diverges from the original bullet's layout — an editor-side replacement issue, not a candidate defect (candidate-level splices are rejected). To be handled in the editor before the flag becomes default.
+
+---
+
 ## v1.4.6 — Tailoring-quality fixes from Run27 analysis (31 May 2026)
 
 **Bet under test:** A faithful replica run (Shrestha Ghosh CV → Social Media Account Manager / India) was analysed end-to-end. Format replication is excellent and the cover letters are strong + per-job distinct, but two issues surfaced: the same role cross-listed in two Indian cities was tailored twice (byte-identical duplicate CV + cover letter), and some rewritten bullets *weakened* (a strong lead verb downgraded to a participle; descriptive specifics generalised away). What can be fixed **without** loosening the honesty/format guards?
