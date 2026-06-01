@@ -35,10 +35,18 @@ from typing import Any, Dict, List, Optional
 
 
 def is_enabled() -> bool:
-    """True iff APPLYSMART_REAIM is set truthy (off by default)."""
-    return os.environ.get("APPLYSMART_REAIM", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
+    """True iff APPLYSMART_REAIM is set truthy (off by default).
+
+    Reads via secret_or_env so it works BOTH from a local .env / env var AND
+    from Streamlit Cloud secrets (st.secrets) — Cloud secrets are not exposed
+    as os.environ, so a plain os.environ check would silently ignore the
+    deploy's secret."""
+    try:
+        from agents.runtime import secret_or_env
+        val = secret_or_env("APPLYSMART_REAIM", "") or ""
+    except Exception:
+        val = os.environ.get("APPLYSMART_REAIM", "") or ""
+    return val.strip().lower() in ("1", "true", "yes", "on")
 
 
 # Bullets shorter than this (chars) have no room to re-word at the same length
