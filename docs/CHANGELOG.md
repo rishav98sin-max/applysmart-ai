@@ -9,6 +9,16 @@
 
 ---
 
+## v1.4.8 — Fix fragmented box/table borders on edited CVs (31 May 2026)
+
+**Bug (production, all replica CVs):** a box/table side border is one long element spanning many bullets, but `apply_edits` edits bullets one at a time — each white-fill redaction covers the border segment beside it, and the per-bullet redraw only patches that segment. The more bullets edited, the more the border fragments. It showed faintly on legacy (~5 edits) and badly under the best-of-N re-aim engine (~17–25 edits) — the role-box **right border broke into pieces** (caught on the Shrestha CV).
+
+**Root cause:** this CV draws borders as **thin black *filled* rectangles** (`color=None, fill=(0,0,0)`), not stroked lines. Both `_capture_borders_in_rect` and the per-bullet redraw skip `color=None` drawings (to avoid painting phantom lines from the light-grey cosmetic header strips), so the real borders were never captured or restored.
+
+**Fix (`pdf_editor.py`):** capture **all** original borders ONCE before any edit (`_capture_all_page_borders`) and re-stroke them ONCE after all edits, right before save. The capture now also keeps **thin + dark** fill-rectangles (the actual borders) while still skipping the thick/light-grey strips; `_redraw_borders` re-paints both stroked lines and filled-rect borders. Verified at the 25-bullet worst case: the role-box right border, the Projects/Awards boxes, and the Education grid all render whole, with **no phantom lines** on the grey strips, and no change for border-less CVs. Benefits the legacy path too, not just re-aim.
+
+---
+
 ## v1.4.7 — Best-of-N "re-aim" tailoring engine (experimental, flag-gated) (31 May 2026)
 
 **Bet under test:** Replication is the moat — faithful format **and** real tailoring, the thing no competitor does. The replica path was faithful-but-*light* because "keep every fact + same length + reword" is over-constrained, so a single-shot rewrite collapses toward the original (`identical_rewrite`). Can we get DEEP tailoring (summary **and** bullets) *without* conceding replication or honesty?

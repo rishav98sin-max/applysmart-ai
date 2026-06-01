@@ -762,16 +762,94 @@ def _capture_borders_in_rect(
 
 
 def _redraw_borders(page: "fitz.Page", saved: List[Dict[str, Any]]) -> None:
-    """Re-draw border segments captured by `_capture_borders_in_rect`."""
+    """Re-draw border segments captured by `_capture_borders_in_rect` /
+    `_capture_all_page_borders`. Handles two encodings: stroked lines
+    ({"p1","p2"}) and thin filled rectangles ({"rect","fill"} — how this CV's
+    box borders are actually drawn)."""
     for b in saved or []:
         try:
-            page.draw_line(
-                fitz.Point(*b["p1"]), fitz.Point(*b["p2"]),
-                color=b.get("color") or (0, 0, 0),
-                width=b.get("width") or 0.75,
-            )
+            if "rect" in b:
+                f = b.get("fill") or (0, 0, 0)
+                page.draw_rect(fitz.Rect(*b["rect"]), color=f, fill=f, width=0)
+            else:
+                page.draw_line(
+                    fitz.Point(*b["p1"]), fitz.Point(*b["p2"]),
+                    color=b.get("color") or (0, 0, 0),
+                    width=b.get("width") or 0.75,
+                )
         except Exception:
             pass
+
+
+def _capture_all_page_borders(doc: "fitz.Doc") -> Dict[int, List[Dict[str, Any]]]:
+    """
+    Capture EVERY straight stroked border (table/box edges, divider rules) on
+    every page, BEFORE any edits.
+
+    Why page-wide instead of the per-bullet `_capture_borders_in_rect`: a box's
+    side border is ONE tall vector line spanning many bullets. The per-bullet
+    redact/redraw patches it segment-by-segment, which fragments a long border
+    when many bullets are edited (the right border of a role box breaking up —
+    Shrestha re-aim). Capturing the original geometry once and re-stroking it
+    once after ALL edits restores spanning borders whole, regardless of how many
+    bullets changed. Mirrors the h/v segment logic of `_capture_borders_in_rect`
+    without the rect filter.
+    """
+    out: Dict[int, List[Dict[str, Any]]] = {}
+    for pno in range(doc.page_count):
+        page = doc[pno]
+        try:
+            drawings = page.get_drawings() or []
+        except Exception:
+            continue
+        saved: List[Dict[str, Any]] = []
+        for d in drawings:
+            color = d.get("color")
+            fill = d.get("fill")
+            width = d.get("width") or 0.75
+            for item in d.get("items", []) or []:
+                try:
+                    op = item[0]
+                except (TypeError, IndexError):
+                    continue
+                if op == "l" and color is not None:
+                    # Stroked line segment (h/v only).
+                    try:
+                        p1, p2 = item[1], item[2]
+                        x1, y1, x2, y2 = float(p1.x), float(p1.y), float(p2.x), float(p2.y)
+                    except Exception:
+                        continue
+                    if abs(y1 - y2) <= 2.0 or abs(x1 - x2) <= 2.0:
+                        saved.append({"p1": (x1, y1), "p2": (x2, y2),
+                                      "color": color, "width": width})
+                elif op == "re":
+                    try:
+                        r = item[1]
+                        rx0, ry0, rx1, ry1 = float(r.x0), float(r.y0), float(r.x1), float(r.y1)
+                    except Exception:
+                        continue
+                    if color is not None:
+                        # Stroked rectangle: keep its 4 thin edges as lines.
+                        for (x1, y1, x2, y2) in (
+                            (rx0, ry0, rx1, ry0), (rx0, ry1, rx1, ry1),
+                            (rx0, ry0, rx0, ry1), (rx1, ry0, rx1, ry1),
+                        ):
+                            if abs(y1 - y2) <= 2.0 or abs(x1 - x2) <= 2.0:
+                                saved.append({"p1": (x1, y1), "p2": (x2, y2),
+                                              "color": color, "width": width})
+                    else:
+                        # Fill-only rectangle. This CV draws box/table borders as
+                        # THIN BLACK filled rects (color=None, fill=(0,0,0)). Keep
+                        # those (thin + dark) as borders; skip the light-grey
+                        # cosmetic header strips (thick / light fill) to avoid
+                        # painting phantom lines.
+                        thin = min(rx1 - rx0, ry1 - ry0) <= 2.5
+                        dark = fill is not None and max(fill) <= 0.55
+                        if thin and dark:
+                            saved.append({"rect": (rx0, ry0, rx1, ry1), "fill": fill})
+        if saved:
+            out[pno] = saved
+    return out
 
 
 def _horizontal_borders_intersecting_rect(
@@ -3339,6 +3417,14 @@ def apply_edits(
     try:
         sections = extract_structure(pdf_path)
 
+        # Capture every original border ONCE, before any redaction, so spanning
+        # box/table borders can be re-stroked whole after all edits. The
+        # per-bullet redact/redraw fragments a long border when many bullets are
+        # edited (Shrestha role-box right border); restoring the captured
+        # originals once at the end fixes that for both the legacy and re-aim
+        # paths.
+        _orig_borders = _capture_all_page_borders(doc)
+
         # ── SUMMARY ────────────────────────────────────────────
         new_summary = _normalize_for_ats((edits.get("summary") or "").strip())
         if new_summary:
@@ -3904,6 +3990,17 @@ def apply_edits(
                     report["skipped"].append("skills: no reference span")
             else:
                 report["skipped"].append("skills: section not found")
+
+        # Re-stroke every original border ONCE, after all edits, so spanning
+        # box/table borders that per-bullet white-fill redactions covered are
+        # restored whole (fixes the fragmented role-box right border on
+        # multi-bullet edits — Shrestha). Additive: the per-edit redraws remain;
+        # this guarantees completeness regardless of how many bullets changed.
+        for _pno, _borders in (_orig_borders or {}).items():
+            try:
+                _redraw_borders(doc[_pno], _borders)
+            except Exception:
+                pass
 
         doc.save(output_path, deflate=True, garbage=0)
     finally:
