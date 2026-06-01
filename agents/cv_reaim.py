@@ -46,6 +46,22 @@ def is_enabled() -> bool:
 _MIN_REWORDABLE = 110
 _N_CANDIDATES = 4
 
+# Approx chars per wrapped body line (matches cv_diff_tailor's ~90 model). Used
+# to keep each re-aim on the SAME number of wrapped lines as the original — so
+# the fixed table/box border keeps hugging the content (no cumulative gap).
+_CHARS_PER_LINE = 90
+
+
+def _line_bounds(orig_len: int) -> tuple:
+    """Char [lo, hi] that keeps a re-aim on the SAME wrapped-line count as the
+    original. lo fills >=75% of the last line (so the line isn't lost); hi caps
+    just past the original's line count (so it doesn't overflow into a new line
+    and push the box border down)."""
+    n = max(1, round(orig_len / _CHARS_PER_LINE))
+    lo = int((n - 1) * _CHARS_PER_LINE + 0.75 * _CHARS_PER_LINE)
+    hi = int(n * _CHARS_PER_LINE * 1.04)
+    return max(40, lo), max(hi, orig_len)
+
 _FP_RX = re.compile(r"(^|[^A-Za-z])(I|my|we|our|us|me)([^A-Za-z]|$)")
 
 
@@ -132,15 +148,23 @@ def _select(
     cv_text_low: str,
     used_first_words: set,
     *,
-    lo_ratio: float,
-    hi_ratio: float,
+    lo_ratio: float = 0.0,
+    hi_ratio: float = 0.0,
     credential_only: bool,
     outline: Optional[Dict[str, Any]] = None,
+    bounds: Optional[tuple] = None,
 ) -> Optional[str]:
     """Pick the best VALID candidate (highest JD surfacing, penalised for a
-    repeated opening verb). Returns None if none qualify (keep original)."""
+    repeated opening verb). Returns None if none qualify (keep original).
+
+    `bounds` (lo_chars, hi_chars) overrides the ratio band — used by bullets to
+    enforce the SAME wrapped-line count (so the box border keeps hugging the
+    content). The summary uses the ratio band (prose tolerates length wobble)."""
     ol = len(orig)
-    lo, hi = int(ol * lo_ratio), int(ol * hi_ratio)
+    if bounds is not None:
+        lo, hi = bounds
+    else:
+        lo, hi = int(ol * lo_ratio), int(ol * hi_ratio)
     best, best_score = None, -1e9
     for c in cands:
         c = _fix_caps((c or "").strip())
@@ -196,7 +220,9 @@ def _reaim_bullets(
             f"For EACH bullet give {_N_CANDIDATES} DISTINCT variants that:\n"
             f"- foreground the JD-relevant angle (lead with what THIS job cares about)\n"
             f"- keep EVERY listed FACT verbatim (numbers, tools, employers, names)\n"
-            f"- are the SAME length (+/-8%) as the original — re-word every clause, don't condense\n"
+            f"- are the SAME length as the original (within a few characters) so each fills the\n"
+            f"  SAME number of wrapped lines — re-word every clause; NEVER make it shorter (a\n"
+            f"  shorter line leaves a visible gap inside the bordered slot)\n"
             f"- start each variant with a DIFFERENT strong verb; third-person (never I/my/we)\n"
             f"- natural recruiter English; invent nothing not already in the bullet\n"
             f'Output strict JSON: {{"<id>": ["v1","v2","v3","v4"]}}\n\nBULLETS:\n{listing}'
@@ -207,7 +233,7 @@ def _reaim_bullets(
             cands = var.get(str(i)) or var.get(i) or []
             best = _select(
                 orig, cands, jd_terms, cv_text_low, used_first_words,
-                lo_ratio=0.90, hi_ratio=1.08, credential_only=False,
+                bounds=_line_bounds(len(orig)), credential_only=False,
             )
             if best:
                 items.append({"i": i, "text": best})
