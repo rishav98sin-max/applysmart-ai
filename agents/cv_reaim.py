@@ -273,9 +273,14 @@ def _reaim_summary(
         f'ORIGINAL SUMMARY ({len(osum)} chars — match this):\n"{osum}"'
     )
     variants = _gen_json(prompt, 1500).get("variants") or []
+    # Summary floor is looser than bullets (0.85 vs the line-aware bullet band):
+    # the summary sits under a header bar, not in a tight cell, so a slightly
+    # shorter paragraph just leaves a little whitespace — far better than
+    # reverting to an untailored summary. The model tends to compress, so a
+    # 0.90 floor made the summary a coin-flip (HiveMinds Run29 drew all-short).
     return _select(
         osum, variants, jd_terms, cv_text_low, set(),
-        lo_ratio=0.90, hi_ratio=1.12, credential_only=True, outline=outline,
+        lo_ratio=0.85, hi_ratio=1.12, credential_only=True, outline=outline,
     )
 
 
