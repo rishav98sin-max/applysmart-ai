@@ -65,6 +65,46 @@ _URL_RX       = re.compile(r"https?://\S+|www\.\S+|\S+\.(?:com|io|dev|org|net|co
 _LINKEDIN_RX  = re.compile(r"linkedin\.com/in/([A-Za-z0-9._-]+)", re.IGNORECASE)
 _GITHUB_RX    = re.compile(r"github\.com/([A-Za-z0-9._-]+)", re.IGNORECASE)
 
+# Placeholder detection (designer CV templates leak fakes).
+# Canva/Adobe Express CV templates ship literal placeholder phone numbers and
+# URLs. When users upload one of those templates without filling in their real
+# contact info, the heuristic classifier picks up the placeholder, the LLM
+# tailor echoes it back, and the strict Typst (rendercv) validator rejects
+# `tel:+1234567890` / `www.reallygreatsite.com` and the whole rebuild fails.
+# Detecting + dropping these is the difference between "designer CV rebuilds
+# successfully" and "designer CV silently fails to land a PDF".
+_FAKE_PHONE_PATTERNS = (
+    "1234567890", "0123456789", "0000000000", "9876543210",
+    "5551234567", "5550100", "5550199",      # US fake-phone ranges
+    "1111111", "1234567", "0000000",
+)
+_FAKE_URL_HOSTS = (
+    "reallygreatsite", "example.com", "yoursite",
+    "yourwebsite", "placeholder", "lorem", "ipsum",
+    "dummyurl", "sample.com", "yourdomain", "mywebsite",
+    "yourname.com", "fakesite",
+)
+
+
+def _looks_fake_phone(raw: str) -> bool:
+    """True iff the digits look like a template placeholder, not a real number."""
+    digits = re.sub(r"\D", "", raw or "")
+    if not digits:
+        return True
+    for pat in _FAKE_PHONE_PATTERNS:
+        if pat in digits:
+            return True
+    # All-same-digit (e.g. 5555555555) is always a placeholder.
+    if len(set(digits)) <= 2 and len(digits) >= 7:
+        return True
+    return False
+
+
+def _looks_fake_url(raw: str) -> bool:
+    """True iff the URL host matches a known placeholder template."""
+    s = (raw or "").lower()
+    return any(h in s for h in _FAKE_URL_HOSTS)
+
 
 def _classify_contact_bits(bits: List[str]) -> Dict[str, Any]:
     """Split a flat contact-string list into typed fields.
@@ -99,6 +139,10 @@ def _classify_contact_bits(bits: List[str]) -> Dict[str, Any]:
             continue
 
         if _URL_RX.search(s):
+            # Drop known placeholder URLs — they'd cause the rendercv
+            # validator to reject the whole document at render time.
+            if _looks_fake_url(s):
+                continue
             if "website" not in out:
                 out["website"] = s
             continue
@@ -109,6 +153,10 @@ def _classify_contact_bits(bits: List[str]) -> Dict[str, Any]:
             # numbers can't be validated by the renderer so we'll fold
             # them into the location string later so the value still
             # surfaces on the CV instead of being dropped.
+            # Designer CV templates ship placeholder phones (1234567890 etc.)
+            # — detect + drop, otherwise rendercv rejects the whole CV.
+            if _looks_fake_phone(s):
+                continue
             digits = re.sub(r"[^\d+]", "", s)
             if digits.startswith("+") and "phone" not in out:
                 out["phone"] = f"tel:{digits}"
