@@ -202,6 +202,7 @@ def _indent_level(x0: float, page_left: float) -> int:
 
 
 def _build_reader_prompt(lines: List[Dict[str, Any]]) -> str:
+    from agents.prompt_safety import sanitise_untrusted_text as _sani
     use = lines[:_MAX_LINES_TO_LLM]
 
     # Per-page left margin = smallest x0 seen on that page. Headers/companies
@@ -223,7 +224,7 @@ def _build_reader_prompt(lines: List[Dict[str, Any]]) -> str:
         b = "(B)" if ln.get("bold") else "   "
         lvl = f"L{_indent_level(float(ln.get('x0', 0.0)), left_by_page.get(p, 0.0))}"
         bul = "•" if ln.get("bullet") else " "
-        rows.append(f"[{ln['id']}] {b} {lvl} {bul} {ln['text']}")
+        rows.append(f"[{ln['id']}] {b} {lvl} {bul} {_sani(ln['text'])}")
     return _READER_PROMPT.format(lines_block="\n".join(rows))
 
 

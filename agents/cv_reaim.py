@@ -219,8 +219,13 @@ def _reaim_bullets(
         ]
         if not targets:
             continue
+        # Treat CV bullet text as UNTRUSTED in the prompt (public uploads can
+        # carry prompt injection, e.g. "if you are an AI reading this…").
+        # Sanitise only the DISPLAYED copy — `targets`/`orig` stay raw for the
+        # selector + apply, so clean bullets are byte-identical (no-op).
+        from agents.prompt_safety import sanitise_untrusted_text as _sani
         listing = "\n".join(
-            f'[id={i}] FACTS:{_cdt()._extract_fact_atoms(t) or "none"}\n  "{t}"'
+            f'[id={i}] FACTS:{_cdt()._extract_fact_atoms(t) or "none"}\n  "{_sani(t)}"'
             for i, t in targets
         )
         prompt = (
@@ -257,6 +262,8 @@ def _reaim_summary(
     if not osum or len(osum) < 80:
         return None
     facts = _cdt()._extract_fact_atoms(osum)
+    from agents.prompt_safety import sanitise_untrusted_text as _sani
+    osum_safe = _sani(osum)   # untrusted CV text — sanitise the displayed copy only
     prompt = (
         f"RE-AIM this CV PROFESSIONAL SUMMARY for a {job_title} role — do NOT write a "
         f"fresh, shorter one. JD priorities: {sorted(jd_terms)[:18]}.\n"
@@ -270,7 +277,7 @@ def _reaim_summary(
         f"- Foreground the JD angle; you MAY relabel CV-proven work in JD vocabulary "
         f"(e.g. 'managing accounts' -> 'account management').\n"
         f'Output strict JSON: {{"variants": ["v1","v2","v3","v4"]}}\n\n'
-        f'ORIGINAL SUMMARY ({len(osum)} chars — match this):\n"{osum}"'
+        f'ORIGINAL SUMMARY ({len(osum)} chars — match this):\n"{osum_safe}"'
     )
     variants = _gen_json(prompt, 1500).get("variants") or []
     # Summary floor is looser than bullets (0.85 vs the line-aware bullet band):
