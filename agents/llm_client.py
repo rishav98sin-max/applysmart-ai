@@ -447,13 +447,16 @@ def _parse_groq_retry_after(exc: Exception) -> float:
 
 def _mark_groq_key_cooldown(key_index: int, retry_delay_s: float) -> None:
     """Mark a Groq key as cooling until now+retry_delay_s. Picked up by
-    `_next_available_groq_index()` so subsequent calls skip this key until
-    its per-minute TPM window resets."""
+    `_next_available_groq_index()` so subsequent calls skip this key.
+    Distinguishes TPM (per-minute, <90s) from TPD (per-day, minutes/hours)
+    so logs don't mislead the operator into thinking a daily-quota hit is
+    just a transient minute burst."""
     deadline = time.time() + max(0.1, retry_delay_s)
     _GROQ_KEY_COOLDOWN_UNTIL[key_index] = deadline
+    window = "TPM" if retry_delay_s < 90.0 else "TPD"
     print(
         f"   ⏱  Groq key #{key_index + 1} cooling for "
-        f"{retry_delay_s:.2f}s (TPM window reset)"
+        f"{retry_delay_s:.2f}s ({window} reset)"
     )
 
 

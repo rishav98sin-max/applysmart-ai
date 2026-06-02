@@ -1152,7 +1152,15 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
     # PRIMARY parser — but ONLY when it returns a validated outline WITH
     # geometry, so the in-place replica edit can place every edit via
     # structure_override. Otherwise keep the heuristic outline. Never raises.
-    if (os.getenv("REPLICA_LLM_PRIMARY", "0").strip().lower()
+    # Read via secret_or_env so Streamlit Cloud secrets are honoured for
+    # the A/B flip (mirrors APPLYSMART_REAIM wiring), with local env still
+    # supported.
+    try:
+        from agents.runtime import secret_or_env as _secret_or_env
+        _replica_llm_primary = (_secret_or_env("REPLICA_LLM_PRIMARY", "0") or "0")
+    except Exception:
+        _replica_llm_primary = os.getenv("REPLICA_LLM_PRIMARY", "0")
+    if (str(_replica_llm_primary).strip().lower()
             not in ("", "0", "false", "no", "off")
             and os.path.splitext(state["cv_path"])[1].lower() == ".pdf"):
         try:
