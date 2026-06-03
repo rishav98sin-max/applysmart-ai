@@ -225,7 +225,71 @@ def scrape_glassdoor(job_title: str, location: str, num_jobs: int) -> list:
 
 
 def scrape_builtin(job_title: str, location: str, num_jobs: int) -> list:
-    return _scrape_via_jobspy(job_title, location, num_jobs, "google", "Builtin")
+    """Real builtin.com scraper (replaces the old jobspy 'google' proxy,
+    which returned 0). builtin.com is a tech-jobs board with global +
+    remote roles, including Ireland (cards tagged e.g. 'Remote or Hybrid
+    Dublin, IRL'). Card structure (2026):
+        data-id="job-card"          → each listing
+          data-id="job-card-title"  → <a> title, href /job/...
+          data-id="company-title"   → company name
+    Location + description are taken from the card text snippet, which is
+    rich enough for match scoring (no per-job detail fetch needed)."""
+    print(f"   🟠 Scraping Builtin for '{job_title}' in '{location}'...")
+    query = "+".join(w for w in job_title.strip().split() if w)
+    url = f"https://builtin.com/jobs?search={query}"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        cards = soup.find_all(attrs={"data-id": "job-card"})[:num_jobs]
+        if not cards:
+            print("   ⚠️  Builtin: 0 job-card elements")
+            return []
+        jobs = []
+        for card in cards:
+            try:
+                title_a = card.find(attrs={"data-id": "job-card-title"})
+                if not title_a:
+                    continue
+                title = title_a.get_text(strip=True) or "N/A"
+                href  = title_a.get("href", "") or ""
+                link  = ("https://builtin.com" + href) if href.startswith("/") else href
+
+                comp_el = card.find(attrs={"data-id": "company-title"})
+                company = comp_el.get_text(strip=True) if comp_el else "N/A"
+
+                card_text = card.get_text(" ", strip=True)
+                # Location: builtin prints the work-mode then the place then
+                # the seniority, e.g. "Remote or Hybrid Dublin, IRL Senior
+                # level". Pull the "<City>, <CC>" that sits before "... level",
+                # rejecting card furniture ("Saved", "Ago", "Remote"...).
+                job_loc = location
+                for m in re.finditer(r"([A-Z][A-Za-z.\-]+(?:\s[A-Z][A-Za-z.\-]+)?,\s*[A-Z]{2,3})", card_text):
+                    cand = m.group(1)
+                    if not re.search(r"\b(Saved|Ago|Remote|Hybrid|Office|Manager|Reposted|Days?)\b", cand):
+                        job_loc = cand
+                        break
+
+                # Snippet = card text minus the title/company furniture.
+                snippet = card_text.replace(title, "", 1).replace(company, "", 1).strip()
+
+                jobs.append({
+                    "title":        title,
+                    "company":      company,
+                    "location":     job_loc,
+                    "url":          link,
+                    "description":  snippet,
+                    "posted":       "N/A",
+                    "posted_label": "N/A",
+                    "source":       "Builtin",
+                })
+            except Exception as e:
+                print(f"   ⚠️  Builtin card parse error: {e}")
+                continue
+        print(f"   ✅ Builtin: {len(jobs)} jobs found")
+        return jobs
+    except Exception as e:
+        print(f"   ❌ Builtin scrape failed: {type(e).__name__}: {e}")
+        return []
 
 
 # ─────────────────────────────────────────────────────────────
