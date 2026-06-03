@@ -3756,6 +3756,15 @@ def apply_edits(
                         # never swallow a neighbouring line.
                         gap_above = max(0.0, text_y0 - prev_y1)
                         body_rect.y0 = text_y0 - min(gap_above / 2.0, 6.0)
+                        # Dense-layout guard (Jun 2026): the line ABOVE (a role
+                        # HEADER or the prior bullet) usually has a bbox that
+                        # overlaps this bullet's top by ~1pt. apply_redactions()
+                        # DELETES any text whose bbox merely INTERSECTS the
+                        # redact rect — so without this the header above is
+                        # erased entirely (observed: Cormac "Finance
+                        # Administrator" under LLM-primary). Never let the redact
+                        # top reach into that line; keep it below its bottom.
+                        body_rect.y0 = max(body_rect.y0, prev_y1 + 0.5)
                         gap_below = max(0.0, next_y0 - text_y1)
                         body_rect.y1 = text_y1 + min(gap_below / 2.0, 6.0)
 

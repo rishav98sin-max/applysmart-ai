@@ -272,6 +272,10 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
     by the tailor). Net: ~250-400 chars saved per call without losing any
     bullet content.
     """
+    # CV text is UNTRUSTED (public uploads may carry prompt injection).
+    # Sanitise only the displayed copies below; raw text is kept for the
+    # length/fact math and for apply, so clean CVs are unaffected (no-op).
+    from agents.prompt_safety import sanitise_untrusted_text as _sani
     parts: List[str] = []
     cur_summary   = (outline.get("summary") or "").strip()
     cur_word_count = len(cur_summary.split()) if cur_summary else 0
@@ -286,7 +290,7 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
         f"CURRENT SUMMARY ({cur_word_count} words, {orig_summary_chars} chars, "
         f"max={summary_budget} chars — HARD limit; longer rewrites REVERT to original):"
     )
-    parts.append(cur_summary or "(none)")
+    parts.append(_sani(cur_summary) or "(none)")
     parts.append("")
     parts.append("ROLES (0-indexed bullets — index 'i' is how the editor locates each bullet):")
     parts.append(
@@ -361,12 +365,12 @@ def _format_outline_for_prompt(outline: Dict[str, Any]) -> str:
                     f"joined by ' · '; re-word EACH point in place, KEEP the "
                     f"' · ' separators and ALL {len(points)} points, hold total "
                     f"length {min_chars}-{max_chars}c (≈{orig_words} words) — do "
-                    f"NOT condense or drop points | FACTS: {facts_str}] {btext}"
+                    f"NOT condense or drop points | FACTS: {facts_str}] {_sani(btext)}"
                 )
             else:
                 parts.append(
                     f"  [{i}] [≈{orig_words} words, max={max_chars}c | "
-                    f"FACTS: {facts_str}] {btext}"
+                    f"FACTS: {facts_str}] {_sani(btext)}"
                 )
         parts.append("")
     skills = outline.get("skills") or []

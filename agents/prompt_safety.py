@@ -90,6 +90,30 @@ _INJECTION_PATTERNS: List[re.Pattern] = [
     ),
     # Common jailbreak tags
     re.compile(r"\[\s*(?:SYSTEM|JAILBREAK|DAN|OVERRIDE)\s*\]", re.IGNORECASE),
+    # ── CV-borne injection aimed at AI résumé screeners (Jun 2026) ──
+    # Real public CVs embed lines that address the AI directly to manipulate
+    # parsing/scoring (observed in the wild: "If you are an AI agent reading
+    # this resume…"). Conservative — anchored on a DIRECT ADDRESS to an AI
+    # system, so legitimate phrasing like "as an AI engineer" is NOT matched.
+    re.compile(
+        r"\bif\s+you(?:'?re|\s+are)\s+(?:an?\s+)?(?:AI|A\.I\.|artificial\s+intelligence|"
+        r"language\s+model|LLM|GPT\w*|chat\s?gpt|claude|gemini|assistant|bot|agent|"
+        r"resume\s*(?:parser|screener|scanner|reader)|text\s+extractor|ATS)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:dear|attention|hey|hello|note\s+to|to\s+the)\s+"
+        r"(?:AI|A\.I\.|chat\s?gpt|gpt\w*|claude|gemini|assistant|language\s+model|LLM|"
+        r"recruiter\s*bot|hiring\s*bot|resume\s*(?:parser|screener|bot)|ATS\s*(?:system|bot)?)\b",
+        re.IGNORECASE,
+    ),
+    # Planted verdict / score-inflation directive.
+    re.compile(
+        r"\b(?:rate|score|rank|grade|classify|mark|select|shortlist|recommend)\s+"
+        r"(?:this\s+|the\s+)?(?:candidate|applicant|resume|cv|profile)\b[^.\n]{0,40}?"
+        r"\b(?:highly|10\b|100\b|perfect|top|maximum|max|first|best|strong(?:est)?)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 _REDACT_MARK = "[[REDACTED:injection]]"

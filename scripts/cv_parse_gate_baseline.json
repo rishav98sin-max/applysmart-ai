@@ -1,0 +1,54 @@
+{
+  "cormac": {
+    "n_roles": 7,
+    "n_gt": 7,
+    "n_bullets": 34,
+    "recall": 1.0,
+    "precision": 1.0,
+    "summary_ok": true,
+    "missing": [],
+    "spurious": [],
+    "header_leak": [],
+    "bullet_cov": 1.0,
+    "bullet_missing": []
+  },
+  "mohammed": {
+    "n_roles": 3,
+    "n_gt": 3,
+    "n_bullets": 22,
+    "recall": 1.0,
+    "precision": 1.0,
+    "summary_ok": true,
+    "missing": [],
+    "spurious": [],
+    "header_leak": [],
+    "bullet_cov": 1.0,
+    "bullet_missing": []
+  },
+  "rishav": {
+    "n_roles": 5,
+    "n_gt": 5,
+    "n_bullets": 24,
+    "recall": 1.0,
+    "precision": 1.0,
+    "summary_ok": true,
+    "missing": [],
+    "spurious": [],
+    "header_leak": [],
+    "bullet_cov": 1.0,
+    "bullet_missing": []
+  },
+  "shrestha": {
+    "n_roles": 3,
+    "n_gt": 3,
+    "n_bullets": 30,
+    "recall": 1.0,
+    "precision": 1.0,
+    "summary_ok": true,
+    "missing": [],
+    "spurious": [],
+    "header_leak": [],
+    "bullet_cov": 1.0,
+    "bullet_missing": []
+  }
+}

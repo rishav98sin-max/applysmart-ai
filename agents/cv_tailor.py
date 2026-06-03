@@ -405,6 +405,280 @@ Return the JSON object only.
 """
 
 
+# ─────────────────────────────────────────────────────────────
+# ATS canonicalisation + placeholder scrub (G1, Jun 2026)
+# ─────────────────────────────────────────────────────────────
+#
+# The rebuild path produces a TailoredCV dict from the LLM. Two real-world
+# launch issues surface when designer / Canva CV templates land:
+#   (1) LLM echoes non-canonical section names from the source ("Awards and
+#       Certification", "Volunteering and Other Interests", "References") that
+#       major ATSes don't recognise, dropping whole sections from the parse.
+#       Research consensus (Jobscan, Resume.io, ResumeAdapter 2026): use the
+#       canonical names — Work Experience, Education, Skills, etc.
+#   (2) Designer templates ship placeholder phone / email / URL ("+1234567890",
+#       "hello@reallygreatsite.com", "www.reallygreatsite.com") embedded in
+#       body fields (References, contact lines). The LLM copies them verbatim.
+#       A recruiter who phones the reference and gets a disconnected number
+#       knows the CV is fake. Drop the placeholders before render.
+#
+# Both passes run once on the structured doc immediately after the LLM
+# tailor returns and before render — non-destructive (preserves real data
+# unchanged), idempotent (safe to run twice).
+
+_CANONICAL_SECTION_MAP = {
+    # Work experience family
+    "experience":            "Work Experience",
+    "work experience":       "Work Experience",
+    "professional experience": "Work Experience",
+    "employment":            "Work Experience",
+    "employment history":    "Work Experience",
+    "career history":        "Work Experience",
+    "work history":          "Work Experience",
+    "professional history":  "Work Experience",
+    # Education family
+    "education":             "Education",
+    "academic":              "Education",
+    "academic background":   "Education",
+    "academics":             "Education",
+    "qualifications":        "Education",
+    # Skills family
+    "skills":                "Skills",
+    "technical skills":      "Skills",
+    "core competencies":     "Skills",
+    "key skills":            "Skills",
+    "expertise":             "Skills",
+    "areas of expertise":    "Skills",
+    "competencies":          "Skills",
+    # Projects family
+    "projects":              "Projects",
+    "personal projects":     "Projects",
+    "side projects":         "Projects",
+    "open source":           "Projects",
+    "open source contributions": "Projects",
+    # Certifications family
+    "certifications":        "Certifications",
+    "certificates":          "Certifications",
+    "licenses":              "Certifications",
+    "licences":              "Certifications",
+    "licenses & certifications": "Certifications",
+    "awards":                "Certifications",
+    "awards and certification": "Certifications",
+    "awards & certifications": "Certifications",
+    "achievements":          "Certifications",
+    "honors":                "Certifications",
+    "honours and awards":    "Certifications",
+    # Languages
+    "languages":             "Languages",
+    "language proficiency":  "Languages",
+    # Publications
+    "publications":          "Publications",
+    "research":              "Publications",
+    "papers":                "Publications",
+}
+
+# Sections to DROP entirely from the rebuilt CV — modern resume practice
+# omits these and they're high-risk for placeholder leak (especially
+# "References" on Canva/Adobe templates).
+_SECTIONS_TO_DROP = frozenset({
+    "references", "professional references", "available upon request",
+    "interests", "hobbies", "personal interests", "other interests",
+    "volunteering", "volunteer experience", "community service",
+    "volunteering and other interests",
+})
+
+# Fake-data patterns. Matched as substrings on lowercased text. Kept
+# pessimistic — better to redact a plausible-but-suspicious value than
+# to ship `+1234567890` to a recruiter.
+_PLACEHOLDER_PHONE_DIGITS = (
+    "1234567890", "0123456789", "0000000000", "9876543210",
+    "5551234567", "5550100", "5550199",
+    "1111111", "1234567", "0000000",
+)
+_PLACEHOLDER_URL_HOSTS = (
+    "reallygreatsite", "example.com", "yoursite", "yourwebsite",
+    "yourdomain", "yourname.com", "mywebsite", "placeholder",
+    "lorem", "ipsum", "dummyurl", "sample.com", "fakesite",
+)
+_PLACEHOLDER_EMAIL_DOMAINS = (
+    "reallygreatsite", "example.com", "yoursite", "yourdomain",
+    "yourname.com", "placeholder", "lorem", "dummy", "sample.com",
+)
+_FAKE_PHONE_RE   = re.compile(r"(?:tel:|phone:|\bph\b[:\s]*)?\+?[\d\-\s\(\)]{7,}")
+_URL_RE_GLOBAL   = re.compile(r"https?://\S+|www\.\S+|\b[A-Za-z0-9.-]+\.(?:com|io|dev|org|net|co|me|app|info|biz)\b", re.IGNORECASE)
+_EMAIL_RE_GLOBAL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _has_fake_phone(s: str) -> bool:
+    digits = re.sub(r"\D", "", s or "")
+    if not digits:
+        return False
+    if any(p in digits for p in _PLACEHOLDER_PHONE_DIGITS):
+        return True
+    # All-same-digit phones (5555555555 etc.) are placeholders.
+    if len(set(digits)) <= 2 and len(digits) >= 7:
+        return True
+    return False
+
+
+def _scrub_placeholder_in_string(s: str) -> str:
+    """Strip placeholder phone/URL/email substrings from a single string.
+    Real content (real names, real bullets) untouched. Empty/whitespace
+    result is the caller's signal to drop the field."""
+    if not s:
+        return s
+    out = s
+    # Emails with placeholder domains
+    for m in list(_EMAIL_RE_GLOBAL.finditer(out)):
+        host = m.group(0).split("@", 1)[-1].lower()
+        if any(d in host for d in _PLACEHOLDER_EMAIL_DOMAINS):
+            out = out.replace(m.group(0), "")
+    # URLs with placeholder hosts
+    for m in list(_URL_RE_GLOBAL.finditer(out)):
+        url_low = m.group(0).lower()
+        if any(h in url_low for h in _PLACEHOLDER_URL_HOSTS):
+            out = out.replace(m.group(0), "")
+    # Phone runs: only redact when the run looks fake. The naive regex
+    # would catch real years (2024-2026), so we only act when the
+    # match has a phone-like prefix (Phone:, tel:, +) OR fake digits.
+    for m in list(_FAKE_PHONE_RE.finditer(out)):
+        chunk = m.group(0)
+        if _has_fake_phone(chunk) and (
+            "phone" in chunk.lower() or "tel:" in chunk.lower()
+            or chunk.strip().startswith("+") or len(re.sub(r"\D", "", chunk)) >= 9
+        ):
+            out = out.replace(chunk, "")
+    # Whitespace + dangling punctuation tidy-up
+    out = re.sub(r"\s{2,}", " ", out)
+    out = re.sub(r"^[\s\|\-•·:,]+|[\s\|\-•·:,]+$", "", out)
+    return out
+
+
+def _canonicalise_heading(h: str) -> Optional[str]:
+    """Map a section heading to its canonical name. Returns None for the
+    'drop entirely' sentinel sections (References, Volunteering, etc.)."""
+    if not h:
+        return None
+    norm = h.strip().lower()
+    if norm in _SECTIONS_TO_DROP:
+        return None
+    if norm in _CANONICAL_SECTION_MAP:
+        return _CANONICAL_SECTION_MAP[norm]
+    # Substring fallback for compounds ("My Work Experience", "Skills & Tools")
+    for canon_phrase, target in _CANONICAL_SECTION_MAP.items():
+        if canon_phrase in norm:
+            return target
+    for drop_phrase in _SECTIONS_TO_DROP:
+        if drop_phrase in norm:
+            return None
+    # Keep heading as-is for sections we don't have a canonical for
+    # (e.g. domain-specific "Patents", "Press Coverage"). Capitalize.
+    return h.strip().title()
+
+
+def _ats_finalise(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Run the canonical-section enforcer + placeholder scrub on a
+    structured TailoredCV dict immediately before render. Idempotent.
+    Logs how many fields it touched so we can see the effect in CI."""
+    if not isinstance(doc, dict):
+        return doc
+    sections_dropped = 0
+    sections_renamed = 0
+    fields_scrubbed = 0
+
+    # Top-level scalar / list scrubbing
+    for k in ("candidate_name", "summary"):
+        v = doc.get(k)
+        if isinstance(v, str):
+            new = _scrub_placeholder_in_string(v)
+            if new != v:
+                fields_scrubbed += 1
+                doc[k] = new
+    bits = doc.get("contact_bits") or []
+    if isinstance(bits, list):
+        new_bits = []
+        for b in bits:
+            if not isinstance(b, str):
+                continue
+            scrubbed = _scrub_placeholder_in_string(b)
+            if scrubbed:
+                new_bits.append(scrubbed)
+            else:
+                fields_scrubbed += 1
+        doc["contact_bits"] = new_bits
+
+    # Sections — canonicalise heading, scrub roles/paragraphs/bullets,
+    # drop empty sections.
+    new_sections = []
+    for sec in (doc.get("sections") or []):
+        if not isinstance(sec, dict):
+            continue
+        heading = _canonicalise_heading(sec.get("heading", ""))
+        if heading is None:
+            sections_dropped += 1
+            continue
+        if heading != sec.get("heading"):
+            sections_renamed += 1
+            sec["heading"] = heading
+        # Scrub paragraphs
+        new_paras = []
+        for p in (sec.get("paragraphs") or []):
+            if not isinstance(p, str):
+                continue
+            scrubbed = _scrub_placeholder_in_string(p)
+            if scrubbed:
+                new_paras.append(scrubbed)
+            elif p:
+                fields_scrubbed += 1
+        if new_paras:
+            sec["paragraphs"] = new_paras
+        elif "paragraphs" in sec:
+            sec.pop("paragraphs", None)
+        # Scrub roles
+        new_roles = []
+        for role in (sec.get("roles") or []):
+            if not isinstance(role, dict):
+                continue
+            for fld in ("title", "dates", "sub"):
+                v = role.get(fld)
+                if isinstance(v, str):
+                    new = _scrub_placeholder_in_string(v)
+                    if new != v:
+                        fields_scrubbed += 1
+                        role[fld] = new
+            new_bullets = []
+            for b in (role.get("bullets") or []):
+                if not isinstance(b, str):
+                    continue
+                scrubbed = _scrub_placeholder_in_string(b)
+                if scrubbed and len(scrubbed) >= 8:
+                    new_bullets.append(scrubbed)
+                elif b:
+                    fields_scrubbed += 1
+            if new_bullets:
+                role["bullets"] = new_bullets
+            # Keep role only if it has at least a title plus bullets OR sub
+            if (role.get("title") or "").strip() and (new_bullets or (role.get("sub") or "").strip()):
+                new_roles.append(role)
+        if new_roles:
+            sec["roles"] = new_roles
+        elif "roles" in sec:
+            sec.pop("roles", None)
+        # Drop the section entirely if both paragraphs and roles ended up empty
+        if not sec.get("roles") and not sec.get("paragraphs"):
+            sections_dropped += 1
+            continue
+        new_sections.append(sec)
+    doc["sections"] = new_sections
+
+    if sections_dropped or sections_renamed or fields_scrubbed:
+        print(
+            f"   🧹 ATS finalise: renamed={sections_renamed}  "
+            f"dropped_sections={sections_dropped}  scrubbed={fields_scrubbed}"
+        )
+    return doc
+
+
 def tailor_cv_structured(
     cv_text:            str,
     job_description:    str,
@@ -517,6 +791,7 @@ def tailor_cv_structured(
             )
             doc = _parse_validate(raw)
             if doc is not None:
+                doc = _ats_finalise(doc)
                 print(
                     f"   ✅ CV tailored (structured, {len(doc.get('sections') or [])} "
                     f"sections) for {job_title} at {company}"
@@ -528,6 +803,7 @@ def tailor_cv_structured(
             raw = chat_quality(prompt, max_tokens=budget, temperature=temperature)
             doc = _parse_validate(raw)
             if doc is not None:
+                doc = _ats_finalise(doc)
                 print(
                     f"   ✅ CV tailored (structured, fallback, "
                     f"{len(doc.get('sections') or [])} sections) "

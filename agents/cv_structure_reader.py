@@ -70,25 +70,44 @@ def _collect_lines_with_ids(pdf_path: str) -> List[Dict[str, Any]]:
     are identical in shape to what the heuristic parser sees.
     """
     import fitz  # local import — only paid for when the reader actually runs
-    from agents.pdf_editor import _collect_page_lines, _line_is_bold
+    from agents.pdf_editor import (
+        _collect_page_lines, _line_is_bold, _is_bullet, _strip_bullet,
+    )
 
     lines: List[Dict[str, Any]] = []
     doc = fitz.open(pdf_path)
     try:
         for pi in range(doc.page_count):
+            # `_collect_page_lines` keeps the invisible bullet-glyph MARKER
+            # lines (empty text) inline. A content line immediately preceded
+            # by a marker is a list item — the single most reliable bullet
+            # signal (Print-to-PDF emits the glyph as its own symbol-font
+            # line). Track it so the prompt can mark bullets explicitly.
+            prev_was_marker = False
             for ln in _collect_page_lines(doc[pi], pi):
                 txt = (ln.get("text") or "").strip()
-                if not txt:
-                    continue  # markers / blank lines — never referenced
+                # Empty line OR a line that is ONLY bullet glyph(s) ("▪","○",
+                # "•","-" …) is a list MARKER, not content. Some CVs emit the
+                # glyph as its own line (Shrestha's "▪"); without this the LLM
+                # treats each glyph as a standalone bullet and fragments the
+                # real text. `_strip_bullet` returns "" for a glyph-only line.
+                if not txt or not _strip_bullet(txt):
+                    prev_was_marker = True
+                    continue  # markers / blank / glyph-only — never referenced
                 try:
                     bold = bool(_line_is_bold(ln))
                 except Exception:
                     bold = False
+                try:
+                    is_bul = bool(prev_was_marker or _is_bullet(txt))
+                except Exception:
+                    is_bul = prev_was_marker
                 bbox = ln.get("bbox") or [0, 0, 0, 0]
                 lines.append({
                     "id":   len(lines),
                     "text": txt,
                     "bold": bold,
+                    "bullet": is_bul,
                     "x0":   float(bbox[0]),
                     "page": int(ln.get("page", pi) or pi),
                     # Geometry bridge (May 2026): keep the FULL source line
@@ -101,6 +120,7 @@ def _collect_lines_with_ids(pdf_path: str) -> List[Dict[str, Any]]:
                     # the rebuild path.
                     "_src": ln,
                 })
+                prev_was_marker = False
     finally:
         try:
             doc.close()
@@ -114,10 +134,16 @@ def _collect_lines_with_ids(pdf_path: str) -> List[Dict[str, Any]]:
 # ─────────────────────────────────────────────────────────────
 
 _READER_PROMPT = """You are a precise CV STRUCTURE parser. You are given the \
-numbered text lines of ONE candidate's CV, in reading order. Each line shows \
-its id, a bold flag, and the exact text:
+numbered text lines of ONE candidate's CV, in reading order.
 
-    [id] (B) text         <- (B) means the line is rendered BOLD
+Each line is shown as:
+    [id] (B) Lk • text
+where:
+  - (B) marks a BOLD line (blank when the line is not bold)
+  - Lk is the INDENT level: L0 = flush with the page's left margin; \
+L1, L2 = progressively MORE indented
+  - a leading • marks a BULLET / list item
+  - a "----- PAGE n -----" separator marks the start of each page
 
 Group the lines into the CV's logical structure. Return STRICT JSON only — no \
 prose, no markdown fences.
@@ -125,20 +151,30 @@ prose, no markdown fences.
 RULES (follow exactly):
 1. Output line IDS ONLY. Never copy, rewrite, translate or invent any text.
 2. Assign each line id to AT MOST ONE place. Do not reuse an id.
-3. "summary_line_ids": the professional summary / profile / "about me" lines \
-(may be empty []). The candidate's NAME, contact details, photo captions and \
-section HEADINGS ("Professional Experience", "Skills", etc.) are NOT summary — \
-leave them out entirely.
-4. "roles": one object per JOB / position in the work-experience (and, if \
-present, projects) section, in order. For each role:
+3. INDENT & BULLETS decide nesting. A line that is MORE indented (higher Lk) \
+than the role header above it, OR is marked •, is SUB-CONTENT of that role — a \
+bullet, or a project / tech-stack / sub-detail line. NEVER start a NEW role \
+from an indented (L1+) or • line. Role headers are normally L0 and often bold.
+4. IGNORE page furniture. A lone page number ("1/2", "Page 2", a bare "2") or a \
+repeated header/footer sitting next to a "----- PAGE -----" separator is NOT \
+content — never assign its id to anything.
+5. "summary_line_ids": the professional summary / profile / "about me". This is \
+usually the block of L0 prose near the TOP of page 1, after the name/contact \
+and before the first dated job — include it EVEN IF there is no "Summary" or \
+"Profile" heading word. The candidate's NAME, contact details, photo captions \
+and section HEADINGS ("Professional Experience", "Skills") are NOT summary — \
+leave them out. May be empty [].
+6. "roles": one object per JOB / position in work-experience (and projects, if \
+present), in order. For each role:
      - "header_line_ids": the line(s) that name the company and/or job title \
-and/or dates for THAT role (usually 1, sometimes 2 if split across lines).
+and/or dates for THAT role (usually 1, sometimes 2 if split across lines) — \
+these are the L0 / bold lines.
      - "bullets": a list where each element is a list of line ids forming ONE \
 bullet point. A bullet that WRAPS across several visual lines = one inner list \
 with several ids. Do NOT merge two different bullets into one list.
-5. Only real WORK / PROJECT positions become roles. Education entries, skills, \
+7. Only real WORK / PROJECT positions become roles. Education entries, skills, \
 certifications, awards and the summary are NOT roles.
-6. If a line is a section heading, the name, or contact info, simply omit it.
+8. If a line is a section heading, the name, or contact info, simply omit it.
 
 REQUIRED JSON SHAPE:
 {{
@@ -154,11 +190,41 @@ CV LINES:
 Return ONLY the JSON object."""
 
 
+def _indent_level(x0: float, page_left: float) -> int:
+    """Indentation relative to the page's own left margin, in coarse levels.
+    Relative (not absolute x0) so a CV's overall page offset doesn't matter."""
+    d = x0 - page_left
+    if d < 12.0:
+        return 0
+    if d < 36.0:
+        return 1
+    return 2
+
+
 def _build_reader_prompt(lines: List[Dict[str, Any]]) -> str:
-    rows = []
-    for ln in lines[:_MAX_LINES_TO_LLM]:
-        b = "(B) " if ln["bold"] else "    "
-        rows.append(f"[{ln['id']}] {b}{ln['text']}")
+    from agents.prompt_safety import sanitise_untrusted_text as _sani
+    use = lines[:_MAX_LINES_TO_LLM]
+
+    # Per-page left margin = smallest x0 seen on that page. Headers/companies
+    # sit at it (L0); bullets and sub-details sit to its right (L1+).
+    left_by_page: Dict[int, float] = {}
+    for ln in use:
+        p = int(ln.get("page", 0))
+        x = float(ln.get("x0", 0.0))
+        if p not in left_by_page or x < left_by_page[p]:
+            left_by_page[p] = x
+
+    rows: List[str] = []
+    cur_page: Optional[int] = None
+    for ln in use:
+        p = int(ln.get("page", 0))
+        if p != cur_page:
+            cur_page = p
+            rows.append(f"----- PAGE {p + 1} -----")
+        b = "(B)" if ln.get("bold") else "   "
+        lvl = f"L{_indent_level(float(ln.get('x0', 0.0)), left_by_page.get(p, 0.0))}"
+        bul = "•" if ln.get("bullet") else " "
+        rows.append(f"[{ln['id']}] {b} {lvl} {bul} {_sani(ln['text'])}")
     return _READER_PROMPT.format(lines_block="\n".join(rows))
 
 
@@ -281,6 +347,7 @@ def _assemble_outline(
     wrong bullet. The geometry is attached as `_geometry` and validated /
     dropped by the caller; consumers that only want text ignore the key.
     """
+    from agents.pdf_editor import _strip_bullet
     by_text = {ln["id"]: ln["text"] for ln in lines}
     by_src  = {ln["id"]: ln.get("_src") for ln in lines}
     used: set = set()
@@ -303,7 +370,12 @@ def _assemble_outline(
                 s = by_src.get(i)
                 if isinstance(s, dict) and s.get("bbox"):
                     srcs.append(s)
-        return _norm(" ".join(parts)), srcs
+        joined = _norm(" ".join(parts))
+        # Strip a leading bullet glyph that rode into the text ("○Regul…" →
+        # "Regul…") so tailored bullets aren't prefixed with junk; mirrors the
+        # heuristic parser's _strip_bullet.
+        joined = _strip_bullet(joined) or joined
+        return joined, srcs
 
     summary, summary_srcs = consume(data.get("summary_line_ids"))
 
@@ -337,6 +409,81 @@ def _assemble_outline(
                 "header_line":   _synth_header_line(header, header_srcs),
                 "bullet_groups": geo_bullets,
                 "sub_lines":     [],
+            })
+
+    # ── Coverage-floor back-fill (header-protection preserved) ─────────
+    # Attach LLM-UNASSIGNED, bullet-like, NON-header lines to the role they
+    # sit under (reading order), so we never tailor fewer bullets than the
+    # content present (e.g. Cormac's "Sourcing ESL teachers"). Headerish
+    # lines (company / title / date / section heading) are skipped → a
+    # company name can NEVER be back-filled as a tailorable bullet.
+    if roles_out and geo_roles:
+        try:
+            from agents.pdf_editor import (
+                _is_bare_date_line as _bd,
+                _looks_like_job_title as _jt,
+                _classify_heading as _ch,
+            )
+        except Exception:
+            _bd = _jt = _ch = None
+
+        def _headerish(t: str) -> bool:
+            t = (t or "").strip()
+            if len(t) < 3:
+                return True
+            try:
+                if _bd and _bd(t):
+                    return True
+                if _jt and _jt(t):
+                    return True
+                if _ch and _ch(t):
+                    return True
+            except Exception:
+                pass
+            return False
+
+        def _anchor(geo) -> Tuple[int, float]:
+            pts: List[Tuple[int, float]] = []
+            hl = geo.get("header_line") or {}
+            if hl.get("bbox"):
+                pts.append((int(hl.get("page", 0)), float(hl["bbox"][1])))
+            for bg in geo.get("bullet_groups") or []:
+                for ln in bg.get("lines") or []:
+                    bb = ln.get("bbox")
+                    if bb:
+                        pts.append((int(ln.get("page", 0)), float(bb[1])))
+            return min(pts) if pts else (0, 0.0)
+
+        anchors = sorted((_anchor(g), i) for i, g in enumerate(geo_roles))
+
+        for ln in lines:
+            i = ln["id"]
+            if i in used:
+                continue
+            txt = (by_text.get(i) or "").strip()
+            if not txt:
+                continue
+            if not (bool(ln.get("bullet")) or len(txt) >= 45):
+                continue
+            if _headerish(txt):
+                continue
+            src = by_src.get(i)
+            if not (isinstance(src, dict) and src.get("bbox")):
+                continue
+            pos = (int(ln.get("page", 0)), float(src["bbox"][1]))
+            owner = None
+            for a, idx in anchors:
+                if a <= pos:
+                    owner = idx
+                else:
+                    break
+            if owner is None:
+                continue
+            used.add(i)
+            clean = _strip_bullet(txt) or txt
+            roles_out[owner]["bullets"].append({"text": clean, "length": len(clean)})
+            geo_roles[owner]["bullet_groups"].append({
+                "lines": [src], "text": clean, "total_char_length": len(clean),
             })
 
     return {
@@ -489,7 +636,7 @@ def validate_geometry_blocks(geometry: Optional[Dict[str, Any]]) -> bool:
 # ─────────────────────────────────────────────────────────────
 
 def read_outline_llm(
-    pdf_path: str, verbose: bool = False
+    pdf_path: str, verbose: bool = False, n_samples: Optional[int] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Re-derive the CV outline with one Groq call. Returns a build_outline-shaped
@@ -507,31 +654,56 @@ def read_outline_llm(
             print(f"   [llm-reader] too few lines ({len(lines)}) — skipping")
         return None
 
+    # Consensus / best-of-N (self-consistency). The reader is mildly
+    # nondeterministic, so on >1 sample we keep the VALID candidate that
+    # captures the MOST bullet content (coverage), which both stabilises the
+    # output and maximises how much gets tailored. n=1 preserves the old
+    # single-shot behaviour exactly. Research: a couple of samples already
+    # give a reliable signal (arXiv 2502.06233 / "Two Samples Are Enough").
+    n_samples = max(1, n_samples or int(os.getenv("CV_READER_SAMPLES", "1")))
     prompt = _build_reader_prompt(lines)
-    try:
-        from agents.llm_client import chat_fast
-        raw = chat_fast(prompt, max_tokens=_LLM_READER_MODEL_TOKENS, temperature=0.0)
-    except Exception as e:
-        if verbose:
-            print(f"   [llm-reader] Groq call failed: {type(e).__name__}: {e}")
-        return None
+    from agents.llm_client import chat_fast
 
-    data = _extract_json(raw or "")
-    if not isinstance(data, dict):
+    best = None  # (coverage_chars, outline, report)
+    for k in range(n_samples):
+        # Sample 0 is deterministic (temp 0) as a stable anchor; extra
+        # samples add a little temperature for diversity so consensus means
+        # something. Bad draws are filtered by validate_llm_outline below.
+        temp = 0.0 if (n_samples == 1 or k == 0) else 0.4
+        try:
+            raw = chat_fast(prompt, max_tokens=_LLM_READER_MODEL_TOKENS, temperature=temp)
+        except Exception as e:
+            if verbose:
+                print(f"   [llm-reader] sample {k} Groq call failed: {type(e).__name__}: {e}")
+            continue
+        data = _extract_json(raw or "")
+        if not isinstance(data, dict):
+            if verbose:
+                print(f"   [llm-reader] sample {k}: unparseable JSON")
+            continue
+        cand = _assemble_outline(data, lines)
+        rep = validate_llm_outline(cand)
+        cov = sum(int(b.get("length", 0))
+                  for r in (cand.get("roles") or [])
+                  for b in (r.get("bullets") or []))
         if verbose:
-            print("   [llm-reader] could not parse JSON from LLM response")
-        return None
+            print(f"   [llm-reader] sample {k} (t={temp}): roles={rep['n_roles']} "
+                  f"bullets={rep['n_bullets']} cov={cov}c ok={rep['ok']}")
+        if not rep["ok"]:
+            continue
+        if best is None or cov > best[0]:
+            best = (cov, cand, rep)
 
-    outline = _assemble_outline(data, lines)
-    report = validate_llm_outline(outline)
+    if best is None:
+        if verbose:
+            print("   [llm-reader] no valid candidate across samples")
+        return None
+    _, outline, report = best
     if verbose:
-        print(f"   [llm-reader] outline: roles={report['n_roles']} "
-              f"bullets={report['n_bullets']} score={report['score']} "
-              f"ok={report['ok']}")
+        print(f"   [llm-reader] chosen: roles={report['n_roles']} "
+              f"bullets={report['n_bullets']} score={report['score']}")
         for iss in report["issues"]:
             print(f"       ! {iss}")
-    if not report["ok"]:
-        return None
 
     # ── Geometry bridge gate ──────────────────────────────────────────
     # The text outline is good. Now decide whether the recovered GEOMETRY is

@@ -95,6 +95,14 @@ _GEMINI_MIN_GAP_S: float = float(os.getenv("GEMINI_MIN_GAP_S", "7.0"))
 # the primary "remaining" display is driven by file-based quota cache below.
 _GROQ_QUOTA: dict = {}
 
+# Per-key cooldowns for Groq (analog of _GEMINI_KEY_COOLDOWN_UNTIL).
+# Populated from `x-ratelimit-reset-tokens` / "Please try again in Xs" on 429.
+# Honoured by `_next_available_groq_index()` so proactive round-robin skips a
+# key that just blew its per-minute TPM (~12K tok/min on free tier) while the
+# other 7 keys continue serving real work. Reads/writes are dict-atomic under
+# the GIL — no additional lock needed.
+_GROQ_KEY_COOLDOWN_UNTIL: Dict[int, float] = {}
+
 # File-based quota cache for deployment-wide token tracking.
 # Stored in the OUTPUT_DIR (writable on Streamlit Cloud) so it survives
 # process restarts within the same deployment. A new redeploy wipes it,
@@ -370,6 +378,120 @@ def _groq_client(key: str = None):
     return _GROQ_CLIENTS[key]
 
 
+def _parse_groq_reset_seconds(reset_str) -> float:
+    """Parse Groq's reset header values like '210ms', '2.5s', '1m30s', '7.66s'.
+    Returns seconds as float. Defaults to 1.0 on parse failure (short enough
+    to retry quickly, long enough not to thrash)."""
+    if reset_str is None:
+        return 1.0
+    s = str(reset_str).strip().lower()
+    if not s:
+        return 1.0
+    # Plain numeric → treat as seconds.
+    try:
+        return max(0.0, float(s))
+    except Exception:
+        pass
+    import re as _re
+    total = 0.0
+    for val, unit in _re.findall(r"([\d.]+)\s*(ms|s|m|h)", s):
+        try:
+            v = float(val)
+        except Exception:
+            continue
+        if unit == "ms":
+            total += v / 1000.0
+        elif unit == "s":
+            total += v
+        elif unit == "m":
+            total += v * 60.0
+        elif unit == "h":
+            total += v * 3600.0
+    return total if total > 0 else 1.0
+
+
+def _parse_groq_retry_after(exc: Exception) -> float:
+    """Extract retry-after seconds from a Groq 429 exception. Looks at
+    response headers first (retry-after / x-ratelimit-reset-tokens), then
+    falls back to scraping the error message ('Please try again in X.Xs').
+    Returns 1.0 if no signal found — never blocks indefinitely."""
+    try:
+        resp = getattr(exc, "response", None)
+        if resp is not None:
+            hdr = getattr(resp, "headers", None)
+            if hdr is not None and hasattr(hdr, "get"):
+                for h in (
+                    "retry-after",
+                    "x-ratelimit-reset-tokens",
+                    "x-ratelimit-reset-requests",
+                ):
+                    v = hdr.get(h)
+                    if v:
+                        return _parse_groq_reset_seconds(v)
+    except Exception:
+        pass
+    import re as _re
+    s = str(exc)
+    # Groq's TPD message looks like "Please try again in 37m18.123s.". Capture
+    # the WHOLE compound span so `_parse_groq_reset_seconds` can sum every
+    # unit, not just the first one (matters when daily quota hits and the
+    # delay is minutes+seconds, not just seconds).
+    m = _re.search(
+        r"try again in\s+((?:[\d.]+\s*(?:ms|h|m|s)\s*)+)",
+        s, _re.IGNORECASE,
+    )
+    if m:
+        return _parse_groq_reset_seconds(m.group(1))
+    return 1.0
+
+
+def _mark_groq_key_cooldown(key_index: int, retry_delay_s: float) -> None:
+    """Mark a Groq key as cooling until now+retry_delay_s. Picked up by
+    `_next_available_groq_index()` so subsequent calls skip this key.
+    Distinguishes TPM (per-minute, <90s) from TPD (per-day, minutes/hours)
+    so logs don't mislead the operator into thinking a daily-quota hit is
+    just a transient minute burst."""
+    deadline = time.time() + max(0.1, retry_delay_s)
+    _GROQ_KEY_COOLDOWN_UNTIL[key_index] = deadline
+    window = "TPM" if retry_delay_s < 90.0 else "TPD"
+    print(
+        f"   ⏱  Groq key #{key_index + 1} cooling for "
+        f"{retry_delay_s:.2f}s ({window} reset)"
+    )
+
+
+def _next_available_groq_index(advance: bool = True) -> Tuple[int, float]:
+    """Pick the next non-cooling Groq key, round-robin.
+    Returns (key_index, wait_seconds).
+    - wait_seconds == 0 → key is ready right now.
+    - wait_seconds > 0  → all keys are cooling; this is the earliest-ready
+      one, and caller should sleep wait_seconds before using it.
+    Returns (0, 0) when no keys are configured (caller will then raise)."""
+    global _GROQ_KEY_INDEX, _GROQ_KEYS
+    if not _GROQ_KEYS:
+        _GROQ_KEYS = _load_groq_keys()
+    n = len(_GROQ_KEYS)
+    if n == 0:
+        return 0, 0.0
+    now = time.time()
+    # Advance from current index — this is the "proactive round-robin": each
+    # call lands on a DIFFERENT key, spreading load across the pool instead
+    # of pinning one key until it explodes.
+    start = (_GROQ_KEY_INDEX + (1 if advance else 0)) % n
+    for offset in range(n):
+        idx = (start + offset) % n
+        cd = _GROQ_KEY_COOLDOWN_UNTIL.get(idx, 0.0)
+        if cd <= now:
+            return idx, 0.0
+    # All keys cooling — pick the soonest-recovering one.
+    earliest_idx = min(
+        range(n),
+        key=lambda i: _GROQ_KEY_COOLDOWN_UNTIL.get(i, 0.0),
+    )
+    wait_s = max(0.0, _GROQ_KEY_COOLDOWN_UNTIL[earliest_idx] - now)
+    return earliest_idx, wait_s
+
+
 def _rotate_groq_key() -> bool:
     """Rotate to the next Groq key. Returns False if no more keys available."""
     global _GROQ_KEY_INDEX, _GROQ_KEYS
@@ -467,32 +589,67 @@ def _capture_quota_from_headers(headers, key_index: int) -> None:
 
 
 def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
-    global _GROQ_KEY_INDEX, _GROQ_KEYS
+    """Make a Groq completion call with proactive round-robin + TPM backoff.
+
+    Why round-robin BEFORE the call (not just on failure):
+      Free-tier Groq ≈ 12K tok/min/key. Reader-style calls are ≈5K tokens
+      each, so 2-3 back-to-back calls on the SAME key burn that key's
+      per-minute TPM. The legacy "reactive rotate on 429" pattern pinned
+      one key until it cratered, then cascaded — looking like "all 8 keys
+      exhausted" when really 7 keys were idle. Spreading each call across
+      the pool keeps every key well below its TPM ceiling.
+
+    Why short backoff+retry on 429 (instead of bailing to heuristic):
+      Groq's TPM reset window is sub-second to ~60s (header carries
+      `x-ratelimit-reset-tokens`, often "210ms"). For most bursts a brief
+      sleep beats falling back to a parser that silently degrades.
+      Bounded by GROQ_MAX_WAIT_S (default 10s) so we never block a Streamlit
+      thread for long — caller's per-job try/except handles a final failure.
+    """
+    global _GROQ_KEY_INDEX, _GROQ_KEYS, _LAST_LLM_SOURCE
+    if not _GROQ_KEYS:
+        _GROQ_KEYS = _load_groq_keys()
+    if not _GROQ_KEYS:
+        raise RuntimeError("No valid GROQ_API_KEY found in environment")
     model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-    attempts = max(1, len(_GROQ_KEYS) if _GROQ_KEYS else 1) + 1  # try all keys once + 1 sleep
+    n_keys = len(_GROQ_KEYS)
+    # Each key may TPM once, then recover — so try up to 2× the pool size.
+    attempts = max(1, n_keys * 2)
+    max_total_wait_s = float(os.getenv("GROQ_MAX_WAIT_S", "10.0"))
+    waited_s = 0.0
+    last_err: Optional[Exception] = None
     for attempt in range(attempts):
+        idx, wait_s = _next_available_groq_index(advance=True)
+        if wait_s > 0:
+            # All keys cooling. Sleep until the earliest one is ready, but
+            # never burn more than max_total_wait_s across the whole call.
+            remaining = max_total_wait_s - waited_s
+            if remaining <= 0:
+                break
+            actual = min(wait_s, remaining)
+            print(
+                f"   ⏱  All Groq keys cooling — waiting {actual:.2f}s for "
+                f"key #{idx + 1} (cap {max_total_wait_s:.0f}s)"
+            )
+            time.sleep(actual)
+            waited_s += actual
+            if time.time() < _GROQ_KEY_COOLDOWN_UNTIL.get(idx, 0.0):
+                continue  # still cooling, try the loop again
+        _GROQ_KEY_INDEX = idx
         try:
             client = _groq_client()
-            # `.with_raw_response` exposes the underlying HTTP headers so we
-            # can read `x-ratelimit-*` for the daily-budget UI. The parsed
-            # completion is then extracted from `raw.parse()`.
             raw = client.chat.completions.with_raw_response.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=temperature,
                 max_tokens=max_tokens,
-                timeout=60.0,  # 60 second timeout to prevent indefinite hanging
+                timeout=60.0,
             )
-            # Defensive header capture — never block the response path.
             try:
-                _capture_quota_from_headers(getattr(raw, "headers", None), _GROQ_KEY_INDEX)
+                _capture_quota_from_headers(getattr(raw, "headers", None), idx)
             except Exception:
                 pass
             resp = raw.parse()
-            # Deduct actual tokens consumed from the Groq budget.
-            # Groq's response mirrors OpenAI's shape: usage.total_tokens covers
-            # prompt + completion. Never let an accounting error break the
-            # real LLM response — hence the broad try/except.
             try:
                 usage = getattr(resp, "usage", None)
                 if usage is not None:
@@ -501,26 +658,46 @@ def _call_groq(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> 
                         _increment_groq_tokens(total)
             except Exception:
                 pass
-            global _LAST_LLM_SOURCE
-            _LAST_LLM_SOURCE = f"GROQ key#{_GROQ_KEY_INDEX + 1}"
+            _LAST_LLM_SOURCE = f"GROQ key#{idx + 1}"
             return (resp.choices[0].message.content or "").strip()
         except Exception as e:
-            if _is_rate_limit_error(e) or _is_auth_error(e):
-                if _rotate_groq_key():
-                    continue  # try next key immediately, no sleep
-                # All keys exhausted — break out and raise the typed
-                # RuntimeError below instead of blocking 30s. Daily quotas
-                # don't reset in 30s, so the sleep was just guaranteeing a
-                # hung Streamlit session before the inevitable re-raise.
-                # Caller's per-job try/except in job_agent.py handles the
-                # exception cleanly as a job-level failure.
-                break
+            last_err = e
+            if _is_rate_limit_error(e):
+                retry_s = _parse_groq_retry_after(e)
+                _mark_groq_key_cooldown(idx, retry_s)
+                try:
+                    from agents.analytics import track_event
+                    cooling_now = sum(
+                        1 for v in _GROQ_KEY_COOLDOWN_UNTIL.values()
+                        if v > time.time()
+                    )
+                    track_event(
+                        "llm_rate_limit_hit",
+                        "system_infra",
+                        {
+                            "key_index": idx + 1,
+                            "retry_delay_s": round(retry_s, 3),
+                            "keys_cooling": cooling_now,
+                            "keys_total": n_keys,
+                        },
+                    )
+                except Exception:
+                    pass
+                continue  # round-robin to next key
+            if _is_auth_error(e):
+                # Bad/revoked key — park it for a long time so we don't
+                # waste round-robin slots on it for the rest of the session.
+                _mark_groq_key_cooldown(idx, 3600.0)
+                continue
             raise
-    # Loop exhausted without success. Raise instead of returning "" so callers
-    # don't silently parse JSON from empty string and produce garbage outputs.
+    print(
+        f"   ⚠️  All {n_keys} Groq key(s) rate-limited "
+        f"(waited {waited_s:.1f}s, cap {max_total_wait_s:.0f}s)"
+    )
     raise RuntimeError(
-        f"Groq call failed after {attempts} attempts across "
-        f"{len(_GROQ_KEYS)} key(s) — all rate-limited or invalid."
+        f"Groq call failed after {attempts} attempts across {n_keys} key(s) "
+        f"— all rate-limited (waited {waited_s:.1f}s). Last error: "
+        f"{type(last_err).__name__ if last_err else 'None'}"
     )
 
 

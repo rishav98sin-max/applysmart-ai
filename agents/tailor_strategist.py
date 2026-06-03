@@ -517,12 +517,13 @@ def _format_outline_for_strategist(outline: Dict[str, Any]) -> str:
     cv_diff_tailor uses, but trimmed slightly to keep the prompt under
     the strategist's smaller token budget.
     """
+    from agents.prompt_safety import sanitise_untrusted_text as _sani  # untrusted CV text
     parts: List[str] = []
 
     summary = (outline.get("summary") or "").strip()
     if summary:
         wc = len(summary.split())
-        parts.append(f"SUMMARY ({wc} words):\n{summary}")
+        parts.append(f"SUMMARY ({wc} words):\n{_sani(summary)}")
 
     # Run 26 (May 2026): per-bullet character budget. The editor places
     # each rewrite into the ORIGINAL bullet's slot (no page reflow), so
@@ -549,7 +550,7 @@ def _format_outline_for_strategist(outline: Dict[str, Any]) -> str:
                 budget = _budget_for(b)
                 parts.append(
                     f"      [{idx}] [orig={orig_c}c, max={budget}c] "
-                    f"{txt.strip()}"
+                    f"{_sani(txt.strip())}"
                 )
 
     projects = outline.get("projects") or []
@@ -565,7 +566,7 @@ def _format_outline_for_strategist(outline: Dict[str, Any]) -> str:
                 budget = _budget_for(b)
                 parts.append(
                     f"      [{idx}] [orig={orig_c}c, max={budget}c] "
-                    f"{txt.strip()}"
+                    f"{_sani(txt.strip())}"
                 )
 
     skills = outline.get("skills") or []

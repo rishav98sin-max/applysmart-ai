@@ -1141,11 +1141,48 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
 
     # Build the CV outline ONCE up front — same CV for every job, saves a
     # PyMuPDF parse per iteration (v1.1 perf fix).
+    shared_outline: Optional[Dict[str, Any]] = None
     try:
-        shared_outline: Optional[Dict[str, Any]] = _build_outline(state["cv_path"])
+        shared_outline = _build_outline(state["cv_path"])
     except Exception as e:
         print(f"   ⚠️  Pre-build of CV outline failed ({e}); will build per-job.")
         shared_outline = None
+    # LLM-PRIMARY (REPLICA_LLM_PRIMARY, default OFF): for PDF uploads, use the
+    # LLM structure reader (consensus + coverage-floor back-fill) as the
+    # PRIMARY parser — but ONLY when it returns a validated outline WITH
+    # geometry, so the in-place replica edit can place every edit via
+    # structure_override. Otherwise keep the heuristic outline. Never raises.
+    # Read via secret_or_env so Streamlit Cloud secrets are honoured for
+    # the A/B flip (mirrors APPLYSMART_REAIM wiring), with local env still
+    # supported.
+    try:
+        from agents.runtime import secret_or_env as _secret_or_env
+        _replica_llm_primary = (_secret_or_env("REPLICA_LLM_PRIMARY", "0") or "0")
+    except Exception:
+        _replica_llm_primary = os.getenv("REPLICA_LLM_PRIMARY", "0")
+    if (str(_replica_llm_primary).strip().lower()
+            not in ("", "0", "false", "no", "off")
+            and os.path.splitext(state["cv_path"])[1].lower() == ".pdf"):
+        try:
+            from agents.cv_structure_reader import read_outline_llm
+            # Consensus (best-of-N) is REQUIRED here: at n=1 the geometry gate
+            # is nondeterministic, so the in-place edit would intermittently
+            # have no geometry. Default 3 samples for a stable parse.
+            _llm_outline = read_outline_llm(
+                state["cv_path"],
+                n_samples=int(os.getenv("REPLICA_LLM_SAMPLES", "3") or "3"),
+            )
+        except Exception as _llm_err:
+            print(f"   ⚠️  LLM-primary reader failed "
+                  f"({type(_llm_err).__name__}: {_llm_err}); using heuristic.")
+            _llm_outline = None
+        if _llm_outline and _llm_outline.get("roles") and _llm_outline.get("_geometry"):
+            print(f"   🧠 REPLICA_LLM_PRIMARY active — LLM structure "
+                  f"({len(_llm_outline['roles'])} roles) drives in-place edit.")
+            shared_outline = _llm_outline
+        else:
+            print("   ↩️  REPLICA_LLM_PRIMARY: LLM reader declined / no geometry "
+                  "— keeping heuristic outline.")
 
     def _process_single_job(job: Dict[str, Any]) -> Dict[str, Any]:
         company = job.get("company", "Unknown")
@@ -1420,6 +1457,17 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                 _pi = replica_check.get("parse_integrity") or {}
                 _parse_collapsed = bool(_pi) and not _pi.get("ok", True)
                 _geo = (outline_cache or {}).get("_geometry")
+                # LLM-PRIMARY: when the shared outline came from the LLM reader,
+                # its geometry MUST drive apply_edits — the diff is keyed to LLM
+                # roles/bullets, so heuristic re-extraction would misplace edits.
+                # Use it unconditionally (not only on heuristic-parse collapse).
+                if (outline_cache or {}).get("_source") == "llm_reader" and _geo and _geo.get("roles"):
+                    replica_geometry = _geo
+                    print(
+                        f"   🧠 {tag} LLM-primary geometry drives in-place edit "
+                        f"({len(_geo['roles'])} roles, "
+                        f"{sum(len(r.get('bullet_groups') or []) for r in _geo['roles'])} bullets)."
+                    )
                 if _parse_collapsed and _geo and _geo.get("roles"):
                     replica_geometry = _geo
                     # Reclaim the CV for in-place editing if the parse gate had
