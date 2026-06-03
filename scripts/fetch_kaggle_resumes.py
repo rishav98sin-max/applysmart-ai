@@ -33,16 +33,41 @@ MAX = int(sys.argv[1]) if len(sys.argv) > 1 else 200
 
 
 def _ensure_creds() -> bool:
-    """Honour env-var auth by writing kaggle.json on the fly if missing.
-    Returns True if Kaggle can authenticate."""
+    """Resolve any of Kaggle's three supported auth methods, writing the
+    relevant file if only env vars are present. Returns True if Kaggle can
+    authenticate.
+
+    Supported (in order of preference):
+      1. ~/.kaggle/access_token      (newer single-token format)
+      2. KAGGLE_API_TOKEN env var    (writes access_token on the fly)
+      3. ~/.kaggle/kaggle.json       (legacy username+key format)
+      4. KAGGLE_USERNAME+KAGGLE_KEY  (writes kaggle.json on the fly)
+    """
     home = Path.home()
-    cred_file = home / ".kaggle" / "kaggle.json"
+    kdir = home / ".kaggle"
+    token_file = kdir / "access_token"
+    cred_file = kdir / "kaggle.json"
+    # 1. access_token file already on disk.
+    if token_file.exists() and token_file.stat().st_size > 0:
+        return True
+    # 2. KAGGLE_API_TOKEN env var -> materialise to access_token.
+    token_env = os.getenv("KAGGLE_API_TOKEN")
+    if token_env:
+        kdir.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(token_env.strip())
+        try:
+            os.chmod(token_file, 0o600)
+        except Exception:
+            pass
+        return True
+    # 3. legacy kaggle.json on disk.
     if cred_file.exists():
         return True
+    # 4. KAGGLE_USERNAME + KAGGLE_KEY env -> materialise to kaggle.json.
     user = os.getenv("KAGGLE_USERNAME")
     key = os.getenv("KAGGLE_KEY")
     if user and key:
-        cred_file.parent.mkdir(parents=True, exist_ok=True)
+        kdir.mkdir(parents=True, exist_ok=True)
         cred_file.write_text(json.dumps({"username": user, "key": key}))
         try:
             os.chmod(cred_file, 0o600)
@@ -51,9 +76,11 @@ def _ensure_creds() -> bool:
         return True
     print(
         "  ✘ Kaggle creds missing.\n"
-        f"     Drop kaggle.json at {cred_file}\n"
-        "     OR set KAGGLE_USERNAME / KAGGLE_KEY env vars.\n"
-        "     Get the file at https://www.kaggle.com/settings/account (Create New API Token)."
+        f"     Drop access_token at {token_file} (newer)\n"
+        f"     OR drop kaggle.json at {cred_file} (legacy)\n"
+        "     OR set KAGGLE_API_TOKEN env (newer)\n"
+        "     OR set KAGGLE_USERNAME / KAGGLE_KEY env (legacy).\n"
+        "     Generate at https://www.kaggle.com/settings/account."
     )
     return False
 
