@@ -296,22 +296,27 @@ def _resolve_output_dir(state: AgentState) -> str:
     return OUTPUT_DIR
 
 
-# ── Board escalation (Option C, flag-gated) ─────────────────────────────────
-# Default OFF. When BOARD_ESCALATION is truthy, the scrape loop treats the
-# round space as (live_board × title_bundle): it exhausts every title bundle
-# on the user's board first, then ESCALATES to the next live board (Indeed →
-# Jobs.ie → Builtin) and re-runs the titles there — but only while still
-# under the match target (the supervisor stops the moment min_matches is hit).
-# This widens the candidate pool when a board's listings are thin/stale,
-# without paying the cost unless we're actually struggling to match.
-# Bounded by BOARD_ESCALATION_MAX_ROUNDS (default 8) so it can't balloon.
+# ── Board escalation (Option C) — DEFAULT ON ────────────────────────────────
+# The scrape loop treats the round space as (live_board × title_bundle): it
+# tries `titles_per_board` titles on the user's board, then ESCALATES to the
+# next live board (LinkedIn → Indeed → Jobs.ie → Builtin) and retries the
+# titles there — but ONLY while still under the match target (the supervisor
+# stops the moment enough matches land, so a run that matches on LinkedIn
+# never escalates and pays zero extra cost). This widens the candidate pool
+# when a board's listings are thin/stale. Bounded by
+# BOARD_ESCALATION_MAX_ROUNDS (default 10) so a no-match run can't balloon.
+#
+# Default ON in prod (verified E2E Jun 2026: Cormac/Auditor matched on
+# LinkedIn → no escalation; threshold=99 forced the full LinkedIn→Indeed→
+# Jobs.ie→Builtin ladder). BOARD_ESCALATION=0 is a silent kill-switch for
+# operational safety, but the feature is on by default — no flag flip needed.
 def _board_escalation_on() -> bool:
     try:
         from agents.runtime import secret_or_env
-        v = secret_or_env("BOARD_ESCALATION", "0") or "0"
+        v = secret_or_env("BOARD_ESCALATION", "1") or "1"
     except Exception:
-        v = os.getenv("BOARD_ESCALATION", "0")
-    return str(v).strip().lower() not in ("", "0", "false", "no", "off")
+        v = os.getenv("BOARD_ESCALATION", "1")
+    return str(v).strip().lower() not in ("0", "false", "no", "off")
 
 
 def _live_boards_for_state(state: AgentState) -> List[str]:
@@ -323,16 +328,41 @@ def _live_boards_for_state(state: AgentState) -> List[str]:
         return [pref]
 
 
-def _escalation_round_cap(state: AgentState, n_bundles: int) -> int:
-    """Total rounds available under escalation: (titles × live boards),
-    hard-capped by BOARD_ESCALATION_MAX_ROUNDS."""
-    live_n = max(1, len(_live_boards_for_state(state)))
+def _escalation_titles_per_board(n_bundles: int) -> int:
+    """How many title bundles to try on each board before escalating to the
+    next. Capped low (default 3) so escalation reaches SEVERAL boards within
+    the round budget rather than burning it all on one board's titles."""
     try:
         from agents.runtime import secret_or_env
-        hard = int(secret_or_env("BOARD_ESCALATION_MAX_ROUNDS", "8") or 8)
+        tpb = int(secret_or_env("ESCALATION_TITLES_PER_BOARD", "3") or 3)
     except Exception:
-        hard = 8
-    return min(hard, max(1, n_bundles) * live_n)
+        tpb = 3
+    return max(1, min(n_bundles or 1, tpb))
+
+
+def _escalation_round_cap(state: AgentState, n_bundles: int) -> int:
+    """Total rounds under escalation = (titles_per_board × live boards),
+    hard-capped by BOARD_ESCALATION_MAX_ROUNDS so a no-match run can't
+    balloon scrape/match calls."""
+    live_n = max(1, len(_live_boards_for_state(state)))
+    tpb    = _escalation_titles_per_board(n_bundles)
+    try:
+        from agents.runtime import secret_or_env
+        hard = int(secret_or_env("BOARD_ESCALATION_MAX_ROUNDS", "10") or 10)
+    except Exception:
+        hard = 10
+    return min(hard, tpb * live_n)
+
+
+def _escalation_board_and_title(state: AgentState, bundles: list, rd: int):
+    """Map a round index to (board, title_bundle) under escalation:
+    `titles_per_board` titles per board, then advance to the next live board.
+    Returns (board_name, bundle_dict)."""
+    tpb  = _escalation_titles_per_board(len(bundles))
+    live = _live_boards_for_state(state)
+    board = live[min(rd // tpb, len(live) - 1)]
+    bundle = bundles[rd % tpb] if bundles else {}
+    return board, bundle
 
 
 def _allowed_next_workers(state: AgentState) -> List[str]:
@@ -405,13 +435,37 @@ def _state_summary_for_supervisor(state: AgentState) -> str:
     best_score = max((j.get("match_score", 0) for j in matched + skipped), default=0)
     errs = state.get("errors") or []
     next_idx = rd
-    next_bundle = bundles[next_idx] if 0 <= next_idx < len(bundles) else None
+
+    # Under board escalation the round space spans (board × title); the
+    # supervisor's max must reflect that or it stops before any board switch
+    # is reached (with more title bundles than the planner's max_scrape_rounds,
+    # the escalation rounds were unreachable — fixed here).
+    _escalating = _board_escalation_on() and bool(bundles)
+    if _escalating:
+        shown_max = _escalation_round_cap(state, len(bundles))
+        if next_idx < shown_max:
+            next_board, next_bundle = _escalation_board_and_title(state, bundles, next_idx)
+        else:
+            next_board, next_bundle = None, None
+    else:
+        shown_max = qb.get("max_scrape_rounds", "?")
+        next_bundle = bundles[next_idx] if 0 <= next_idx < len(bundles) else None
+        next_board  = None
 
     lines = [
         f"status               : {state.get('status')}",
-        f"scrape_round         : {rd} / max {qb.get('max_scrape_rounds', '?')}",
+        f"scrape_round         : {rd} / max {shown_max}",
         f"total_keyword_bundles: {len(bundles)}",
     ]
+    if _escalating:
+        lines.append(
+            "board_escalation     : ON — continuing to scrape after exhausting "
+            "titles on one board ROTATES to the next job board (LinkedIn → "
+            "Indeed → Jobs.ie → Builtin). If under the match target, prefer "
+            "scrape_jobs to reach an untried board before giving up."
+        )
+        if next_board:
+            lines.append(f"next_scrape_board    : {next_board}")
     if cur_bundle:
         lines.append(
             f"current_bundle       : {cur_bundle.get('title')!r} @ {cur_bundle.get('location')!r}"
@@ -624,17 +678,15 @@ def supervisor_node(state: AgentState) -> AgentState:
         bundles = plan.get("keyword_bundles") or []
         rd = base.get("scrape_round", 0)
         if bundles and _board_escalation_on():
-            # Round space = (board × title): cycle titles within each board,
-            # advance board once all titles are exhausted. rd // n picks the
-            # board, rd % n picks the title.
-            n = len(bundles)
-            live = _live_boards_for_state(base)
-            patched["current_bundle"] = bundles[rd % n]
-            esc_board = live[min(rd // n, len(live) - 1)]
+            # Round space = (board × title): try `titles_per_board` titles on
+            # one board, then escalate to the next live board.
+            esc_board, esc_bundle = _escalation_board_and_title(base, bundles, rd)
+            patched["current_bundle"]  = esc_bundle
             patched["escalated_board"] = esc_board
-            if rd >= n:
+            tpb = _escalation_titles_per_board(len(bundles))
+            if rd >= tpb:
                 print(f"   🪜 board escalation: round {rd+1} → board '{esc_board}' "
-                      f"(title '{bundles[rd % n].get('title')}')")
+                      f"(title '{esc_bundle.get('title')}')")
         elif 0 <= rd < len(bundles):
             patched["current_bundle"] = bundles[rd]
         patched["status"]      = "dispatching_scrape"
