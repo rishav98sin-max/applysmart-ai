@@ -396,13 +396,33 @@ def _fetch_jobsie_description(url: str) -> str:
 SOURCE_MAP = {
     "LinkedIn":  scrape_linkedin,
     "Indeed":    scrape_indeed,
-    "Glassdoor": scrape_glassdoor,
+    "Glassdoor": scrape_glassdoor,   # retained but DEAD (see _DEAD_BOARDS)
     "Jobs.ie":   scrape_jobsie,
     "Builtin":   scrape_builtin,
 }
 
+# Boards excluded from the live fallback/escalation order and the UI.
+# Glassdoor serves a Cloudflare/captcha challenge page to requests-based
+# scrapers (verified Jun 2026: HTTP 200 but a challenge body) and jobspy
+# 1.1.82 (latest) errors on its API. Re-enabling needs a headless browser.
+# The scraper fn stays in SOURCE_MAP so an explicit call still degrades
+# gracefully (returns []), but it never enters automatic rotation.
+_DEAD_BOARDS = {"Glassdoor"}
+
+# Live boards = everything in SOURCE_MAP except the known-dead ones.
+LIVE_BOARDS = [b for b in SOURCE_MAP if b not in _DEAD_BOARDS]
+
 # Stable order for automatic fallback when the user's board returns no listings.
-SOURCE_BOARD_ORDER = list(SOURCE_MAP.keys())
+SOURCE_BOARD_ORDER = list(LIVE_BOARDS)
+
+
+def live_boards_for(user_pick: str) -> list:
+    """Live boards with the user's pick first (for board ESCALATION). Dead
+    boards excluded. Unknown / 'All' → just the live order."""
+    s = (user_pick or "").strip()
+    if s not in LIVE_BOARDS:
+        return list(LIVE_BOARDS)
+    return [s] + [b for b in LIVE_BOARDS if b != s]
 
 
 def boards_fallback_sequence(user_pick: str) -> list:

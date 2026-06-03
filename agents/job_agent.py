@@ -210,6 +210,7 @@ class AgentState(TypedDict):
     plan:                Dict[str, Any]
     scrape_round:        int
     current_bundle:      Dict[str, Any]
+    escalated_board:     str   # board for this round under BOARD_ESCALATION
     supervisor_trace:    List[Dict[str, Any]]
     # ── Phase 2 placeholders ────────────────────────────
     review_results:      Dict[str, Any]
@@ -295,6 +296,45 @@ def _resolve_output_dir(state: AgentState) -> str:
     return OUTPUT_DIR
 
 
+# ── Board escalation (Option C, flag-gated) ─────────────────────────────────
+# Default OFF. When BOARD_ESCALATION is truthy, the scrape loop treats the
+# round space as (live_board × title_bundle): it exhausts every title bundle
+# on the user's board first, then ESCALATES to the next live board (Indeed →
+# Jobs.ie → Builtin) and re-runs the titles there — but only while still
+# under the match target (the supervisor stops the moment min_matches is hit).
+# This widens the candidate pool when a board's listings are thin/stale,
+# without paying the cost unless we're actually struggling to match.
+# Bounded by BOARD_ESCALATION_MAX_ROUNDS (default 8) so it can't balloon.
+def _board_escalation_on() -> bool:
+    try:
+        from agents.runtime import secret_or_env
+        v = secret_or_env("BOARD_ESCALATION", "0") or "0"
+    except Exception:
+        v = os.getenv("BOARD_ESCALATION", "0")
+    return str(v).strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _live_boards_for_state(state: AgentState) -> List[str]:
+    pref = state.get("preferred_job_board") or state.get("source", "LinkedIn")
+    try:
+        from agents.job_scraper import live_boards_for
+        return live_boards_for(pref)
+    except Exception:
+        return [pref]
+
+
+def _escalation_round_cap(state: AgentState, n_bundles: int) -> int:
+    """Total rounds available under escalation: (titles × live boards),
+    hard-capped by BOARD_ESCALATION_MAX_ROUNDS."""
+    live_n = max(1, len(_live_boards_for_state(state)))
+    try:
+        from agents.runtime import secret_or_env
+        hard = int(secret_or_env("BOARD_ESCALATION_MAX_ROUNDS", "8") or 8)
+    except Exception:
+        hard = 8
+    return min(hard, max(1, n_bundles) * live_n)
+
+
 def _allowed_next_workers(state: AgentState) -> List[str]:
     status = state.get("status", "starting")
 
@@ -312,7 +352,11 @@ def _allowed_next_workers(state: AgentState) -> List[str]:
     max_rounds    = int(qb.get("max_scrape_rounds", min(2, len(bundles) or 1)))
     matched_count = len(state.get("matched_jobs") or [])
     min_matches   = int(qb.get("min_matches", 1))
-    can_rescrape  = scrape_round < max_rounds and scrape_round < len(bundles)
+    if _board_escalation_on() and bundles:
+        # Round space spans boards; the title-bundle cap no longer applies.
+        can_rescrape = scrape_round < _escalation_round_cap(state, len(bundles))
+    else:
+        can_rescrape = scrape_round < max_rounds and scrape_round < len(bundles)
 
     if status == "jobs_scraped":
         opts = ["match_jobs"]
@@ -579,7 +623,19 @@ def supervisor_node(state: AgentState) -> AgentState:
         plan = base.get("plan") or {}
         bundles = plan.get("keyword_bundles") or []
         rd = base.get("scrape_round", 0)
-        if 0 <= rd < len(bundles):
+        if bundles and _board_escalation_on():
+            # Round space = (board × title): cycle titles within each board,
+            # advance board once all titles are exhausted. rd // n picks the
+            # board, rd % n picks the title.
+            n = len(bundles)
+            live = _live_boards_for_state(base)
+            patched["current_bundle"] = bundles[rd % n]
+            esc_board = live[min(rd // n, len(live) - 1)]
+            patched["escalated_board"] = esc_board
+            if rd >= n:
+                print(f"   🪜 board escalation: round {rd+1} → board '{esc_board}' "
+                      f"(title '{bundles[rd % n].get('title')}')")
+        elif 0 <= rd < len(bundles):
             patched["current_bundle"] = bundles[rd]
         patched["status"]      = "dispatching_scrape"
         # Apr 29 — RESTORED jobs_found wipe (was wrongly removed in a5c0e34).
@@ -836,7 +892,14 @@ def _scrape_one_board_with_broadening(
 
 
 def scrape_jobs_node(state: AgentState) -> AgentState:
-    pref = state.get("preferred_job_board") or state.get("source", "LinkedIn")
+    # Under board escalation, the supervisor stashes the round's target board
+    # in `escalated_board`; honour it so later rounds pull from the next live
+    # board. Falls back to the user's chosen board otherwise.
+    pref = (
+        state.get("escalated_board")
+        or state.get("preferred_job_board")
+        or state.get("source", "LinkedIn")
+    )
     sequence = boards_fallback_sequence(pref)
 
     bundle = state.get("current_bundle") or {

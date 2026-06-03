@@ -809,7 +809,9 @@ with st.sidebar:
 
         selected_source = st.selectbox(
             "Primary job board",
-            options = ["LinkedIn", "Indeed", "Glassdoor", "Jobs.ie", "Builtin", "All"],
+            # Glassdoor removed — it serves a Cloudflare/captcha challenge to
+            # our scraper and jobspy can't read it (needs a headless browser).
+            options = ["LinkedIn", "Indeed", "Jobs.ie", "Builtin", "All"],
             index   = 0,
             help    = (
                 "Tried first. If empty, other boards are searched in order. "
