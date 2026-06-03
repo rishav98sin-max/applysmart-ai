@@ -8,14 +8,15 @@ quality.
 
 | You uploaded a... | What happens |
 |---|---|
-| Standard text PDF (Word / Docs / LaTeX export) | ✅ Full support: in-place layout edits, bullet reordering, summary rewrite |
-| Two-column or designer template (Canva, Novorésumé, etc.) | ⚠ Runs but likely falls back to a rebuild — **visual layout will change** |
+| Standard text PDF (Word / Docs / LaTeX export) | ✅ Full support: in-place layout edits, bullet reordering, summary rewrite. LLM-primary parsing (v1.5) makes this robust across unfamiliar single-column layouts |
+| Native Word `.docx` | ✅ Edited in place at paragraph/run level **including table cells**, rendered via LibreOffice — layout preserved |
+| Two-column or designer template (Canva, Novorésumé, etc.) | ✅ v1.5: produces a clean **ATS rebuild** (canonical sections, tailored, placeholder data scrubbed). **Visual design is not preserved** — you get an ATS-safe version, not your original look |
 | Scanned / photographed CV (image-only PDF) | ✗ Blocked at upload. Please export from a text source |
 | Password-protected PDF | ✗ Blocked at upload. Remove the password and re-upload |
 | Non-English CV | ⚠ Runs but section detection is English-only; expect degraded output |
 | Very short (< 400 chars) | ⚠ Runs but tailor agent has little material to work with |
 | Corrupt / malformed PDF | ✗ Blocked at upload |
-| PDF with tables for experience | ⚠ Bullets may not be detected; text is still parsed |
+| PDF with tables for experience | ✅ v1.5: the LLM-primary parser and DOCX table-cell walker handle most table layouts; very unusual nestings may fall back to rebuild |
 | PDF > 7 MB or > 12 pages | ✗ Blocked / ⚠ warned (unusually large) |
 
 ## How the pre-flight validator works
@@ -41,8 +42,8 @@ that tells you how the CV PDF was produced:
 
 | Mode | Meaning | Visual fidelity |
 |---|---|---|
-| `in_place` | Original PDF replicated and edited via PyMuPDF | ✅ Matches original exactly |
-| `rebuilt` | Full rebuild via ReportLab from tailored text | ⚠ Different layout from original |
+| `in_place` | Original PDF/DOCX replicated and edited (PyMuPDF / python-docx), driven by the LLM-primary structure parser | ✅ Matches original exactly |
+| `rebuilt` | Structured ATS rebuild from tailored content — canonical sections, placeholder scrub; rendered by Typst (preferred) → WeasyPrint → ReportLab | ⚠ ATS-clean but different layout from original |
 | `failed`  | Neither path produced a PDF | ✗ Error — no output |
 
 This is surfaced on each match card as a chip so users know what they're

@@ -1,6 +1,6 @@
 # ApplySmart AI — Roadmap
 
-*Product owner: Rishav Singh · Last updated: 18 May 2026 (v1.4.2)*
+*Product owner: Rishav Singh · Last updated: 3 June 2026 (v1.5 — robustness milestone)*
 
 > **Companion docs:**
 > `PM_CASE_STUDY.md` — customer hypothesis, product bets, falsifiable tests.
@@ -23,32 +23,53 @@ land.
 
 ---
 
-## Where we are today (18 May 2026, v1.4.2)
+## Where we are today (3 June 2026, v1.5)
 
 **Deployed on Streamlit Community Cloud** and fully usable end-to-end by a
 real user:
-- Upload a CV (PDF **or** native `.docx`) → scrape LinkedIn / Indeed /
-  Glassdoor / Builtin / Jobs.ie → score against each JD → tailor the CV
-  summary + bullets + cover letter → render to PDF → preview → email.
+- Upload a CV (PDF **or** native `.docx`) → scrape across live job boards
+  → score against each JD → tailor the CV summary + bullets + cover letter
+  → render to PDF → preview → email.
+- **Three terminal output paths**, picked per CV: (A) **DOCX in-place** —
+  native `.docx` edited at paragraph/run level *including table cells*,
+  rendered by LibreOffice headless; (B) **PDF in-place replica** — PyMuPDF
+  coordinate-level edits preserving the original layout/fonts/colours; (C)
+  **structured rebuild** — for designer/colour-block/multi-column CVs that
+  can't be edited in place, an ATS-clean rebuild (canonical section names,
+  placeholder scrub, Typst → WeasyPrint → ReportLab renderers). Designer
+  and multi-column CVs that earlier versions *rejected* are now handled by
+  path C.
+- **LLM-primary structure parsing (v1.5, default on):** the in-place paths
+  are driven by an LLM reader (best-of-N consensus, layout-enriched
+  prompt, line-index-grounded output) rather than bbox/font heuristics
+  alone. The heuristic parser is the fallback. This is what makes the
+  in-place path generalise to unseen layouts instead of breaking per
+  template.
 - Multi-LLM architecture: **DeepSeek V4-Flash** is the primary writing LLM
   (CV strategy, bullet tailoring, cover letters); **Groq** (Llama 3.3 70B)
-  handles fast structured tasks (matcher, planner, reviewers, supervisor)
-  and is the automatic writing fallback. Gemini 2.5 Flash is wired but
-  bypassed by default (`GEMINI_BYPASS=1`). Up to 8 Groq keys rotate on
-  429 / quota errors.
-- **Rendering pipeline (two paths):** (1) the **DOCX path** — native
-  `.docx` or a high-convertibility PDF→DOCX conversion, edited at
-  paragraph/run level and rendered by LibreOffice headless (v1.4); (2) the
-  **PDF in-place path** — PyMuPDF coordinate-level edits with TextWriter
-  block rendering, with a WeasyPrint HTML/CSS rebuild and a ReportLab
-  last-resort net as fallbacks.
-- **Tailoring yield (v1.4.2):** the strategist targets every bullet that
-  genuinely needs a rewrite (no volume cap), and a `lead_with` guard plus
-  an `identical_rewrite` retry stop the tailor from shipping cosmetic
-  near-copies.
-- **Fabrication defence in depth:** prompt-level bans + post-generation
-  guards for both the summary and the cover letter. The guards run in
-  pure Python so they protect the Groq fallback path too.
+  handles fast structured tasks (matcher, planner, reviewers, supervisor,
+  the structure reader) and is the automatic writing fallback. Gemini 2.5
+  Flash is wired but bypassed by default (`GEMINI_BYPASS=1`). Up to 8 Groq
+  keys are used **proactive round-robin** with per-key TPM/TPD cooldown
+  parsed from rate-limit headers — a different key per call, so bursty
+  traffic doesn't cascade one key into "all keys exhausted".
+- **Job boards (v1.5): four live** — LinkedIn, Indeed, Jobs.ie, Builtin.
+  **Board escalation** (default on): when a board comes up short of the
+  match target, the agent automatically widens the search across the other
+  live boards (titles-per-board, then escalate), paying the extra cost
+  *only* while under-matched. Glassdoor was dropped (Cloudflare/captcha
+  challenge to server-side scrapers).
+- **Tailoring yield:** the strategist targets every bullet that genuinely
+  needs a rewrite (no volume cap); a `lead_with` guard plus an
+  `identical_rewrite` retry stop cosmetic near-copies.
+- **Fabrication defence in depth:** prompt-level bans + deterministic
+  post-generation guards. The **in-place path reverts** any rewrite that
+  drops a fact/number or breaks grammar, in real time. The **rebuild path**
+  runs a credential/sector/JD-leak gate (cross-checked against the real
+  CV) and retries once with a hardened prohibition on any confirmed
+  fabrication. Both run in pure Python, so they protect the Groq fallback
+  path too. Prompt-injection fences sanitise CV + JD text at every LLM
+  surface.
 - **Canonical CV section order** enforced by the renderers — Header →
   Summary → Experience → Education → Skills → Other — regardless of what
   the LLM emits.
@@ -59,7 +80,7 @@ real user:
   all users and tabs see the same "runs left today" value.
 - Crash-safe session snapshots, capped rate-limit waits, hard LLM budget
   per run, consent-gated LangSmith tracing, pre-flight CV validator,
-  prompt-injection fences.
+  optional diagnostics trace capture (`DIAGNOSTICS_ENABLED=1`).
 
 **What exists for repeat usage:**
 - `application_tracker.py` keyed on **user email** remembers which job URLs
@@ -235,15 +256,18 @@ one the agent uses for a given run.
 
 ---
 
-### 12. Job-board coverage
+### 12. Job-board coverage — PARTIALLY DONE (v1.5)
 
-**Problem:** Three boards (LinkedIn/Indeed/Glassdoor) miss specialist
-markets (Wellfound/AngelList for startups, LeverAdmin for specific
-company careers pages, Workable for SMBs).
+**Shipped:** four live boards (LinkedIn, Indeed, Jobs.ie, Builtin) plus
+**board escalation** — when one board comes up short of the match target,
+the agent automatically widens across the others (bounded, and only while
+under-matched). Glassdoor was dropped (Cloudflare challenge).
 
-**Proposed:** Add 3 more board scrapers, ranked by user region.
-Roll-out guarded behind a feature flag so one flaky scraper doesn't
-brick the pipeline.
+**Still open:** specialist markets (Wellfound/AngelList for startups,
+Lever/Greenhouse-backed company career pages, Workable for SMBs) and
+non-Irish regional boards. Each new scraper plugs into the existing
+`SOURCE_MAP` + escalation order; the `_DEAD_BOARDS` set already lets a
+known-broken board be parked without code deletion.
 
 ---
 
@@ -337,18 +361,23 @@ KV store (e.g. Upstash Redis free tier), or lean fully on Groq's
 soft guide, not a hard gate. Matters once multi-user traffic makes the
 reset visibly wrong mid-day.
 
-### R2. Job-board scraper resilience — OPEN
+### R2. Job-board scraper resilience — PARTIALLY ADDRESSED (v1.5)
 
-`python-jobspy` API drift (the `hours_old` kwarg removal) took down
-4 of 5 boards in Run 23. Batch 16 added a retry-without-kwarg guard,
-but the underlying fragility remains: an unpinned scraper dependency
-can break the pipeline silently.
+`python-jobspy` API drift historically took down several boards. A
+v1.5 scraper-health audit found only LinkedIn + Indeed returning jobs;
+Jobs.ie and Builtin were repaired (Jobs.ie: 2026 site rewrite needed a
+new URL pattern + `data-testid` selectors; Builtin: the old jobspy
+"google" proxy returned nothing and was replaced with a real
+builtin.com scraper). Glassdoor stays dead (Cloudflare). The board layer
+now degrades gracefully — `_DEAD_BOARDS` parks a known-broken board, and
+`live_boards_for()` keeps the escalation order to working boards only, so
+one flaky board no longer brakes the pipeline.
 
-**Proposed:** pin `python-jobspy` to a known-good version, or abstract
-the board layer behind an interface so a single flaky scraper degrades
-gracefully instead of erroring. Apify (paid) is a heavier alternative
-if board reliability becomes a recurring pain — not warranted for a
-one-line kwarg drift.
+**Still open:** the custom HTML scrapers (LinkedIn, Jobs.ie, Builtin) are
+selector-coupled and will drift when those sites redesign. A scheduled
+scraper-health canary (the `live_boards_for` probe run on a cron) would
+surface a dead board before users hit it. `python-jobspy` is still
+unpinned for the Indeed path.
 
 ### R3. Diff-tailor retry re-sends the whole prompt — OPEN
 

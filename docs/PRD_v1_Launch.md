@@ -3,14 +3,29 @@
 > **Product Requirements Document**  
 > **Release:** v1.0  
 > **Author:** Rishav Singh  
-> **Status:** Draft → Ready for build → **Active** (target launch: within 7 days)  
-> **Last updated:** April 22, 2026
+> **Status:** **Shipped** (released to general users; see §status update)  
+> **Last updated:** April 22, 2026 · *status notes appended 3 June 2026 (v1.5)*
+
+---
+
+> ### ⏩ Status update (v1.5 — what changed since this PRD was written)
+> This document captured the **v1.0 launch scope**. The product has since
+> shipped that scope and moved past several of its v1.0 limitations. Read
+> the body as the original launch contract; the deltas that matter now:
+> - **Designer / multi-column CVs are now supported** (v1.5) via a
+>   structured ATS-clean rebuild path — they were explicitly out of scope
+>   at v1.0 (§2.3, §7). The in-place path is also far more robust thanks to
+>   LLM-primary structure parsing.
+> - **DOCX input is supported** (was anti-scope in §7).
+> - **Live boards are LinkedIn / Indeed / Jobs.ie / Builtin** (four), with
+>   automatic board escalation. Glassdoor was dropped (Cloudflare challenge).
+> - Everything else below stands.
 
 ---
 
 ## TL;DR
 
-Ship ApplySmart AI v1.0. Scope is locked: **single-column ATS CVs**, **six job boards**, **aggressive tailoring**, **YOE-based matching**, **consent-gated tracing**. Everything not in §5 is v1.1+.
+Ship ApplySmart AI v1.0. Scope is locked: **single-column ATS CVs**, **multiple job boards**, **aggressive tailoring**, **YOE-based matching**, **consent-gated tracing**. Everything not in §5 is v1.1+. *(v1.5: designer/multi-column CVs and DOCX input have since shipped — see status update above.)*
 
 A run succeeds if a user uploads a PDF CV, picks a role, and within 5 minutes receives tailored CV + cover letter PDFs for 3-10 matched jobs with zero fabricated facts.
 
@@ -44,8 +59,9 @@ Early/mid-career professionals applying to white-collar roles (PM, engineering, 
 
 ### 2.3 Not the target
 - Non-English CVs (scope)
-- Designer CVs with multi-column layouts (technical limitation)
-- Users without a PDF CV (blocked by upload gate)
+- ~~Designer CVs with multi-column layouts (technical limitation)~~ —
+  **now supported in v1.5** via the structured ATS rebuild path
+- Users without a PDF CV (blocked by upload gate) — *v1.5: DOCX accepted too*
 
 ### 2.4 Jobs-to-be-done
 1. *"When I'm applying to a specific role, I want to tailor my CV in 2 minutes instead of 30, so I can actually apply to the volume I need without burning out."*
@@ -104,7 +120,7 @@ Tagged with priority: **P0** (must ship) / **P1** (should ship if time permits) 
 | FR-01 | Accept PDF CV upload ≤7MB via Streamlit file uploader | P0 | ✅ Shipped |
 | FR-02 | Parse CV text + extract layout structure (sections, role blocks, bullets, skills) | P0 | ✅ Shipped |
 | FR-03 | Validate CV pre-flight (warn if sections undetected, bullets < threshold) | P0 | ✅ Shipped |
-| FR-04 | Scrape jobs from ≥1 of: Indeed, Glassdoor, Jobs.ie, Builtin with fallback sequence | P0 | ✅ Shipped |
+| FR-04 | Scrape jobs from ≥1 of: LinkedIn, Indeed, Jobs.ie, Builtin with fallback + escalation sequence | P0 | ✅ Shipped *(v1.5: Glassdoor dropped — Cloudflare; board escalation added)* |
 | FR-05 | Score each job against CV using Groq LLM + RAG over CV embeddings | P0 | ✅ Shipped |
 | FR-06 | Filter jobs by user-selected experience level with level-gap penalty + YOE early-exit | P0 | ✅ Shipped |
 | FR-07 | Generate per-job diff-tailor (summary rewrite, bullet reorder/rewrite/drop, skills order) | P0 | ✅ Shipped |

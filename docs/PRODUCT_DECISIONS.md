@@ -1,6 +1,6 @@
 # ApplySmart AI — Product Decisions Register
 
-Last updated: 2026-04-22 (evening)
+Last updated: 2026-06-03 (v1.5 robustness milestone)
 Owner: Rishav Singh
 
 This document is the concise "why" layer for portfolio and team handoff.
@@ -142,6 +142,38 @@ It complements `PM_CASE_STUDY.md` (narrative) with crisp product decisions.
 - Deployment-wide quota accurately reflects total usage across all tabs.
 
 ---
+
+## Decision 16 — LLM-Primary Structure Parsing (v1.5)
+
+- **Decision:** Make an LLM reader the PRIMARY parser for in-place CV edits; keep the bbox/font heuristic as fallback.
+- **Why:** The heuristic parser hit an unhandled branch on each new layout (date sidebars, company-above-title, education tables…) — the root cause of every per-CV break. To serve arbitrary CVs with the operator out of the loop, parsing has to generalise, not be patched per template.
+- **Options considered:** more heuristics; rebuild-everything; LLM-first parsing.
+- **Chosen approach:** best-of-N consensus LLM reader, layout-enriched prompt, line-index-grounded output (returns only line-id groupings, never text/coords → can't hallucinate content); default-on flag `REPLICA_LLM_PRIMARY` with heuristic fallback.
+- **Trade-off:** +~3 reader calls per run (amortised once across all jobs in a run); a few cents of tokens for a large robustness gain. Verified on 45 layout-diverse CVs (5/5 safety invariants, 0 crashes).
+
+## Decision 17 — Designer CVs: ATS-Clean Rebuild, Not Pixel Preservation (v1.5)
+
+- **Decision:** Designer / colour-block / multi-column CVs route to a structured rebuild that normalises to canonical ATS section names and scrubs template placeholder data — accepting loss of the original *design*.
+- **Why:** The moat is in-place preservation for *editable* CVs. For CVs that can't be edited safely in place, the user is better served by a clean, ATS-parseable, honestly-tailored CV than by a broken in-place edit. ATS-parseability beats visual fidelity for these.
+- **Options considered:** reject designer CVs (old behaviour); attempt fragile in-place edits; pixel-faithful rebuild (very high effort).
+- **Chosen approach:** `_ats_finalise` canonicalises headings, drops References/Volunteering, recursively scrubs placeholder phone/email/URL; renderer drops fake contacts before the strict validator.
+- **Trade-off:** the rebuild doesn't look like the user's original — explicitly communicated, and only taken when in-place isn't viable.
+
+## Decision 18 — Board Escalation Default-On, Not Flag-Gated (v1.5)
+
+- **Decision:** When a job board comes up short of the match target, automatically widen the search across the other live boards — on by default in prod.
+- **Why:** "Always surface something relevant" is core to the value prop. A single board (especially LinkedIn from a datacenter IP) is often thin; escalating only when under-matched costs nothing in the common case (the supervisor stops once matched).
+- **Options considered:** zero-jobs-only fallback (old); rotate boards every round (wasteful); threshold-triggered escalation (chosen).
+- **Chosen approach:** round space = (board × title), a few titles per board then escalate; bounded by `BOARD_ESCALATION_MAX_ROUNDS`; silent kill-switch `BOARD_ESCALATION=0`.
+- **Trade-off:** more scrape/match calls on hard queries — bounded, and only paid while struggling. A smoke test caught the first cut being unreachable before it shipped.
+
+## Decision 19 — Drop Glassdoor Rather Than Fake It (v1.5)
+
+- **Decision:** Remove Glassdoor from the UI and live board rotation; keep the scraper function as a graceful no-op.
+- **Why:** Glassdoor serves a Cloudflare/captcha challenge to server-side scrapers and jobspy (latest) errors on its API. Shipping a board that silently returns nothing erodes trust more than not offering it. A reliable Glassdoor scraper needs a headless browser — a real dependency cost not justified for one board when four others are live.
+- **Options considered:** headless-browser scraper; leave it listed-but-broken; remove it.
+- **Chosen approach:** `_DEAD_BOARDS` set parks it (fn retained for easy re-enable); UI dropdown and escalation order exclude it.
+- **Trade-off:** one fewer nominal source — but it was contributing zero, and Jobs.ie + Builtin were repaired to more than compensate.
 
 ## Next Validation Experiments
 

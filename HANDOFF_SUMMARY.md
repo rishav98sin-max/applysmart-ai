@@ -1,9 +1,43 @@
 # ApplySmart AI — Complete Handoff Summary
 
 **Generated:** April 20, 2026
-**Last updated:** May 18, 2026 (v1.4.2: tailoring-yield work — strategist volume uncap, deterministic `lead_with` guard, `identical_rewrite` retry; PDF in-place render hardening)
+**Last updated:** June 3, 2026 (v1.5: LLM-primary structure parsing default-on, designer/multi-column ATS rebuild, proactive Groq round-robin, job-board repair + escalation — see §0.0)
+**Earlier:** May 18, 2026 (v1.4.2: tailoring-yield work — strategist volume uncap, deterministic `lead_with` guard, `identical_rewrite` retry; PDF in-place render hardening)
 **Earlier:** May 13, 2026 (v1.4: DOCX path — accept .docx uploads, optional PDF→DOCX conversion, LibreOffice headless render; DeepSeek V4-Flash as primary writing LLM; GEMINI_BYPASS=True default; tailor prompt + guard fixes)
-**Purpose:** Full context handoff to Cursor for continued development
+**Purpose:** Full context handoff for continued development
+
+---
+
+## 0.0 What's new in v1.5 — Robustness milestone (June 3, 2026)
+
+The fragile parts that broke per-template were hardened so the product can
+serve arbitrary CVs with the operator out of the loop.
+
+- **LLM-primary structure parsing (default on, `REPLICA_LLM_PRIMARY`)** —
+  `agents/cv_structure_reader.py` `read_outline_llm` (best-of-N consensus,
+  `CV_READER_SAMPLES`, layout-enriched + line-index-grounded prompt) is now
+  the PRIMARY parser for in-place edits; the bbox/font heuristic is the
+  fallback. `job_agent.py` builds the shared outline from it once per run.
+  Verified: 45 layout-diverse CVs, 5/5 safety invariants, 0 crashes.
+- **Designer/complex CVs → ATS-clean rebuild.** `cv_tailor.py`
+  `_ats_finalise()` runs after `tailor_cv_structured`: canonicalises
+  section headings (Work Experience / Education / Skills / Projects /
+  Certifications), drops References/Volunteering, and recursively scrubs
+  placeholder phone/email/URL from template CVs. `cv_render_typst.py`
+  `_classify_contact_bits` drops fake placeholder contacts before the
+  strict rendercv validator sees them (they were causing render failure).
+- **Proactive Groq round-robin + TPM/TPD backoff** — `llm_client._call_groq`
+  advances key per call (`_next_available_groq_index`), parses per-key
+  cooldown from rate-limit headers (`_parse_groq_retry_after`,
+  `_GROQ_KEY_COOLDOWN_UNTIL`), bounded by `GROQ_MAX_WAIT_S`.
+- **Job boards** — `job_scraper.py`: Jobs.ie repaired (new URL +
+  `data-testid` selectors), Builtin replaced jobspy-google with a real
+  builtin.com scraper, Glassdoor parked in `_DEAD_BOARDS` (Cloudflare).
+  `job_agent.py` board **escalation** (default on, `BOARD_ESCALATION`):
+  round space = (board × title), `ESCALATION_TITLES_PER_BOARD` per board,
+  bounded by `BOARD_ESCALATION_MAX_ROUNDS`; kill-switch `BOARD_ESCALATION=0`.
+- **Prompt-injection hardening** at all four LLM surfaces (reader, diff
+  tailor, re-aim, strategist) via `prompt_safety`.
 
 ---
 
@@ -144,7 +178,7 @@ bullet rewrites verified end-to-end.
 ## 1. Application Overview
 
 ApplySmart AI is an **automated job application system** that:
-- Scrapes job listings from multiple boards (LinkedIn, Indeed, Glassdoor, Jobs.ie, Builtin)
+- Scrapes job listings from multiple boards (LinkedIn, Indeed, Jobs.ie, Builtin; Glassdoor dropped — Cloudflare) with board escalation
 - Matches a candidate's CV to each job using LLM scoring + vector retrieval (RAG)
 - Tailors the CV and cover letter for each matched role
 - Generates PDFs via PyMuPDF with in-place edits (preserves original CV layout)
@@ -277,7 +311,7 @@ class AgentState(TypedDict):
 5. **parse_cv_node** → extracts text from PDF using `agents/cv_parser.py`
 6. **extract_cv_style_node** → extracts fonts, margins, colors via `agents/pdf_editor.py`
 7. **planner_node** → builds search bundles (title variants, adjacent roles, locations)
-8. **scrape_jobs_node** → scrapes from LinkedIn → Indeed → Glassdoor → Jobs.ie → Builtin
+8. **scrape_jobs_node** → scrapes LinkedIn → Indeed → Jobs.ie → Builtin (escalates across boards when under-matched)
 9. **match_jobs_node** → for each job:
    - Calls `match_cv_to_job()` from `agents/job_matcher.py`
    - Uses RAG (ChromaDB) if `cv_collection` is set, else full CV
@@ -317,8 +351,9 @@ class AgentState(TypedDict):
 - **Purpose:** Scrape job listings from multiple boards
 - **Input:** Search bundles, preferred source
 - **Output:** List of job dicts (title, company, description, url, location, posted_label)
-- **Boards:** LinkedIn, Indeed, Glassdoor, Jobs.ie, Builtin
-- **Fallback:** If primary board returns < 3 jobs, tries next in sequence
+- **Boards (live):** LinkedIn, Indeed, Jobs.ie, Builtin. Glassdoor parked in `_DEAD_BOARDS` (Cloudflare challenge); `scrape_glassdoor` retained for graceful no-op + easy re-enable.
+- **Fallback:** if a board returns 0 jobs, tries the next live board in sequence.
+- **Escalation (v1.5, default on):** under the match target → exhaust `ESCALATION_TITLES_PER_BOARD` titles on a board, then escalate to the next live board; bounded by `BOARD_ESCALATION_MAX_ROUNDS`.
 
 ### 4.4 Job Matcher (`agents/job_matcher.py`)
 - **Purpose:** Score CV-job fit 0-100
@@ -778,8 +813,14 @@ with `•`, (d) Accenture awards present, (e) no gap at role-block bottom.
 
 ### 6.4 Pending (Low Priority / v2)
 - Designer CV (Novoresume, Canva) multi-column support
-  - Current limitation: global (y,x) line sort breaks reading order for multi-column layouts
-  - Needs column clustering + per-column extraction (~3-5 hrs)
+  - **v1.5 update:** these now route to the **structured ATS rebuild**
+    path, which produces clean, JD-tailored, ATS-parseable output (canonical
+    sections + placeholder scrub) — so designer CVs are *handled*, just not
+    pixel-faithfully preserved.
+  - Remaining v2 work = pixel-faithful *in-place* editing of multi-column
+    layouts: the heuristic global (y,x) line sort still breaks reading order
+    for true 2-column bodies (the LLM-primary reader mitigates this for many
+    layouts but column clustering + per-column extraction is the full fix).
 - Other Perplexity polish items: APP_PASSWORD gate, scrape delays, session cleanup, requirements.txt freeze, HTML email, dynamic subjects, 60s run cooldown, CV size limit, KPI card, LLM-call counts in insight tab
 
 ---

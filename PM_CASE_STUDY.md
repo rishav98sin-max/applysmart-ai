@@ -5,8 +5,8 @@
 >
 > **Author:** Rishav Singh
 > **Role:** Product Manager (sole operator / PM-engineer on this project)
-> **Status:** v1.2 — deployed on Streamlit Community Cloud
-> **Last updated:** 27 Apr 2026
+> **Status:** v1.5 — deployed on Streamlit Community Cloud, released to general users
+> **Last updated:** 3 June 2026
 
 > **Companion docs:**
 > `docs/CHANGELOG.md` — what changed in each version and why.
@@ -155,7 +155,7 @@ The risks I can name. Each has a plausible scenario and a kill signal.
 | LLM rate limits mid-run | ✅ 3-key rotation, dual provider fallback, capped waits |
 | PDF font-subset corruption (NBSP) | ✅ Glyph-advance check in `_font_can_render` |
 | Fabrication slips past sanitizer | ✅ Reviewer agent + retry; v1.2 added cover-letter post-gen guard |
-| Designer / multi-column CVs | ⚠️ Partial — WeasyPrint rebuild fallback ships but doesn't preserve original |
+| Designer / multi-column CVs | ✅ v1.5 — structured **ATS-clean rebuild** (canonical sections, placeholder scrub, Typst renderer) ships for these; doesn't preserve the original design (by design — the moat is in-place for *editable* CVs, ATS-safe rebuild for the rest) |
 | GDPR / PII leakage via LangSmith | ✅ Consent-gated; redaction in snapshots |
 | Multi-tenant auth | ❌ Not built — session-scoped only; blocks any commercial v3 |
 

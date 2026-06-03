@@ -19,13 +19,21 @@ sees them.
 - **In-place PDF editing** — tailored CVs preserve the user's original
   layout, fonts, and colours via byte-level PyMuPDF edits. No generic
   template swap.
-- **Structured rebuild fallback** — when a designer or multi-column
-  template can't be edited in place, we rebuild into an ATS-safe,
-  page-count-preserving PDF. A Typst renderer (embedded fonts, monochrome
-  ATS layout, auto-tenure calc) is preferred, falling through to a
-  WeasyPrint HTML/CSS path and then ReportLab. Identity (name + email) is
-  forced from the validated form fields, so a sparse CV can never ship a
-  placeholder name.
+- **LLM-primary structure parsing** — an LLM reader (best-of-N consensus,
+  layout-enriched prompt, line-index-grounded output so it can't
+  hallucinate text) is the primary parser for in-place edits; a heuristic
+  bbox/font parser is the fallback. This is what lets the in-place path
+  generalise to CV layouts it has never seen instead of breaking on each
+  new template.
+- **Structured rebuild for designer/complex CVs** — when a designer,
+  colour-block, or multi-column template can't be edited in place, we
+  rebuild into an ATS-safe, page-count-preserving PDF. Section headings
+  are normalised to canonical ATS names (Work Experience, Education,
+  Skills…), placeholder contact data from template CVs is scrubbed, and a
+  Typst renderer (embedded fonts, monochrome ATS layout, auto-tenure calc)
+  is preferred, falling through to a WeasyPrint HTML/CSS path and then
+  ReportLab. Identity (name + email) is forced from the validated form
+  fields, so a sparse CV can never ship a placeholder name.
 - **Honest tailoring** — prompt-level fabrication bans plus post-gen
   guards that scan every summary and cover letter for tool/framework
   names absent from the CV and auto-retry or revert. Works identically
@@ -41,11 +49,14 @@ sees them.
   rather than cosmetically churned.
 - **Deterministic filters before LLM spend** — YOE + experience-level
   checks skip ~30-50% of LLM calls on broad scrapes.
-- **Multi-provider key rotation** — up to 8 Groq keys rotate on 429 /
-  quota / auth errors, multiplying the daily free-tier envelope.
-  **DeepSeek V4-Flash** is the primary writing LLM (CV tailoring, cover
-  letters, strategy); Groq handles fast structured tasks and acts as the
-  automatic writing fallback.
+- **Proactive multi-key Groq rotation** — up to 8 Groq keys are used
+  round-robin (a different key per call, not one-key-until-it-dies), with
+  per-key cooldown parsed from the rate-limit reset headers so a key that
+  hits its per-minute (TPM) or per-day (TPD) ceiling is skipped until it
+  recovers instead of cascading. Multiplies the daily free-tier envelope
+  and survives bursty traffic. **DeepSeek V4-Flash** is the primary
+  writing LLM (CV tailoring, cover letters, strategy); Groq handles fast
+  structured tasks and acts as the automatic writing fallback.
 - **Crash-safe, budgeted, observable** — consent-gated LangSmith tracing
   (PII-masked), live Mixpanel product-analytics dashboard with a
   refresh-proof anonymous id, run-snapshot-on-crash, and hard per-run
@@ -138,7 +149,7 @@ node.
 | 1 | **Supervisor** | `agents/job_agent.py` | Routes the graph — picks the next worker per turn | Groq | LLM-backed decision; can short-circuit on budget/critical error |
 | 2 | **Pre-flight Validator** | `agents/cv_validator.py` | Blocks incompatible CVs (scanned / password-locked / <500 chars / non-English) | — | Deterministic early-exit saves every downstream LLM call |
 | 3 | **Planner** | `agents/planner.py` | Generates 2-4 keyword bundles from CV + target role | Groq | LLM decides search strategy; not hard-coded |
-| 4 | **Scraper** | `agents/job_scraper.py` | Pulls live JDs from LinkedIn / Indeed / Glassdoor / Builtin / JobsIE | — | Multi-source fan-out with per-board fallback |
+| 4 | **Scraper** | `agents/job_scraper.py` | Pulls live JDs from LinkedIn / Indeed / Jobs.ie / Builtin | — | Multi-source fan-out; board **escalation** widens the search when one board comes up thin |
 | 5 | **Matcher** | `agents/job_matcher.py` | Scores every JD vs. the CV (0-100) | Groq | Vector retrieval (ChromaDB + MiniLM-L6) fused with LLM judgment |
 | 6 | **Strategist** | `agents/tailor_strategist.py` | Generates bullet-level strategy (promote/rewrite/drop) | DeepSeek → Groq | LLM decides strategic narrative; reduces cosmetic edits |
 | 7 | **CV Tailor** | `agents/cv_diff_tailor.py` | Rewrites CV per JD, preserving original layout | DeepSeek → Groq | Per-bullet keep/rewrite/drop decisions under no-drop + achievement-preservation guardrails |
@@ -279,8 +290,13 @@ reads from both.
   for auto-rotation. Any failure falls back to Groq automatically.
 - **Rate-limit cap.** Any wait longer than `MAX_RATE_LIMIT_WAIT` aborts the
   run instead of hanging for 10-35 min.
-- **Scrape boards.** LinkedIn scraping is anti-bot-aggressive; Indeed /
-  Glassdoor go through `python-jobspy` and can throttle per-IP.
+- **Scrape boards.** Four live boards — LinkedIn (custom scraper), Indeed
+  (via `python-jobspy`), Jobs.ie (custom), and Builtin (custom). LinkedIn
+  is anti-bot-aggressive and thin from datacenter IPs; jobspy can throttle
+  per-IP. Glassdoor was dropped — it serves a Cloudflare/captcha challenge
+  to server-side scrapers (would need a headless browser). When the
+  primary board comes up short, **board escalation** automatically widens
+  the search across the other live boards.
 - **CV formats.** Text-based PDFs only. Scanned PDFs, password-protected
   files, and sub-500-char CVs are rejected by the pre-flight validator
   with a human-readable reason. See `docs/SUPPORTED_CV_FORMATS.md`.
@@ -482,7 +498,7 @@ agents/
 
   ── Job sourcing ────────────────────────────────────────────────────────────
   planner.py                  # LLM → 2-4 keyword bundles + quality bar
-  job_scraper.py              # Multi-board scraper: LinkedIn / Indeed / Glassdoor / Builtin / JobsIE
+  job_scraper.py              # Multi-board scraper: LinkedIn / Indeed / Jobs.ie / Builtin (+ board escalation)
   job_matcher.py              # CV ↔ JD scoring 0-100; RAG; YOE early-exit; level-gap penalty
 
   ── CV tailoring ────────────────────────────────────────────────────────────

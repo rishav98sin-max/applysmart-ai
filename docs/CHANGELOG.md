@@ -9,6 +9,78 @@
 
 ---
 
+## v1.5 — Robustness milestone: LLM-primary parsing, designer rebuilds, board escalation (3 June 2026)
+
+**Bet under test:** the product is only as good as its *worst* CV. To serve
+general users (any CV, any layout, the operator not in the loop), the
+fragile parts had to stop breaking per-template. This milestone hardens the
+three things that broke on unfamiliar input — CV parsing, designer-CV
+output, and job-board coverage — and removes the per-minute LLM cliff.
+
+### Shipped
+
+- **LLM-primary structure parsing (default on, `REPLICA_LLM_PRIMARY`).**
+  The in-place paths are now driven by an LLM reader (best-of-N consensus,
+  layout-enriched prompt, line-index-grounded output so it can't
+  hallucinate text), with the bbox/font heuristic as fallback. This is the
+  fix for "breaks on each new template": parsing generalises instead of
+  hitting an unhandled heuristic branch. Verified on 45 layout-diverse CVs
+  — 5/5 safety invariants held (no crash, pages/text/borders preserved,
+  headers untouched), 0 crashes.
+- **Designer / multi-column CVs now produce ATS-clean rebuilds.** Section
+  headings are normalised to canonical ATS names (Work Experience,
+  Education, Skills, Projects, Certifications), and placeholder contact
+  data baked into template CVs (`+1234567890`, `hello@reallygreatsite.com`,
+  `www.reallygreatsite.com`) is scrubbed recursively before render — it was
+  leaking into rendered References sections, and the strict Typst validator
+  rejected placeholder phone/URL outright (4 of 5 designer test CVs failed
+  to render before the fix). After: 5/5 designer test CVs render to
+  ATS-parseable, JD-tailored output.
+- **Fabrication defence on the rebuild path, verified.** A rigorous
+  fact-grounding probe confirmed the rebuild's `review_rebuilt_structured`
+  gate + one hardened-prohibition retry catch JD-only term injection
+  (sales methodologies, language fluency) that the prompt alone let slip on
+  short JDs. The in-place path's real-time revert (drops a fact/number or
+  breaks grammar → keep original) was confirmed firing live on a messy
+  table-layout Word CV.
+- **Proactive Groq round-robin + TPM/TPD backoff (`_call_groq`).** Was
+  one-key-until-429-then-rotate, which blew a single key's per-minute TPM
+  and cascaded to a false "all 8 keys exhausted". Now a different key per
+  call, with per-key cooldown parsed from the rate-limit reset headers
+  (TPM vs TPD distinguished) and a bounded wait so a Streamlit thread never
+  hangs. Same 8 keys, far higher usable throughput before fallback.
+- **Job-board repair + escalation.** A scraper-health audit found only
+  LinkedIn + Indeed live. **Jobs.ie** repaired (2026 site rewrite: new
+  `/{Title}-jobs` URL + `data-testid` selectors); **Builtin** replaced the
+  dead jobspy "google" proxy with a real builtin.com scraper (returns
+  Ireland/remote roles); **Glassdoor dropped** (serves a Cloudflare/captcha
+  challenge to server-side scrapers — would need a headless browser).
+  **Board escalation (default on):** when a board comes up short of the
+  match target, the agent exhausts a few titles on it then escalates to the
+  next live board (LinkedIn → Indeed → Jobs.ie → Builtin), bounded, and
+  *only* while under-matched.
+- **Prompt-injection hardening** at all four LLM surfaces (reader, diff
+  tailor, re-aim, strategist) — CV and JD text is sanitised so a malicious
+  CV can't hijack the agent.
+
+### Evidence (E2E, real CVs)
+
+| Scenario | Result |
+|---|---|
+| 45 layout-diverse CVs, in-place safety | 5/5 invariants, 0 crashes |
+| Designer rebuilds (5 CVs) after canonical-section + scrub fix | 5/5 render ATS-clean, no placeholder/References leak |
+| Cormac CV → Internal Auditor (threshold 70) | matched 2 on LinkedIn, tailored CVs + cover letters, 0 fabrications (guards reverted live) |
+| Cormac CV → Internal Auditor (threshold 99, forced) | board escalation fired full ladder LinkedIn→Indeed→Jobs.ie→Builtin |
+
+### Caught before shipping
+Board escalation's first cut was **unreachable dead code** — the board
+switch started after exhausting all ~6 planner title bundles, but the round
+budget capped at 5, so it never escalated. The Cormac/Auditor smoke test
+exposed it; fixed with a titles-per-board cap so several boards are reached
+within budget.
+
+---
+
 ## v1.4.8 — Fix fragmented box/table borders on edited CVs (31 May 2026)
 
 **Bug (production, all replica CVs):** a box/table side border is one long element spanning many bullets, but `apply_edits` edits bullets one at a time — each white-fill redaction covers the border segment beside it, and the per-bullet redraw only patches that segment. The more bullets edited, the more the border fragments. It showed faintly on legacy (~5 edits) and badly under the best-of-N re-aim engine (~17–25 edits) — the role-box **right border broke into pieces** (caught on the Shrestha CV).
