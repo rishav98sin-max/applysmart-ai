@@ -1,5 +1,6 @@
 # agents/job_scraper.py
 
+import re
 import time
 import requests
 from bs4 import BeautifulSoup
@@ -234,75 +235,59 @@ def scrape_builtin(job_title: str, location: str, num_jobs: int) -> list:
 def scrape_jobsie(job_title: str, location: str, num_jobs: int) -> list:
     print(f"   🟢 Scraping Jobs.ie for '{job_title}' in '{location}'...")
 
-    query = job_title.replace(" ", "+")
-    loc   = location.split(",")[0].strip().replace(" ", "+")
-    url   = f"https://www.jobs.ie/jobs/?q={query}&l={loc}"
+    # 2026 site rewrite: the old ?q=&l= search endpoint returns an empty
+    # shell (no listings). The live results live at an SEO path
+    # /{Title-With-Dashes}-jobs which 302s to /jobs/{title-slug}. Cards are
+    # now `data-testid="job-item"` with the title in an inner
+    # `data-testid="job-item-title"` <a> linking to /job/...
+    slug = "-".join(w for w in job_title.strip().split() if w)
+    url  = f"https://www.jobs.ie/{slug}-jobs"
 
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        cards = (
-            soup.find_all("article", class_="job") or
-            soup.find_all("div", class_="job-result") or
-            soup.find_all("li", class_="jobs-item")
-        )
-        cards = cards[:num_jobs]
-
+        cards = soup.find_all(attrs={"data-testid": "job-item"})[:num_jobs]
         if not cards:
-            # Fallback: grab any job links on the page
-            anchors = soup.select("a[href*='/jobs/view']")[:num_jobs]
-            jobs = []
-            for a in anchors:
-                href  = a["href"]
-                link  = "https://www.jobs.ie" + href if href.startswith("/") else href
-                title = a.get_text(strip=True)
-                jobs.append({
-                    "title":        title,
-                    "company":      "See listing",
-                    "location":     location,
-                    "url":          link,
-                    "description":  _fetch_jobsie_description(link),
-                    "posted":       "N/A",
-                    "posted_label": "N/A",
-                    "source":       "Jobs.ie",
-                })
-            print(f"   ✅ Jobs.ie (fallback): {len(jobs)} jobs found")
-            return jobs
+            print("   ⚠️  Jobs.ie: 0 job-item cards (selectors may have changed again)")
+            return []
 
         jobs = []
         for card in cards:
             try:
-                title_el   = (
-                    card.find("h2") or
-                    card.find("h3") or
-                    card.find(class_="job-title") or
-                    card.find("a")
-                )
-                company_el = (
-                    card.find(class_="company") or
-                    card.find(class_="recruiter-name") or
-                    card.find("span", class_="company-name")
-                )
-                link_el    = card.find("a", href=True)
-                time_el    = card.find("time") or card.find(class_="date")
+                title_a = card.find(attrs={"data-testid": "job-item-title"})
+                if not title_a:
+                    continue
+                title = title_a.get_text(strip=True) or "N/A"
+                href  = title_a.get("href", "") or ""
+                link  = ("https://www.jobs.ie" + href) if href.startswith("/") else href
 
-                title   = title_el.get_text(strip=True)   if title_el   else "N/A"
-                company = company_el.get_text(strip=True)  if company_el else "N/A"
-                href    = link_el["href"]                  if link_el    else ""
-                link    = "https://www.jobs.ie" + href if href.startswith("/") else href
-                posted  = time_el.get_text(strip=True)     if time_el    else "N/A"
+                # The card text carries: Title · Company · Location · Salary ·
+                # description snippet — enough for the matcher. We use the
+                # snippet directly (detail pages rate-limit / time out), then
+                # best-effort enrich with the full JD on a short timeout.
+                card_text = card.get_text(" ", strip=True)
+                snippet   = card_text.replace(title, "", 1).strip()
 
-                description = _fetch_jobsie_description(link)
+                # Company from the URL slug is the most reliable signal:
+                # /job/<title-slug>/<company-slug>-jobNNNN
+                company = "See listing"
+                parts = [p for p in href.split("/") if p]
+                if len(parts) >= 3:
+                    comp_slug = re.sub(r"-job\d+$", "", parts[2])
+                    company = comp_slug.replace("-", " ").title() or company
+
+                full_desc = _fetch_jobsie_description(link)
+                description = full_desc if len(full_desc) > len(snippet) else snippet
 
                 jobs.append({
                     "title":        title,
                     "company":      company,
                     "location":     location,
                     "url":          link,
-                    "description":  description,
-                    "posted":       posted,
-                    "posted_label": posted,
+                    "description":  description or snippet,
+                    "posted":       "N/A",
+                    "posted_label": "N/A",
                     "source":       "Jobs.ie",
                 })
             except Exception as e:
@@ -318,23 +303,25 @@ def scrape_jobsie(job_title: str, location: str, num_jobs: int) -> list:
 
 
 def _fetch_jobsie_description(url: str) -> str:
+    """Best-effort full-JD fetch from a Jobs.ie detail page. Detail pages
+    rate-limit / time out, so this uses a SHORT timeout and returns "" on
+    any failure — the caller falls back to the listing-card snippet, which
+    is enough for match scoring. Never blocks the scrape."""
     if not url or url == "https://www.jobs.ie":
         return ""
     try:
-        time.sleep(0.8)
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp = requests.get(url, headers=HEADERS, timeout=8)
         soup = BeautifulSoup(resp.text, "html.parser")
-
         desc = (
-    soup.find("div", class_="job-description") or
-    soup.find("div", class_="description") or
-    soup.find("section", class_="job-details") or
-    soup.find("div", id="job-description")
-           
+            soup.find(attrs={"data-testid": "job-description"}) or
+            soup.find(attrs={"data-testid": "job-details"}) or
+            soup.find("div", class_="job-description") or
+            soup.find("div", id="job-description") or
+            soup.find("section", class_="job-details")
         )
         return desc.get_text(separator=" ", strip=True) if desc else ""
-    except Exception as e:
-        print(f"   ⚠️  Jobs.ie description fetch failed: {e}")
+    except Exception:
+        # Silent — detail enrichment is optional; snippet covers matching.
         return ""
 
 
