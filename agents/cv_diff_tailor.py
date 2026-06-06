@@ -2641,42 +2641,36 @@ _THREAD_LOCAL = threading.local()
 
 
 def _get_bullet_reverts() -> List[Dict[str, Any]]:
-    """Lazily-initialised per-thread bullet-revert list."""
+    """Lazily-initialised per-thread bullet-revert list.
+
+    `_LAST_BULLET_REVERTS` is kept as a module-level name aliasing the
+    per-thread list because the rest of this module reads/writes it as a
+    plain list (`.append`, iteration, len). It is NOT a stable public
+    surface — nothing outside this module reads it (verified Jun 2026
+    via audit_repo.py's reachability scan).
+
+    Note on thread-safety: each thread reading `_LAST_BULLET_REVERTS`
+    via this function (which the convenience accessor below routes
+    through) gets its OWN list. The module-level alias points at the
+    CALLING THREAD's list at call time. Re-binding the module name from
+    outside (`cv_diff_tailor._LAST_BULLET_REVERTS = [...]`) would still
+    detach the alias from thread-local storage, but no caller does that
+    (audited). The earlier `_BulletRevertsProxy` shim guarded against
+    that rebinding; removed Jun 2026 because the guard had no real
+    consumer and added 35 LOC of misdirection.
+    """
     if not hasattr(_THREAD_LOCAL, "bullet_reverts"):
         _THREAD_LOCAL.bullet_reverts = []
     return _THREAD_LOCAL.bullet_reverts
 
 
-# Backwards-compat shim: keep `_LAST_BULLET_REVERTS` as a property-like
-# accessor for any existing reads. Writes go through _get_bullet_reverts().
-class _BulletRevertsProxy:
-    """Backwards-compat shim — delegates list ops to thread-local storage.
-
-    Run-17 audit fix #16: the proxy supports list-like reads and method
-    calls (.clear(), .append() via __getattr__) but ASSIGNMENT to the
-    module name `_LAST_BULLET_REVERTS = [...]` would silently rebind the
-    name and break thread-safety for every subsequent caller. We can't
-    block module-level rebinding without metaclass tricks, but we CAN
-    forbid attribute writes on the proxy itself to make accidental
-    "self.foo = bar" style misuse fail loudly instead of silently
-    corrupting the shared cache.
-    """
-    def __getattr__(self, name):
-        return getattr(_get_bullet_reverts(), name)
-    def __setattr__(self, name, value):
-        raise AttributeError(
-            f"_BulletRevertsProxy is read-only at the attribute level. "
-            f"Call _LAST_BULLET_REVERTS.append(...) or .clear() instead "
-            f"of assigning to '{name}'."
-        )
-    def __iter__(self):
-        return iter(_get_bullet_reverts())
-    def __len__(self):
-        return len(_get_bullet_reverts())
-    def __getitem__(self, idx):
-        return _get_bullet_reverts()[idx]
-
-_LAST_BULLET_REVERTS = _BulletRevertsProxy()
+# Convenience module-level alias. Reads route through the per-thread
+# list at attribute-access time via __getattr__ at module scope (Python
+# 3.7+) so each thread sees its own data without explicit calls.
+def __getattr__(name: str):
+    if name == "_LAST_BULLET_REVERTS":
+        return _get_bullet_reverts()
+    raise AttributeError(f"module 'agents.cv_diff_tailor' has no attribute {name!r}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -3294,6 +3288,39 @@ def _rewrite_is_safe(original: str, rewrite: str, original_length: Optional[int]
     _dropped = _check_content_preserved(orig, new)
     if _dropped:
         return False, f"dropped concrete term '{_dropped}'"
+
+    # Run 31 fix: truncation detector. DeepSeek occasionally returns rewrites
+    # that have been cut mid-clause — observed live on Cormac's HERE-Tech
+    # tailoring where 3 bullets came back as:
+    #     "to ensure entity access con"        (mid-word "control")
+    #     "(`Last"                              (mid-quote)
+    #     "ensuring data protection "           (trailing space, mid-clause)
+    # Each one then masquerades as a "stranded verb" failure in the detector
+    # below, which obscures the real fix (re-prompt with completion-enforcement
+    # / give more headroom). Catch truncations explicitly FIRST so the reason
+    # is accurate and downstream retries can do the right thing.
+    if new:
+        last_char = new[-1]
+        # 1) Trailing whitespace — DeepSeek was about to write more and stopped.
+        if last_char in (" ", "\t"):
+            return False, "truncated mid-clause (trailing whitespace)"
+        # 2) Ends with an opening bracket/quote and no matching close anywhere
+        #    after that position. Real text doesn't end with an opener.
+        if last_char in "([{<«„‚‘'\"":
+            return False, "truncated mid-clause (dangling opener)"
+        # 3) Original ended with terminal punctuation (.!?…) and rewrite does
+        #    NOT — and the rewrite isn't ending on a closing quote/paren that
+        #    would still be a legitimate ending. Filters truncation reliably
+        #    without false-positive on intentional short rewrites.
+        _TERMINALS = ".!?…)\"'»"
+        orig_strip = orig.rstrip()
+        if orig_strip and orig_strip[-1] in ".!?…" and last_char not in _TERMINALS:
+            return False, "truncated mid-clause (no terminal punctuation)"
+        # 4) Ends with an unbalanced opener — counted across the rewrite.
+        for opener, closer in (("(", ")"), ("[", "]"), ("{", "}"),
+                               ("«", "»"), ("„", "“"), ("‚", "‘")):
+            if new.count(opener) > new.count(closer):
+                return False, f"truncated mid-clause (unbalanced {opener!r})"
 
     # Stranded-verb / fragment-shuffle detector (Run 21 fix). A "rewrite"
     # that shoves a noun fragment to the front and leaves the original's

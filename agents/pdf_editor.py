@@ -3767,6 +3767,19 @@ def apply_edits(
                         body_rect.y0 = max(body_rect.y0, prev_y1 + 0.5)
                         gap_below = max(0.0, next_y0 - text_y1)
                         body_rect.y1 = text_y1 + min(gap_below / 2.0, 6.0)
+                        # Symmetric below-neighbour barrier (Jun 2026): the
+                        # same intersect-delete pathology that wiped Cormac's
+                        # "Finance Administrator" header from above also wipes
+                        # the NEXT ROLE'S company line from below when the
+                        # gap is small enough that text_y1 + 6.0 > next_y0.
+                        # Observed Run 31: IFDS (International Financial Data
+                        # Services)" -> "IF" because body_rect.y1 reached into
+                        # IFDS's line bbox and apply_redactions partial-X-cut
+                        # the line at body_rect.x0 (the bullet's left x). The
+                        # half-gap budget above is a SOFT clamp; this is the
+                        # HARD barrier — never let the redact bottom reach
+                        # the next line. Mirrors line 3767 exactly.
+                        body_rect.y1 = min(body_rect.y1, next_y0 - 0.5)
 
                         # Inline glyph -> must re-prepend (original glyph is
                         # inside the redact rect). Separate glyph -> leave

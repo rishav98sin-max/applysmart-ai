@@ -83,8 +83,22 @@ def _gen_json(prompt: str, max_tokens: int) -> Dict[str, Any]:
     """Candidate generation. DeepSeek-direct (honest, doesn't fake JD alignment
     with canned suffixes the way Groq does); Groq only as a last resort."""
     from agents.llm_client import chat_deepseek, chat_quality
+    # Run 31 fix: stamp the Langfuse trace name as "cv_reaim" so re-aim
+    # variants don't masquerade as "cover_letter" calls in the dashboard.
+    # Without this, the agent ContextVar carries the previous agent's label
+    # (often "cover_letter" or "cv_diff_tailor" depending on call order)
+    # and the trace export becomes uninterpretable for token attribution.
+    try:
+        from agents.runtime import track_llm_call
+        track_llm_call(agent="cv_reaim")
+    except Exception:
+        pass
     raw = chat_deepseek(prompt, max_tokens=max_tokens, temperature=0.4, json_mode=True)
     if not raw:
+        try:
+            track_llm_call(agent="cv_reaim")
+        except Exception:
+            pass
         raw = chat_quality(prompt, max_tokens=max_tokens)
     try:
         return _cdt()._extract_json(raw) or {}

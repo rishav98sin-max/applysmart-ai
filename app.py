@@ -19,6 +19,19 @@ Design principles:
 from __future__ import annotations
 
 import os
+# Run 31 fix: silence noisy third-party log spam BEFORE any of them are
+# imported (these libs check the env at import time, not call time).
+# - ANONYMIZED_TELEMETRY=False : stops the chromadb / posthog version-mismatch
+#   "capture() takes 1 positional argument but 3 were given" floods.
+# - TRANSFORMERS_VERBOSITY=error : kills the wall of `[transformers] Accessing
+#   __path__ from .models.X` deprecation warnings printed on cold import of
+#   sentence-transformers' image_processors.
+# - CHROMA_TELEMETRY_DISABLED=1 : redundant safety net for newer chromadb.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY_DISABLED", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from datetime import datetime
 from typing import Any, Dict, List
 

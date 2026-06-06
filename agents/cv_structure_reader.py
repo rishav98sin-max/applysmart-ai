@@ -663,6 +663,13 @@ def read_outline_llm(
     n_samples = max(1, n_samples or int(os.getenv("CV_READER_SAMPLES", "1")))
     prompt = _build_reader_prompt(lines)
     from agents.llm_client import chat_fast
+    # Run 31 fix: stamp the Langfuse trace name so consensus samples register
+    # as `cv_structure_reader` instead of inheriting whatever previous agent
+    # last set the ContextVar (was showing up as "unknown" in trace exports).
+    try:
+        from agents.runtime import track_llm_call as _track
+    except Exception:
+        _track = None
 
     best = None  # (coverage_chars, outline, report)
     for k in range(n_samples):
@@ -670,6 +677,11 @@ def read_outline_llm(
         # samples add a little temperature for diversity so consensus means
         # something. Bad draws are filtered by validate_llm_outline below.
         temp = 0.0 if (n_samples == 1 or k == 0) else 0.4
+        if _track is not None:
+            try:
+                _track(agent="cv_structure_reader")
+            except Exception:
+                pass
         try:
             raw = chat_fast(prompt, max_tokens=_LLM_READER_MODEL_TOKENS, temperature=temp)
         except Exception as e:

@@ -163,18 +163,38 @@ def _scrape_via_jobspy(
             country_indeed             = country_indeed,
             linkedin_fetch_description = False,
         )
-        try:
-            # `hours_old` (7-day recency filter) — newer python-jobspy
-            # releases renamed/removed this kwarg, which broke Indeed /
-            # Glassdoor / Builtin entirely (Run 23). Retry without it
-            # rather than failing the whole board.
-            df = jobspy_scrape(hours_old=168, **_scrape_kwargs)
-        except TypeError as e:
-            if "hours_old" in str(e):
-                print("   ℹ️  jobspy: 'hours_old' unsupported in this version — scraping without the recency filter")
-                df = jobspy_scrape(**_scrape_kwargs)
-            else:
+        # python-jobspy drifts its kwargs between releases (Run 23: hours_old
+        # vanished; Run 31: linkedin_fetch_description vanished from Indeed).
+        # Each drift killed an entire board. Generalised resilience: keep
+        # peeling off the offending kwarg until the call accepts what's left
+        # OR we run out of kwargs to strip. Two strips max to avoid loops.
+        _extra = {"hours_old": 168}
+        for _strip_attempt in range(3):
+            try:
+                df = jobspy_scrape(**_extra, **_scrape_kwargs)
+                break
+            except TypeError as e:
+                msg = str(e)
+                # Try the always-tried kwarg first (back-compat with the
+                # original "drop hours_old, retry" pattern).
+                if "hours_old" in msg and "hours_old" in _extra:
+                    print("   ℹ️  jobspy: 'hours_old' unsupported in this version — scraping without the recency filter")
+                    _extra.pop("hours_old", None)
+                    continue
+                # Generic: parse "got an unexpected keyword argument 'NAME'"
+                # and strip NAME from _scrape_kwargs. This catches whichever
+                # board kwarg jobspy decides to rename next.
+                import re as _re
+                m = _re.search(r"unexpected keyword argument '([^']+)'", msg)
+                if m and m.group(1) in _scrape_kwargs:
+                    bad = m.group(1)
+                    print(f"   ℹ️  jobspy: '{bad}' unsupported in this version — retrying without it")
+                    _scrape_kwargs.pop(bad, None)
+                    continue
                 raise
+        else:
+            print(f"   ⚠️  jobspy: still TypeError after kwarg-strip retries — bailing")
+            return []
 
         if df is None or df.empty:
             print(f"   ⚠️  No jobs returned from {source_label}")
@@ -308,7 +328,13 @@ def scrape_jobsie(job_title: str, location: str, num_jobs: int) -> list:
     url  = f"https://www.jobs.ie/{slug}-jobs"
 
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        # Run 31 (Jun 2026): bumped Jobs.ie listing-page timeout 15→30s.
+        # The site was timing out on 3/3 attempts at 15s during the Cormac
+        # IS Auditor run; cold-cache responses for Dublin-region queries
+        # routinely take 18–25s on the cards endpoint. 30s gives headroom
+        # without hanging the run; the board-cooldown logic in job_agent
+        # will park Jobs.ie after 2 consecutive failures anyway.
+        resp = requests.get(url, headers=HEADERS, timeout=30)
         soup = BeautifulSoup(resp.text, "html.parser")
 
         cards = soup.find_all(attrs={"data-testid": "job-item"})[:num_jobs]

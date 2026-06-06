@@ -211,6 +211,12 @@ class AgentState(TypedDict):
     scrape_round:        int
     current_bundle:      Dict[str, Any]
     escalated_board:     str   # board for this round under BOARD_ESCALATION
+    # Per-board consecutive failure counter (Jun 2026 / Run 31 fix). When a
+    # board returns 0 jobs (broken jobspy kwarg, ReadTimeout, geo-block) the
+    # counter increments; after BOARD_FAIL_COOLDOWN_AT failures the board is
+    # parked for the rest of the run so the escalation ladder doesn't burn
+    # rounds re-trying a known-dead board. Resets to 0 on a successful scrape.
+    board_fail_count:    Dict[str, int]
     supervisor_trace:    List[Dict[str, Any]]
     # ── Phase 2 placeholders ────────────────────────────
     review_results:      Dict[str, Any]
@@ -319,13 +325,49 @@ def _board_escalation_on() -> bool:
     return str(v).strip().lower() not in ("0", "false", "no", "off")
 
 
+def _board_fail_cooldown_at() -> int:
+    """Threshold of CONSECUTIVE empty scrapes after which a board is parked
+    for the rest of the run. Default 2 (matches Run 31 diagnosis: jobspy
+    Indeed broke on every attempt; Jobs.ie ReadTimeout-ed every attempt;
+    two failures is enough signal). Override via env BOARD_FAIL_COOLDOWN_AT.
+    """
+    try:
+        from agents.runtime import secret_or_env
+        v = secret_or_env("BOARD_FAIL_COOLDOWN_AT", "2") or "2"
+    except Exception:
+        v = os.getenv("BOARD_FAIL_COOLDOWN_AT", "2")
+    try:
+        return max(1, int(v))
+    except Exception:
+        return 2
+
+
+def _cooled_boards(state: AgentState) -> set:
+    """Boards whose consecutive-fail count has reached the cooldown threshold.
+    They are skipped by `_live_boards_for_state` for the remainder of the run."""
+    fc = state.get("board_fail_count") or {}
+    thr = _board_fail_cooldown_at()
+    return {b for b, n in fc.items() if n >= thr}
+
+
 def _live_boards_for_state(state: AgentState) -> List[str]:
     pref = state.get("preferred_job_board") or state.get("source", "LinkedIn")
     try:
         from agents.job_scraper import live_boards_for
-        return live_boards_for(pref)
+        boards = live_boards_for(pref)
     except Exception:
-        return [pref]
+        boards = [pref]
+    # Remove cooled-down boards so the escalation ladder stops returning to
+    # them after they've failed BOARD_FAIL_COOLDOWN_AT times in a row.
+    cooled = _cooled_boards(state)
+    if cooled:
+        kept = [b for b in boards if b not in cooled]
+        # Never strip the LAST live board — the run needs SOMEWHERE to scrape
+        # from even if every board is failing (LinkedIn will at least return
+        # SOMETHING; better than a hard 0-job stop).
+        if kept:
+            return kept
+    return boards
 
 
 def _escalation_titles_per_board(n_bundles: int) -> int:
@@ -974,6 +1016,9 @@ def scrape_jobs_node(state: AgentState) -> AgentState:
     boards_tried: List[str] = []
     jobs: List[Any] = []
     last_error: Optional[str] = None
+    # Run 31 fix: track per-board outcomes for the cooldown counter.
+    boards_failed_this_round: List[str] = []
+    board_succeeded: Optional[str] = None
 
     try:
         for board in sequence:
@@ -989,16 +1034,35 @@ def scrape_jobs_node(state: AgentState) -> AgentState:
             except Exception as ex:
                 last_error = f"{board}: {ex}"
                 print(f"   ⚠️  {board} raised error — {ex} — trying next board...")
+                boards_failed_this_round.append(board)
                 continue
 
             if batch:
                 jobs = batch
+                board_succeeded = board
                 print(
                     f"   ✅ Found {len(jobs)} job(s) via {board} "
                     f"(after trying: {', '.join(boards_tried)})"
                 )
                 break
             print(f"   ⚠️  0 jobs from {board} — falling back to next source...")
+            boards_failed_this_round.append(board)
+
+    # Compute updated per-board failure counts. Increment for every board that
+    # failed this round; reset to 0 for the board that succeeded (if any) so
+    # transient flakes don't permanently park a healthy board.
+        new_fail_count = dict(state.get("board_fail_count") or {})
+        for b in boards_failed_this_round:
+            new_fail_count[b] = new_fail_count.get(b, 0) + 1
+        if board_succeeded:
+            new_fail_count[board_succeeded] = 0
+        thr = _board_fail_cooldown_at()
+        newly_cooled = [b for b in boards_failed_this_round
+                        if new_fail_count.get(b, 0) >= thr
+                        and (state.get("board_fail_count") or {}).get(b, 0) < thr]
+        for b in newly_cooled:
+            print(f"   🧊 board cooldown: '{b}' parked for the rest of the run "
+                  f"(reached {thr} consecutive failures)")
 
         new_round = round_idx + 1
 
@@ -1015,6 +1079,7 @@ def scrape_jobs_node(state: AgentState) -> AgentState:
                 "status":             "no_jobs_found",
                 "scrape_round":       new_round,
                 "scrape_boards_tried": boards_tried,
+                "board_fail_count":   new_fail_count,
                 "messages":           _append_handoff(
                     state,
                     {
@@ -1067,6 +1132,7 @@ def scrape_jobs_node(state: AgentState) -> AgentState:
                 "status":             "no_jobs_found",
                 "scrape_round":       new_round,
                 "scrape_boards_tried": boards_tried,
+                "board_fail_count":   new_fail_count,
                 "messages":           _append_handoff(
                     state,
                     {
@@ -1089,6 +1155,7 @@ def scrape_jobs_node(state: AgentState) -> AgentState:
             "scrape_round":        new_round,
             "steps_taken":         state["steps_taken"] + 1,
             "scrape_boards_tried": boards_tried,
+            "board_fail_count":    new_fail_count,
             "messages":            _append_handoff(
                 state,
                 {
