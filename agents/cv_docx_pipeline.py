@@ -11,18 +11,21 @@ This module is the SINGLE entry point job_agent.py uses to decide:
      render via LibreOffice headless) or via the original PDF replica /
      rebuild path?"
 
-The routing rules (May 13 / step 7, updated per Claude spec):
+The routing rules:
 
   1.  User uploaded a `.docx` file directly:
         → DOCX path, full confidence (score = 100).
 
-  2.  User uploaded a `.pdf` file AND env `DOCX_PATH_ENABLED=1`:
-        → Convert PDF → DOCX via `pdf2docx`. Score the conversion.
-          - Score ≥ DOCX_CONVERTIBILITY_THRESHOLD AND outline parses
-            with ≥1 role: DOCX path.
-          - Otherwise: fall back to existing PDF replica path.
+  2.  User uploaded a `.pdf` file:
+        → return None — the PDF replica/rebuild path handles it. The
+          historic `pdf2docx` PDF→DOCX bridge (Runs 16-20) was removed
+          in Jun 2026; it produced non-deterministic corruption (text
+          duplication, role headers swallowed, bullets split across
+          table boundaries, mojibake) and was disabled in prod for
+          months before deletion. `DOCX_PATH_ENABLED` is retained for
+          back-compat on the DOCX upload path (case 1) only.
 
-  3.  Anything else (env disabled, no python-docx, conversion crash):
+  3.  Anything else (no python-docx, parse crash):
         → return None so caller routes to existing PDF replica path.
 
 The router NEVER raises. All failures degrade gracefully to None.
@@ -48,7 +51,6 @@ from typing import Any, Dict, Optional, Tuple
 from agents.cv_docx_parser   import build_outline_from_docx
 from agents.cv_docx_editor   import apply_diff_to_docx
 from agents.cv_docx_to_pdf   import render_pdf_from_docx
-from agents.cv_pdf_to_docx   import convert_pdf_to_docx, CONVERTIBILITY_THRESHOLD
 
 
 # ─────────────────────────────────────────────────────────────
@@ -92,13 +94,12 @@ class CVDocxRoute:
                            Same shape as `pdf_editor.build_outline`, so
                            `cv_diff_tailor` and `review_tailored_cv` can
                            consume it without modification.
-        convertibility:    0–100 score. 100 for user-uploaded DOCX
-                           (we know it's authoritative). For converted
-                           PDF, the score from `cv_pdf_to_docx`.
-        source_was_pdf:    True when the route was created by converting
-                           an uploaded PDF. Useful for diagnostics and
-                           for cleanup decisions (we own the converted
-                           file; we don't own the user-uploaded one).
+        convertibility:    Always 100 — only native .docx uploads use this
+                           route now. (Historic PDF→DOCX bridge scored this
+                           dynamically; that bridge was removed Jun 2026.)
+        source_was_pdf:    Always False after the PDF→DOCX bridge removal.
+                           Kept on the dataclass for downstream code that
+                           reads the attribute defensively.
         workdir:           Directory holding intermediate artefacts
                            (converted DOCX, edited DOCX). Owned by the
                            caller (typically `out_dir` from the agent).
@@ -130,14 +131,16 @@ def try_route_docx(
       - `cv_path` ends in `.docx` (case-insensitive):
           parse outline; if it has ≥1 role, use the DOCX path.
 
-      - `cv_path` ends in `.pdf` AND `DOCX_PATH_ENABLED` env is truthy:
-          run `convert_pdf_to_docx`; if `acceptable` AND outline has
-          ≥1 role, use the DOCX path; otherwise None.
+      - `cv_path` ends in `.pdf`:
+          return None. PDF uploads route through the PyMuPDF in-place
+          replica path. The historic pdf2docx PDF→DOCX bridge was
+          removed Jun 2026 (non-deterministic corruption — see module
+          docstring).
 
       - Anything else: None.
 
-    Never raises. On any failure (missing dep, malformed file, low
-    convertibility) returns None so the caller falls back cleanly.
+    Never raises. On any failure (missing dep, malformed file) returns
+    None so the caller falls back cleanly.
     """
     if not cv_path or not os.path.exists(cv_path):
         return None

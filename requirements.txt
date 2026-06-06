@@ -1,18 +1,12 @@
 streamlit
 python-dotenv
 groq
-sendgrid
 pymupdf
 reportlab
 requests
 beautifulsoup4
 lxml
-langchain
-langchain-groq
-langchain-google-genai
-google-generativeai
 langgraph
-resend
 unidecode
 python-jobspy>=1.1,<2
 # ── Vector retrieval (e3) ──────────────────────────────────────
@@ -22,20 +16,19 @@ python-jobspy>=1.1,<2
 chromadb>=0.5,<0.7
 sentence-transformers>=2.2
 # ── Nicer rebuild-path PDFs (uses HTML+CSS instead of ReportLab). ──
-# Optional — pdf_formatter falls back to ReportLab if WeasyPrint can't
-# load (e.g. missing libpango on Windows dev machines).
+# WeasyPrint is the PRIMARY rebuild renderer on Streamlit Cloud (Typst
+# requires Python ≥3.12 which Cloud's stable image doesn't ship). On
+# Windows dev machines libpango is often missing, so the import is
+# guarded in pdf_formatter and falls back to ReportLab.
 weasyprint>=60
 jinja2>=3
 
-# ── DOCX path (May 2026): edit CVs as DOCX (flow-based, format-safe) ──
-# When the user uploads a .docx OR when a .pdf converts cleanly to .docx,
-# the tailor edits the DOCX tree (paragraph/run level — zero font shrinkage,
-# no 130% length cap) and renders back to PDF via mammoth → WeasyPrint.
-# All free; total install delta ≈ 13 MB. See agents/cv_docx_*.py for the
-# parser, editor, and PDF↔DOCX converters.
+# ── DOCX upload path ──
+# Native .docx uploads are tailored at the paragraph/run level (zero
+# font shrinkage, no length cap) and rendered back to PDF via
+# LibreOffice headless. The historic pdf2docx PDF→DOCX bridge was
+# removed Jun 2026 (non-deterministic corruption on real CVs).
 python-docx>=1.1            # read/write Word document XML tree
-pdf2docx>=0.5               # PDF → DOCX (built on PyMuPDF — already installed)
-mammoth>=1.6                # DOCX → HTML (preserves styles, paragraph structure)
 
 # ── Diagnostics layer (optional; activated via DIAGNOSTICS_ENABLED=1) ──
 # Per-call LLM telemetry. JSONL works without this dep; Langfuse adds the

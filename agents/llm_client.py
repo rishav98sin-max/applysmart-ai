@@ -18,11 +18,6 @@ except Exception:
     Groq = None
 
 try:
-    import google.generativeai as genai
-except Exception:
-    genai = None
-
-try:
     import requests as _requests  # for DeepSeek HTTP calls (no extra SDK)
 except Exception:
     _requests = None
@@ -35,60 +30,15 @@ _GROQ_KEYS: list = []
 _GROQ_KEY_INDEX: int = 0
 _GROQ_CLIENTS: dict = {}  # key → Groq client instance
 
-# ── Gemini key rotation pool ────────────────────────────────────────────────
-# Same idea as Groq. Free tier on gemini-2.5-flash is tight (req/day limit),
-# so multiplying 3 keys triples the daily envelope for CV tailoring + cover
-# letter work. On quota / 429 errors we rotate, and fall back to Groq only
-# when every key is exhausted.
-_GEMINI_KEYS: list = []
-_GEMINI_KEY_INDEX: int = 0
-_GEMINI_CONFIGURED_KEY: Optional[str] = None  # last key passed to genai.configure
-
-# Rate limiting for Gemini free tier (P6 redesign — Apr 28).
-#
-# gemini-2.5-flash free tier: 10 RPM per Google Cloud project per model
-# (was 5 RPM historically; some projects may still be on the lower cap).
-# Strategy:
-#   • Global gap of `_GEMINI_MIN_GAP_S` (7s default ≈ 8.5 RPM) between any
-#     two call STARTS. Slot is reserved atomically inside the lock; the
-#     actual sleep happens outside so concurrent threads serialise without
-#     blocking each other on the lock.
-#   • Per-key cooldown table populated from Google's `retry_delay` field on
-#     429 responses. Cooled-down keys are skipped entirely until they
-#     recover. When ALL keys are cooling, we sleep until the soonest one
-#     recovers instead of falling straight to Groq.
-#   • `_LAST_GEMINI_CALL_TIME` is the FUTURE-RESERVED slot of the most
-#     recent call. We do NOT overwrite this after a successful call (that
-#     was the old race condition: an in-flight call's completion would
-#     clobber a later thread's reservation, letting the next caller squeeze
-#     in <gap seconds after the previous one and busting the RPM window).
-_LAST_GEMINI_CALL_TIME: float = 0.0
-_GEMINI_RATE_LIMIT_LOCK = threading.Lock()
-
-# ── Last-successful-LLM-source tracking (Apr 28 follow-up) ──────────────────
-# Set by _call_gemini and _call_groq on every successful return so callers
+# ── Last-successful-LLM-source tracking ─────────────────────────────────────
+# Set by _call_groq / _call_deepseek on every successful return so callers
 # can log "which model produced this kept output". Values:
-#   "GEMINI key#1" / "GEMINI key#2" / "GEMINI key#3"  → live Gemini call
 #   "GROQ key#1"   / "GROQ key#2" ... "GROQ key#8"     → live Groq call
-#                                                        (also after Gemini fallback)
+#   "DEEPSEEK (deepseek-chat)"                          → live DeepSeek call
 #   "unknown"                                          → no successful call yet
 # Read via last_llm_source(). Module-global rather than per-call return value
 # so we don't have to refactor every caller's signature.
 _LAST_LLM_SOURCE: str = "unknown"
-
-# Per-key cooldowns. Map: key_index → unix_timestamp_when_key_recovers.
-# Updated on 429 with `retry_delay` from Google. Honoured by
-# `_gemini_configure_current()` (skips cooled-down keys) and by
-# `_call_gemini` (sleeps until earliest recovery when ALL keys are cooling).
-# Reads/writes are dict-atomic under the GIL — no additional lock needed.
-_GEMINI_KEY_COOLDOWN_UNTIL: Dict[int, float] = {}
-
-# Global inter-call gap. 7s ≈ 8.5 RPM, comfortably under the 10 RPM tier
-# while leaving headroom for clock skew. If your project is still on the
-# legacy 5 RPM cap, the per-key cooldown logic + retry_delay parser will
-# detect 429s and back off automatically. Configurable via env so power
-# users with paid keys can tighten it (e.g. 1.0s for 60 RPM tier).
-_GEMINI_MIN_GAP_S: float = float(os.getenv("GEMINI_MIN_GAP_S", "7.0"))
 
 # Per-key quota snapshot captured from Groq's x-ratelimit-* response headers
 # after every successful call. Kept mostly for the reset_tokens timestamp —
@@ -119,7 +69,8 @@ def _quota_file_path() -> Path:
 _QUOTA_LOG_ERRORS = os.getenv("APPLYSMART_DEBUG_QUOTA", "0") == "1"
 
 def _get_tokens_used_session() -> dict:
-    """Get tokens used from file cache, defaulting to 0 for both providers."""
+    """Get tokens used from file cache. Tracks Groq (free-tier quota) and
+    DeepSeek (paid out-of-band — observability only)."""
     try:
         qf = _quota_file_path()
         if qf.exists():
@@ -127,21 +78,28 @@ def _get_tokens_used_session() -> dict:
             # Reset when the day rolls over.
             today = __import__('datetime').datetime.now().date().isoformat()
             if data.get("date") != today:
-                return {"groq": 0, "gemini": 0}
+                return {"groq": 0, "deepseek": 0}
             return {
                 "groq": int(data.get("groq_tokens", 0)),
-                "gemini": int(data.get("gemini_tokens", 0)),
+                # Back-compat: prior versions stored DeepSeek usage under the
+                # 'gemini_tokens' bucket because Gemini was the legacy quality
+                # provider. Read both keys so a deploy mid-rollover doesn't
+                # lose observability.
+                "deepseek": int(data.get("deepseek_tokens",
+                                          data.get("gemini_tokens", 0))),
             }
     except Exception as e:
         if _QUOTA_LOG_ERRORS:
             print(f"   Quota read failed: {e}")
-    return {"groq": 0, "gemini": 0}
+    return {"groq": 0, "deepseek": 0}
 
-def _set_tokens_used_session(groq: int, gemini: int) -> None:
-    """Set tokens used in file cache for both providers."""
+def _set_tokens_used_session(groq: int, deepseek: int = 0) -> None:
+    """Set tokens used in file cache for Groq + DeepSeek."""
     try:
         today = __import__('datetime').datetime.now().date().isoformat()
-        data = {"date": today, "groq_tokens": int(groq), "gemini_tokens": int(gemini)}
+        data = {"date": today,
+                "groq_tokens": int(groq),
+                "deepseek_tokens": int(deepseek)}
         _quota_file_path().write_text(json.dumps(data))
     except Exception as e:
         if _QUOTA_LOG_ERRORS:
@@ -151,15 +109,7 @@ def _increment_groq_tokens(delta: int) -> None:
     """Increment Groq tokens used in file cache."""
     try:
         current = _get_tokens_used_session()
-        _set_tokens_used_session(current["groq"] + delta, current["gemini"])
-    except Exception:
-        pass
-
-def _increment_gemini_tokens(delta: int) -> None:
-    """Increment Gemini tokens used in file cache."""
-    try:
-        current = _get_tokens_used_session()
-        _set_tokens_used_session(current["groq"], current["gemini"] + delta)
+        _set_tokens_used_session(current["groq"] + delta, current["deepseek"])
     except Exception:
         pass
 
@@ -179,42 +129,18 @@ _GROQ_TOKENS_PER_KEY_PER_DAY: int = int(
 )
 
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-# ── DeepSeek configuration (May 2026) ───────────────────────────────────────
+# ── DeepSeek configuration ──────────────────────────────────────────────────
 # DeepSeek V4 (released Apr 24, 2026) offers stronger instruction-following
 # than Llama 3.3 70B at ~$0.28 / 1M output tokens — effectively free for
-# our per-job tailor footprint (~7K in + ~1K out ≈ $0.001 per call).
-#
-# Two providers are supported, selected by `LLM_PROVIDER` env var:
-#
-#   LLM_PROVIDER=direct  (default)
-#     Direct DeepSeek API at api.deepseek.com. Fast (~3-10s/call),
-#     full JSON mode, full SLA. Costs ~$0.001 per CV tailor call.
-#     Use for production launches and dev iteration.
-#
-#   LLM_PROVIDER=nvidia
-#     NVIDIA NIM (build.nvidia.com) at integrate.api.nvidia.com. Free
-#     (1K-5K credits lifetime), slower (~30-90s/call on shared GPU
-#     queue), 40 req/min rate limit. Use for extended testing phases
-#     where burning paid credits isn't desirable. Same OpenAI-compatible
-#     wire format so the only changes are base_url, api_key, model id.
-#
-# Both providers are OpenAI-compatible so we use plain HTTP via `requests`
-# (no extra SDK dependency). The `_resolve_deepseek_provider()` helper
-# returns the (api_key, base_url, model, timeout) tuple based on env.
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "direct").lower().strip()
-
-# Direct DeepSeek (default).
+# our per-job tailor footprint (~7K in + ~1K out ≈ $0.001 per call). Direct
+# DeepSeek API at api.deepseek.com (~3-10s/call, full JSON mode, full SLA).
+# Used for the writing path (cv_diff_tailor, cv_reaim, cover_letter,
+# strategist). The NVIDIA NIM provider option was removed Jun 2026
+# (LLM_PROVIDER=nvidia was never set in prod; the branch was unreachable).
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_BASE_URL = os.getenv(
     "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
-).rstrip("/")
-
-# NVIDIA NIM hosted DeepSeek.
-NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "deepseek-ai/deepseek-v4-flash")
-NVIDIA_BASE_URL = os.getenv(
-    "NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"
 ).rstrip("/")
 
 
@@ -227,141 +153,6 @@ def _load_groq_keys() -> list:
         if k and k.startswith("gsk_") and k not in keys:
             keys.append(k)
     return keys
-
-
-def _load_gemini_keys() -> list:
-    """Load all available Gemini keys from env/secrets at startup."""
-    from agents.runtime import secret_or_env
-    keys = []
-    for var in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"):
-        k = secret_or_env(var)
-        if k and k.startswith("AIza") and k not in keys:
-            keys.append(k)
-    return keys
-
-
-def _gemini_configure_current() -> Optional[str]:
-    """
-    Ensure `genai` is configured with the currently-selected key. Returns
-    the active key (or None if no keys are configured / current key is
-    cooling down). Reconfigures lazily only when the active key changes
-    to avoid redundant SDK calls.
-
-    Defence-in-depth for P6 cooldowns: even if a caller forgets to use
-    `_next_available_gemini_key()` to pick a non-cooling key, this returns
-    None so the call falls through to Groq cleanly instead of hammering a
-    rate-limited key.
-    """
-    global _GEMINI_KEYS, _GEMINI_KEY_INDEX, _GEMINI_CONFIGURED_KEY
-    if not _GEMINI_KEYS:
-        _GEMINI_KEYS = _load_gemini_keys()
-    if not _GEMINI_KEYS:
-        return None
-    idx = _GEMINI_KEY_INDEX % len(_GEMINI_KEYS)
-    cooldown = _GEMINI_KEY_COOLDOWN_UNTIL.get(idx, 0.0)
-    if cooldown > time.time():
-        return None
-    key = _GEMINI_KEYS[idx]
-    if key != _GEMINI_CONFIGURED_KEY:
-        genai.configure(api_key=key)
-        _GEMINI_CONFIGURED_KEY = key
-    return key
-
-
-def _rotate_gemini_key() -> bool:
-    """Rotate to the next Gemini key. Returns False when pool is exhausted."""
-    global _GEMINI_KEY_INDEX, _GEMINI_KEYS
-    try:
-        from agents.analytics import track_event
-        track_event(
-            "llm_rate_limit_hit",
-            "system_infra",
-            {
-                "provider": "gemini",
-                "exhausted_key_index": _GEMINI_KEY_INDEX + 1,
-                "total_keys_configured": len(_GEMINI_KEYS),
-            },
-        )
-    except Exception:
-        pass
-    if not _GEMINI_KEYS:
-        _GEMINI_KEYS = _load_gemini_keys()
-    _GEMINI_KEY_INDEX += 1
-    if _GEMINI_KEY_INDEX < len(_GEMINI_KEYS):
-        print(
-            f"   🔄 Gemini key rotated → key #{_GEMINI_KEY_INDEX + 1} "
-            f"of {len(_GEMINI_KEYS)}"
-        )
-        return True
-    print(f"   ⚠️  All {len(_GEMINI_KEYS)} Gemini key(s) exhausted — "
-          "falling back to Groq")
-    return False
-
-
-# ────────────────────────────────────────────────────────────
-# P6 — Per-key cooldown helpers
-# ────────────────────────────────────────────────────────────
-
-def _parse_retry_delay_seconds(err: Exception) -> float:
-    """
-    Parse Google's `retry_delay { seconds: N }` field from a 429 error.
-    Falls back to regex on the stringified error, then to 60s default.
-    """
-    try:
-        details = getattr(err, "details", None)
-        if callable(details):
-            for d in details():
-                rd = getattr(d, "retry_delay", None)
-                secs = getattr(rd, "seconds", None) if rd is not None else None
-                if isinstance(secs, int) and secs > 0:
-                    return float(secs)
-    except Exception:
-        pass
-    import re as _re
-    s = str(err)
-    m = _re.search(
-        r"retry[_ ]delay\s*\{[^}]*?seconds:\s*(\d+)",
-        s, _re.IGNORECASE | _re.DOTALL,
-    )
-    if m:
-        return float(m.group(1))
-    m = _re.search(r"Please retry in (\d+(?:\.\d+)?)s", s)
-    if m:
-        return float(m.group(1))
-    return 60.0
-
-
-def _mark_gemini_key_cooldown(key_index: int, retry_delay_s: float) -> None:
-    """Set per-key cooldown — won't be eligible until the deadline."""
-    _GEMINI_KEY_COOLDOWN_UNTIL[key_index] = time.time() + retry_delay_s
-    print(
-        f"   ⏱  Gemini key #{key_index + 1} cooling for "
-        f"{retry_delay_s:.1f}s (until quota window resets)"
-    )
-
-
-def _next_available_gemini_key():
-    """
-    Find the next non-cooling key starting from the current rotation index.
-    Returns (key_index, 0.0) when one is ready immediately, or
-    (earliest_recovering_index, wait_seconds) when ALL keys are cooling.
-    Returns (None, 0.0) when no keys are configured at all.
-    """
-    if not _GEMINI_KEYS:
-        return None, 0.0
-    n = len(_GEMINI_KEYS)
-    now = time.time()
-    for offset in range(n):
-        idx = (_GEMINI_KEY_INDEX + offset) % n
-        cooldown = _GEMINI_KEY_COOLDOWN_UNTIL.get(idx, 0.0)
-        if cooldown <= now:
-            return idx, 0.0
-    earliest_idx = min(
-        range(n),
-        key=lambda i: _GEMINI_KEY_COOLDOWN_UNTIL.get(i, 0.0),
-    )
-    wait_s = max(0.0, _GEMINI_KEY_COOLDOWN_UNTIL[earliest_idx] - now)
-    return earliest_idx, wait_s
 
 
 def _groq_client(key: str = None):
@@ -762,8 +553,8 @@ def get_quota_summary() -> dict:
     total_budget   = n_keys * _GROQ_TOKENS_PER_KEY_PER_DAY
     used_dict      = _get_tokens_used_session()
     groq_used      = used_dict.get("groq", 0)
-    gemini_used    = used_dict.get("gemini", 0)
-    total_used     = groq_used + gemini_used
+    deepseek_used  = used_dict.get("deepseek", 0)
+    total_used     = groq_used + deepseek_used
     computed_rem   = max(0, total_budget - groq_used)
 
     # Cross-check with Groq's server-side view — sum of remaining_tokens
@@ -797,7 +588,11 @@ def get_quota_summary() -> dict:
         "total_budget":     total_budget,
         "used":             total_used,
         "groq_used":        groq_used,
-        "gemini_used":      gemini_used,
+        "deepseek_used":    deepseek_used,
+        # Back-compat: a few UI / analytics consumers still read `gemini_used`
+        # (the legacy field name from when DeepSeek wasn't broken out). Mirror
+        # `deepseek_used` here for one release cycle so nothing crashes.
+        "gemini_used":      deepseek_used,
         "remaining":        remaining,
         "pct_used":         pct_used,
         "est_runs_left":    est_runs_left,
@@ -838,57 +633,16 @@ def _load_deepseek_key() -> Optional[str]:
     return None
 
 
-def _load_nvidia_key() -> Optional[str]:
-    """Load NVIDIA_API_KEY (NIM, prefix `nvapi-`) from env or Streamlit
-    secrets. Returns None if no key is configured."""
-    try:
-        from agents.runtime import secret_or_env
-        k = secret_or_env("NVIDIA_API_KEY")
-        if k and k.strip():
-            return k.strip()
-    except Exception:
-        pass
-    return None
-
-
 def _resolve_deepseek_provider() -> Optional[Dict[str, Any]]:
     """
-    Resolve the active DeepSeek provider based on `LLM_PROVIDER`.
+    Resolve the DeepSeek provider config (Direct DeepSeek only as of Jun 2026
+    — NVIDIA NIM branch removed since LLM_PROVIDER=nvidia was never set in
+    prod and the env-var-gated branch was unreachable).
 
-    Returns a dict {api_key, base_url, model, timeout, label} on success,
-    or None if the configured provider has no key (caller falls back to
-    Groq). The `label` is used in log lines so users can see which
-    provider produced any given response.
-
-    Selection rules:
-      - LLM_PROVIDER=nvidia → require NVIDIA_API_KEY; fall back to direct
-        if NVIDIA key missing (better than total fail).
-      - LLM_PROVIDER=direct (or any other value) → require DEEPSEEK_API_KEY.
-      - Both keys missing → return None (callers route straight to Groq).
+    Returns a dict {api_key, base_url, model, timeout, label} when a key is
+    configured, or None (caller falls back to Groq). The `label` is used in
+    log lines so users can see which provider produced any given response.
     """
-    provider = LLM_PROVIDER
-
-    if provider == "nvidia":
-        nv_key = _load_nvidia_key()
-        if nv_key:
-            return {
-                "api_key": nv_key,
-                "base_url": NVIDIA_BASE_URL,
-                "model": NVIDIA_MODEL,
-                # NVIDIA NIM free tier shares GPU queues — calls can take
-                # 30-120s. Bump timeout so we don't kill long-but-eventually-
-                # successful responses.
-                "timeout": 180.0,
-                "label": f"NVIDIA NIM ({NVIDIA_MODEL})",
-            }
-        # NVIDIA configured but key missing — fall back to direct silently
-        # so the user isn't blocked when they forget the env var.
-        print(
-            "   ⚠️  LLM_PROVIDER=nvidia but NVIDIA_API_KEY missing — "
-            "falling back to direct DeepSeek"
-        )
-
-    # Direct DeepSeek (default + nvidia-fallback)
     ds_key = _load_deepseek_key()
     if ds_key:
         return {
@@ -902,14 +656,12 @@ def _resolve_deepseek_provider() -> Optional[Dict[str, Any]]:
 
 
 def _increment_deepseek_tokens(delta: int) -> None:
-    """Track DeepSeek token usage in the shared file-cache. Stored under
-    the gemini bucket since the quota panel only displays groq+gemini —
-    DeepSeek is paid out-of-band so this is observability only."""
+    """Track DeepSeek token usage in the shared file-cache (observability
+    only — DeepSeek is paid out-of-band, not gated by the Groq daily quota
+    UI)."""
     try:
         current = _get_tokens_used_session()
-        # Reuse gemini bucket (UI-side) so usage shows up; add a separate
-        # bucket later if we want to break it out.
-        _set_tokens_used_session(current["groq"], current["gemini"] + delta)
+        _set_tokens_used_session(current["groq"], current["deepseek"] + delta)
     except Exception:
         pass
 
@@ -942,8 +694,8 @@ def _call_deepseek(
       DeepSeek is positioned as a *quality enhancement* over the Groq
       free-tier path, not a critical-path provider. If the key is missing,
       the network is down, the account is out of credit, etc. — we want
-      the caller to silently fall through to the existing Groq/Gemini
-      flow rather than crash the run.
+      the caller to silently fall through to the Groq flow rather than
+      crash the run.
 
     Args:
         json_mode: When True, request `response_format={"type":"json_object"}`.
@@ -1024,7 +776,7 @@ def chat_deepseek(
 ) -> Optional[str]:
     """Public entry point for DeepSeek calls. Returns None if no provider
     is configured (no key) or the call fails — caller is responsible for
-    falling back. Honours `LLM_PROVIDER` to route to direct API or NVIDIA NIM."""
+    falling back to Groq."""
     cfg = _resolve_deepseek_provider()
     if cfg is None:
         return None
@@ -1042,203 +794,13 @@ def chat_fast(prompt: str, max_tokens: int = 500, temperature: float = 0.1) -> s
     return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
 
 
-def _call_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
-    """
-    Call Gemini via the active key in the rotation pool.
-
-    Rate-limit strategy (P6 redesign — Apr 28):
-      • Global gap of `_GEMINI_MIN_GAP_S` (7s default ≈ 8.5 RPM) between
-        any two call STARTS. The slot is reserved atomically inside a lock;
-        the actual sleep happens outside so concurrent threads serialise.
-      • Per-key cooldown table populated from Google's `retry_delay` field
-        on 429 responses. Cooled-down keys are skipped entirely until they
-        recover.
-      • When ALL keys are cooling, we sleep until the soonest recovery
-        rather than punting straight to Groq.
-      • The post-call timestamp is NOT updated — the reservation is the
-        source of truth. (Old bug: post-call overwrite let late-arriving
-        threads compute their slot from a stale `_LAST` value, squeezing
-        2-3 calls into a single 14s window and busting 5 RPM.)
-    """
-    global _GEMINI_KEYS, _LAST_GEMINI_CALL_TIME, _GEMINI_KEY_INDEX
-
-    if genai is None:
-        print("   ⚠️  Gemini SDK not installed, falling back to Groq")
-        return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
-
-    if not _GEMINI_KEYS:
-        _GEMINI_KEYS = _load_gemini_keys()
-    if not _GEMINI_KEYS:
-        print("   ⚠️  No GEMINI_API_KEY* found, falling back to Groq")
-        return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
-
-    n_keys = len(_GEMINI_KEYS)
-    last_err: Optional[Exception] = None
-
-    # Try every key once. On 429 we mark the key cooling and rotate.
-    for _ in range(n_keys):
-        # Pick a non-cooling key. If all are cooling, sleep until the
-        # soonest one recovers — better than punting to Groq when the
-        # wait is short (5-30s typically).
-        key_idx, wait_s = _next_available_gemini_key()
-        if key_idx is None:
-            break
-        if wait_s > 0:
-            print(
-                f"   ⏳ All {n_keys} Gemini key(s) cooling — "
-                f"sleeping {wait_s:.1f}s until key #{key_idx + 1} recovers..."
-            )
-            time.sleep(wait_s)
-        _GEMINI_KEY_INDEX = key_idx
-
-        # Reserve the global call slot (serialised across threads).
-        with _GEMINI_RATE_LIMIT_LOCK:
-            now = time.time()
-            # slot = max(now, _LAST + gap). Guarantees ≥ gap between
-            # consecutive call STARTS regardless of how long any individual
-            # call takes. Critical: we never write a value SMALLER than
-            # the existing _LAST (which would be the post-call overwrite
-            # bug we removed).
-            slot = max(now, _LAST_GEMINI_CALL_TIME + _GEMINI_MIN_GAP_S)
-            sleep_time = max(0.0, slot - now)
-            _LAST_GEMINI_CALL_TIME = slot
-        if sleep_time > 0:
-            print(
-                f"   ⏳ Gemini rate limit: sleeping {sleep_time:.1f}s "
-                f"before call..."
-            )
-            time.sleep(sleep_time)
-
-        active = _gemini_configure_current()
-        if not active:
-            # Current key is cooling (or no keys). Loop will pick the next
-            # non-cooling key on the following iteration via
-            # _next_available_gemini_key().
-            continue
-        try:
-            model = genai.GenerativeModel(GEMINI_MODEL)
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=max_tokens,
-                    temperature=temperature,
-                ),
-            )
-            try:
-                if hasattr(response, "usage_metadata"):
-                    total_tokens = getattr(
-                        response.usage_metadata, "total_token_count", 0
-                    )
-                    if isinstance(total_tokens, int) and total_tokens > 0:
-                        _increment_gemini_tokens(total_tokens)
-            except Exception:
-                pass
-            # NB: do NOT update _LAST_GEMINI_CALL_TIME here. The reservation
-            # we made above is authoritative; overwriting with time.time()
-            # would let queued threads compute fresh slots from a stale
-            # baseline and bust the RPM window (the old race condition).
-            global _LAST_LLM_SOURCE
-            _displayed_key = (_GEMINI_KEY_INDEX % len(_GEMINI_KEYS)) + 1 if _GEMINI_KEYS else 1
-            _LAST_LLM_SOURCE = f"GEMINI key#{_displayed_key}"
-            return response.text.strip() if response.text else ""
-
-        except Exception as e:
-            last_err = e
-            if _is_rate_limit_error(e):
-                # Honour Google's retry hint and mark this key cooling
-                retry_s = _parse_retry_delay_seconds(e)
-                _mark_gemini_key_cooldown(_GEMINI_KEY_INDEX, retry_s)
-                # rotate — next iteration picks a fresh key (or sleeps if
-                # all are cooling)
-                _rotate_gemini_key()
-                continue
-            if _is_auth_error(e):
-                # Auth = key broken; cool it for an hour so we don't
-                # retry it this run, and try the next key
-                _mark_gemini_key_cooldown(_GEMINI_KEY_INDEX, 3600.0)
-                if _rotate_gemini_key():
-                    continue
-                break
-            # Non-RL / non-auth failure — try next Gemini key once,
-            # then fall through to Groq if no more keys
-            print(
-                f"   ⚠️  Gemini call failed ({type(e).__name__}: {e}), "
-                f"trying next Gemini key before Groq fallback"
-            )
-            if _rotate_gemini_key():
-                continue
-            time.sleep(3)
-            return _call_groq(
-                prompt, max_tokens=max_tokens, temperature=temperature
-            )
-
-    if last_err is not None:
-        print(
-            f"   ⚠️  All Gemini keys exhausted/cooling "
-            f"({type(last_err).__name__}: {str(last_err)[:200]}) — "
-            f"falling back to Groq"
-        )
-    return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
-
-
-# ── Gemini bypass switch (Apr 30) ───────────────────────────────────────────
-# Default behaviour: route all `chat_gemini()` calls straight to Groq.
-#
-# Why bypass-on by default:
-#   Gemini 2.5 Flash on the free tier was producing truncated JSON (~200-400
-#   chars) on cv_diff_tailor and cover_letter calls — every attempt failed
-#   parse-validation and forced a Groq fallback anyway. Each failed attempt
-#   wasted 9-11s. Run-2 telemetry (Apr 30 13:01) showed 0 successful Gemini
-#   structured outputs across 4 CVs. Bypassing removes that dead-time.
-#
-# To re-enable Gemini at runtime: set GEMINI_BYPASS=0 in env / Streamlit
-# secrets. The original Gemini path (with key rotation, cooldowns, etc.)
-# is preserved verbatim in `_call_gemini()` — only the public wrapper is
-# rewired. Flip the env var, redeploy, no code change needed.
-def _gemini_bypass_enabled() -> bool:
-    """True when Gemini is bypassed (default).
-
-    Run 19 audit fix #40: accept the full set of falsy values for the
-    "disable bypass / re-enable Gemini" toggle. Previously only the
-    literal "0" turned bypass off — setting GEMINI_BYPASS=false / no /
-    off (intuitive falsy values) kept Gemini bypassed despite user
-    intent. Treat any of {0, false, no, off, ''} as "bypass off →
-    re-enable Gemini"; anything else as "bypass on".
-    """
-    _FALSY = {"0", "false", "no", "off", ""}
-    val = os.environ.get("GEMINI_BYPASS")
-    if val is not None:
-        return val.strip().lower() not in _FALSY
-    try:
-        import streamlit as st  # local import — non-Streamlit callers don't pay
-        if hasattr(st, "secrets") and "GEMINI_BYPASS" in st.secrets:  # type: ignore[attr-defined]
-            return str(st.secrets["GEMINI_BYPASS"]).strip().lower() not in _FALSY  # type: ignore[index]
-    except Exception:
-        pass
-    return True  # default: bypass ON
-
-
-def chat_gemini(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
-    """
-    Public entry point for "writing" calls (CV tailoring, cover letters).
-
-    With GEMINI_BYPASS=1 (default since Apr 30): routes directly to Groq.
-    With GEMINI_BYPASS=0: original Gemini-first / Groq-fallback behaviour.
-    """
-    if _gemini_bypass_enabled():
-        print(f"   🤖 [GROQ / WRITING — gemini bypassed] requesting {max_tokens} tokens...")
-        return _call_groq(prompt, max_tokens=max_tokens, temperature=temperature)
-    print(f"   🤖 [GEMINI / WRITING] requesting {max_tokens} tokens...")
-    return _call_gemini(prompt, max_tokens=max_tokens, temperature=temperature)
-
-
 def last_llm_source() -> str:
     """
     Returns the source of the most recently successful LLM call as a short
-    human-readable tag (e.g. "GEMINI key#2" or "GROQ key#1"). Useful for
-    success-path logging — callers print the kept output's actual provider
-    after the response passes their guards. Returns "unknown" if no
-    successful call has happened yet (e.g. before the first call).
+    human-readable tag (e.g. "DEEPSEEK (deepseek-chat)" or "GROQ key#1").
+    Useful for success-path logging — callers print the kept output's actual
+    provider after the response passes their guards. Returns "unknown" if
+    no successful call has happened yet (e.g. before the first call).
     """
     return _LAST_LLM_SOURCE
 
@@ -1247,7 +809,7 @@ def last_llm_source() -> str:
 # Diagnostics hook (deletable; no-op when disabled)
 # ─────────────────────────────────────────────────────────────────────────────
 # When DIAGNOSTICS_ENABLED=1 is set in the environment, the diagnostics
-# package monkey-patches _call_groq, _call_gemini, and track_llm_call to
+# package monkey-patches _call_groq, _call_deepseek, and track_llm_call to
 # emit per-call telemetry to JSONL (always) and Langfuse (when configured).
 #
 # When the env var is not set, this block does nothing — diagnostics is

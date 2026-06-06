@@ -9,8 +9,8 @@ Strategy:
     1. `agents.runtime.track_llm_call(agent=...)` is wrapped to additionally
        set the `current_agent` ContextVar in diagnostics.telemetry.
 
-    2. `agents.llm_client._call_groq` and `_call_gemini` are replaced with
-       timing+capture wrappers that:
+    2. `agents.llm_client._call_groq` and `_call_deepseek` are replaced
+       with timing+capture wrappers that:
          - read the existing _TOKENS_USED_SESSION counter before/after to
            measure tokens consumed by THIS call (the existing code already
            accurately deducts via SDK `usage.total_tokens` / `usage_metadata`);
@@ -49,7 +49,6 @@ def patch() -> None:
 
     _patch_track_llm_call()
     _patch_groq_caller()
-    _patch_gemini_caller()
     _patch_deepseek_caller()
     _PATCHED = True
     print(
@@ -181,109 +180,7 @@ def _patch_groq_caller() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# 3. _call_gemini → measure + record
-# ─────────────────────────────────────────────────────────────
-
-def _patch_gemini_caller() -> None:
-    try:
-        from agents import llm_client as _lc
-    except ImportError:
-        return
-
-    original = _lc._call_gemini
-    gemini_model = lambda: getattr(_lc, "GEMINI_MODEL", "gemini-2.5-flash")
-
-    def _read_gemini_tokens_used() -> int:
-        try:
-            return int(_lc._get_tokens_used_session().get("gemini", 0))
-        except Exception:
-            return 0
-
-    def _read_groq_tokens_used() -> int:
-        try:
-            return int(_lc._get_tokens_used_session().get("groq", 0))
-        except Exception:
-            return 0
-
-    def wrapped(prompt: str, max_tokens: int = 800, temperature: float = 0.2) -> str:
-        agent = _t.current_agent.get() or "unknown"
-        job_id = _t.current_job_id.get()
-
-        # Record the BOTH counters before — _call_gemini falls back to
-        # _call_groq internally, in which case the call's token usage shows
-        # up under groq_used, not gemini_used. We pick the larger delta.
-        before_gemini = _read_gemini_tokens_used()
-        before_groq   = _read_groq_tokens_used()
-        t0 = time.perf_counter()
-        error: Optional[str] = None
-        response: str = ""
-        try:
-            response = original(prompt, max_tokens=max_tokens, temperature=temperature)
-            return response
-        except Exception as e:
-            error = f"{type(e).__name__}: {str(e)[:300]}"
-            raise
-        finally:
-            duration_ms = (time.perf_counter() - t0) * 1000.0
-            d_gemini = max(0, _read_gemini_tokens_used() - before_gemini)
-            d_groq   = max(0, _read_groq_tokens_used()   - before_groq)
-            # If Gemini fell back to Groq mid-call, d_groq carries the cost.
-            fell_back = d_groq > 0 and d_gemini == 0
-            tokens_this_call = d_gemini if not fell_back else d_groq
-            provider = "groq_fallback" if fell_back else "gemini"
-            model = (
-                __import__("os").getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-                if fell_back
-                else gemini_model()
-            )
-            truncated = _looks_truncated(response, max_tokens)
-            # Same char-ratio heuristic as the Groq wrapper — keeps LangFuse
-            # in/out totals meaningful when Gemini falls back to Groq mid-run.
-            if tokens_this_call > 0:
-                _pc = len(prompt or "")
-                _rc = len(response or "")
-                _den = _pc + _rc
-                if _den > 0:
-                    _pt = int(round(tokens_this_call * (_pc / _den)))
-                    _pt = max(0, min(_pt, tokens_this_call))
-                    _ct = tokens_this_call - _pt
-                else:
-                    _pt, _ct = tokens_this_call, 0
-            else:
-                _pt, _ct = 0, 0
-            try:
-                _t.record_llm_call(
-                    agent=agent,
-                    provider=provider,
-                    model=model,
-                    prompt=prompt,
-                    response=response or "",
-                    prompt_tokens=_pt,
-                    completion_tokens=_ct,
-                    total_tokens=tokens_this_call,
-                    duration_ms=duration_ms,
-                    truncated=truncated,
-                    error=error,
-                    job_id=job_id,
-                    metadata={
-                        "max_tokens_requested": max_tokens,
-                        "temperature": temperature,
-                        "last_llm_source": getattr(_lc, "_LAST_LLM_SOURCE", "?"),
-                        "fell_back_to_groq": fell_back,
-                    },
-                )
-            except Exception as log_err:
-                print(
-                    f"   ⚠️  diagnostics: record_llm_call failed for gemini: "
-                    f"{log_err}",
-                    file=sys.stderr,
-                )
-
-    _lc._call_gemini = wrapped  # type: ignore[assignment]
-
-
-# ─────────────────────────────────────────────────────────────
-# 4. _call_deepseek → measure + record (EXACT token counts)
+# 3. _call_deepseek → measure + record (EXACT token counts)
 # ─────────────────────────────────────────────────────────────
 # Unlike the Groq/Gemini wrappers which read deltas off the shared session
 # token counter (and lose the prompt/completion split), the DeepSeek API

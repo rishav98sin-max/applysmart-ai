@@ -111,7 +111,7 @@ def _tpm_windows(
 ) -> List[Dict[str, Any]]:
     """
     Bucket calls by 60s windows. Each window:
-      { window_start, calls, total_tokens, gemini_calls, groq_calls }
+      { window_start, calls, total_tokens, deepseek_calls, groq_calls }
     """
     if not traces:
         return []
@@ -121,12 +121,12 @@ def _tpm_windows(
         return []
     t0 = parsed[0][0]
     buckets: Dict[int, Dict[str, Any]] = defaultdict(lambda: {
-        "window_start": None,
-        "calls":         0,
-        "total_tokens":  0,
-        "gemini_calls":  0,
-        "groq_calls":    0,
-        "agents":        Counter(),
+        "window_start":   None,
+        "calls":          0,
+        "total_tokens":   0,
+        "deepseek_calls": 0,
+        "groq_calls":     0,
+        "agents":         Counter(),
     })
     for ts, t in parsed:
         idx = int((ts - t0).total_seconds()) // window_s
@@ -139,8 +139,8 @@ def _tpm_windows(
         b["calls"]        += 1
         b["total_tokens"] += int(t.get("total_tokens") or 0)
         prov = (t.get("provider") or "").lower()
-        if prov.startswith("gemini"):
-            b["gemini_calls"] += 1
+        if prov.startswith("deepseek"):
+            b["deepseek_calls"] += 1
         elif prov.startswith("groq"):
             b["groq_calls"]   += 1
         b["agents"][t.get("agent") or "unknown"] += 1
@@ -310,16 +310,13 @@ def render_summary_md(run_dir: Path, traces: List[Dict[str, Any]]) -> str:
     lines.append("## 2. Tokens-Per-Minute Windows (60s buckets)")
     lines.append("")
     lines.append(
-        "| Window Start | Calls | Total Tokens | Gemini Calls | Groq Calls "
+        "| Window Start | Calls | Total Tokens | DeepSeek Calls | Groq Calls "
         "| Top Agents | Flag |"
     )
     lines.append("|---|---:|---:|---:|---:|---|---|")
-    GEMINI_RPM_LIMIT = 5
     for w in windows:
         flag = ""
-        if w["gemini_calls"] > GEMINI_RPM_LIMIT:
-            flag = "🔴 **Gemini RPM breach**"
-        elif w["calls"] > 30:
+        if w["calls"] > 30:
             flag = "🟡 high-burst"
         top_agents = ", ".join(
             f"{a}×{n}" for a, n in w["agents"].most_common(3)
@@ -328,7 +325,7 @@ def render_summary_md(run_dir: Path, traces: List[Dict[str, Any]]) -> str:
         ws_s = ws.isoformat() if hasattr(ws, "isoformat") else str(ws)
         lines.append(
             f"| {ws_s} | {w['calls']} | {_fmt_int(w['total_tokens'])} | "
-            f"{w['gemini_calls']} | {w['groq_calls']} | {top_agents} | {flag} |"
+            f"{w['deepseek_calls']} | {w['groq_calls']} | {top_agents} | {flag} |"
         )
     lines.append("")
 
@@ -395,11 +392,6 @@ def render_summary_md(run_dir: Path, traces: List[Dict[str, Any]]) -> str:
     lines.append("## 6. Top Suspicions (auto-derived)")
     lines.append("")
     suspicions: List[str] = []
-    if any(w["gemini_calls"] > GEMINI_RPM_LIMIT for w in windows):
-        suspicions.append(
-            f"🔴 **Gemini RPM breach detected** in one or more 60s windows. "
-            f"This is a hard structural cause of truncation/quota exhaustion."
-        )
     if n_trunc > n_calls * 0.10 and n_calls > 0:
         suspicions.append(
             f"🔴 **High truncation rate ({n_trunc}/{n_calls} = "

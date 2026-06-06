@@ -9,9 +9,13 @@ Auto-handles tenure calculation, 4-corner role blocks, embedded fonts, and
 intelligent pagination — quality the WeasyPrint template path can't easily
 match.
 
-The renderer is fully pip-installable (no system binaries, no apt deps)
-so the Streamlit Cloud deploy picks it up automatically once the
-``requirements.txt`` entry is in place.
+⚠️  AVAILABILITY (Jun 2026): Typst requires Python ≥3.12 via the
+``rendercv[full]`` pip extra. Streamlit Cloud's stable image ships Python
+3.11, so the ``rendercv`` line in requirements.txt is COMMENTED OUT and
+Typst is NOT available in prod — ``is_available()`` returns False there
+and the rebuild path falls through to WeasyPrint. Typst works in any
+dev / deploy environment where Python ≥3.12 is available; uncomment the
+requirements.txt line and bump runtime.txt to python-3.12 to re-activate.
 
 Design choices:
   * **Monochrome.** All ink is ``rgb(26, 26, 26)`` (near-black) and the
