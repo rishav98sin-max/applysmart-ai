@@ -811,7 +811,7 @@ def _render_top_brand() -> None:
         '<svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" '
         'aria-hidden="true"><path d="M12 2l10 10-10 10L2 12z"/></svg>'
         '</div>'
-        '<div class="name">ApplySmart</div>'
+        '<div class="name">ApplySmart<span style="color:var(--accent);"> AI</span></div>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -1045,7 +1045,7 @@ def _render_hero_top() -> None:
         <div class="welcome">
           <div class="hero-eyebrow">Tailoring your CV</div>
           <h2>Show your work. Not someone else's.</h2>
-          <p>ApplySmart tailors your CV for each job — and shows you every
+          <p>ApplySmart AI tailors your CV for each job — and shows you every
              edit, with the reasoning. <b>Nothing invented. Nothing hidden.</b></p>
           <div class="hero-sub-cta">
             Free during beta &middot; Your CV is not training data
