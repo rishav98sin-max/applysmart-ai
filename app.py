@@ -79,24 +79,26 @@ st.set_page_config(
 _CUSTOM_CSS = """
 <style>
     :root {
-        /* Deep-teal accent + warm stone neutrals. Distinct from career-tech
-           sites that use cyan-mint (Teal), violet (Huntr), or corporate
-           blue (Jobscan) — feels professional without copying anyone. */
-        --accent:         #0F766E;   /* teal-700, confident + restrained */
-        --accent-hover:   #115E59;   /* teal-800 */
-        --accent-soft:    #F0FDFA;   /* teal-50, barely-there fill */
-        --accent-ring:    #99F6E4;   /* teal-200, for hover rings */
-        --text-strong:    #1C1917;   /* stone-900 (warm near-black) */
-        --text-muted:     #57534E;   /* stone-600 */
-        --text-faint:     #A8A29E;   /* stone-400 */
-        --border:         #E7E5E4;   /* stone-200, warm border */
-        --border-strong:  #D6D3D1;   /* stone-300 */
+        /* Design system v2 (Jun 2026) — Linear/Vercel/Stripe class.
+           Locked stack: Minimalism & Swiss Style (#1) + Bento (#21) +
+           Dimensional Layering (#28). Single restrained green accent
+           (anti-AI-purple per brand bans). Light-mode tokens here;
+           dark-mode block below overrides. */
+        --accent:         #15803D;   /* green-700, 4.7:1 on white (AA) */
+        --accent-hover:   #166534;   /* green-800 */
+        --accent-soft:    #F0FDF4;   /* green-50 */
+        --accent-ring:    #BBF7D0;   /* green-200 */
+        --text-strong:    #0F172A;   /* slate-900 — 15.9:1 (AAA) */
+        --text-muted:     #475569;   /* slate-600 — 6.8:1 (AA) */
+        --text-faint:     #94A3B8;   /* slate-400 */
+        --border:         #E2E8F0;   /* slate-200 */
+        --border-strong:  #CBD5E1;   /* slate-300 */
         --bg-card:        #FFFFFF;
-        --bg-soft:        #F5F5F4;   /* stone-100 for sidebar / subtle fills */
-        --bg-page:        #FAFAF9;   /* stone-50, softer than pure white */
-        /* Status palette — muted tints + deep-text for AA contrast. */
-        --green-bg:       #ECFDF5;
-        --green-text:     #065F46;
+        --bg-soft:        #F8FAFC;   /* slate-50 — sidebar / subtle fill */
+        --bg-page:        #FFFFFF;   /* pure white in light mode */
+        /* Status palette — diff add/reject share the accent/danger hues. */
+        --green-bg:       #F0FDF4;
+        --green-text:     #166534;
         --amber-bg:       #FFFBEB;
         --amber-text:     #92400E;
         --red-bg:         #FEF2F2;
@@ -109,9 +111,28 @@ _CUSTOM_CSS = """
         color: var(--text-strong) !important;
     }
 
-    /* Hide default Streamlit chrome */
-    #MainMenu, footer, header { visibility: hidden; }
+    /* Hide default Streamlit chrome — Phase 1 polish */
+    #MainMenu, footer, header { visibility: hidden; height: 0 !important; }
+    [data-testid="stToolbar"], [data-testid="stStatusWidget"],
+    [data-testid="stDecoration"], [data-testid="stHeader"] {
+        display: none !important; height: 0 !important; }
+    /* Tighten the top gap that the hidden header used to occupy. */
+    [data-testid="stAppViewContainer"] > .main { padding-top: 0 !important; }
     .block-container { padding-top: 1.25rem; padding-bottom: 3rem; max-width: 1240px; }
+    /* Keyboard focus rings — accessible, brand-coloured (AA rule). */
+    a:focus-visible, button:focus-visible, [role="button"]:focus-visible,
+    input:focus-visible, select:focus-visible, textarea:focus-visible {
+        outline: 2px solid var(--accent) !important;
+        outline-offset: 2px !important;
+        border-radius: 6px;
+    }
+    /* Respect prefers-reduced-motion globally (Phase 1 accessibility). */
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
 
     /* Typography */
     html, body, [class*="css"] {
@@ -270,13 +291,12 @@ _CUSTOM_CSS = """
     }
     .feature {
         background: var(--bg-card); border: 1px solid var(--border);
-        border-radius: 12px; padding: 1.4rem 1.3rem;
-        transition: transform 160ms ease, box-shadow 160ms ease,
-                    border-color 160ms ease;
+        border-radius: 16px; padding: 1.4rem 1.3rem;
+        transition: border-color 200ms ease, box-shadow 200ms ease;
     }
     .feature:hover {
-        transform: translateY(-2px);
-        border-color: var(--border-strong);
+        /* Calm brand — no scale transforms on cards (locked design rule). */
+        border-color: var(--accent);
         box-shadow:
             0 1px 2px rgba(0, 0, 0, 0.02),
             0 12px 28px -12px rgba(15, 118, 110, 0.14);
@@ -422,37 +442,39 @@ st.markdown(_CUSTOM_CSS, unsafe_allow_html=True)
 _DARK_CSS = """
 <style>
     :root {
-        /* Brand stays teal but brighter for contrast on dark bg. */
-        --accent:         #14B8A6;   /* teal-500 */
-        --accent-hover:   #0D9488;   /* teal-600 */
-        --accent-soft:    #042F2E;   /* teal-950 for subtle fills */
-        --accent-ring:    #2DD4BF;   /* teal-400, hover rings */
-        --text-strong:    #E6E8EB;   /* soft white */
-        --text-muted:     #8B949E;   /* muted slate */
-        --text-faint:     #6E7681;   /* faint slate */
-        --border:         #30363D;   /* subtle slate divider */
-        --border-strong:  #484F58;
-        --bg-card:        #1C2128;   /* elevated surface (cards, inputs) */
-        --bg-soft:        #1C2128;   /* sidebar / subtle fills */
-        --bg-page:        #0F1419;   /* deep charcoal page */
-        /* Status palette — dark-mode variants with AA contrast. */
-        --green-bg:       #022C22;
-        --green-text:     #6EE7B7;
+        /* Design system v2 dark (PRIMARY theme) — locked palette:
+           Financial-Dashboard family, Linear/Vercel/Stripe class.
+           Deep slate canvas + single green accent (anti-AI-purple). */
+        --accent:         #22C55E;   /* green-500 — vivid on near-black */
+        --accent-hover:   #16A34A;   /* green-600 */
+        --accent-soft:    #052E16;   /* green-950, subtle fills */
+        --accent-ring:    #4ADE80;   /* green-400, hover rings */
+        --text-strong:    #F8FAFC;   /* slate-50 — 15.8:1 (AAA) */
+        --text-muted:     #94A3B8;   /* slate-400 — 5.9:1 */
+        --text-faint:     #64748B;   /* slate-500 */
+        --border:         #1E293B;   /* slate-800 — subtle divider */
+        --border-strong:  #334155;   /* slate-700 */
+        --bg-card:        #0B1220;   /* +1 elevation surface */
+        --bg-soft:        #0B1220;   /* sidebar / subtle fills */
+        --bg-page:        #020617;   /* slate-950+ canvas */
+        /* Status palette — diff add/reject share accent/danger hues. */
+        --green-bg:       #052E16;
+        --green-text:     #86EFAC;
         --amber-bg:       #3D2B11;
         --amber-text:     #FCD34D;
-        --red-bg:         #450A0A;
+        --red-bg:         #2A0E0E;
         --red-text:       #FCA5A5;
     }
     /* Override hardcoded input whites from base CSS. */
     .stTextInput input, .stTextArea textarea,
     .stSelectbox [data-baseweb="select"] > div,
     .stFileUploader [data-testid="stFileUploaderDropzone"] {
-        background-color: #1C2128 !important;
+        background-color: #111827 !important;
         color: var(--text-strong) !important;
         border: 1px solid var(--border) !important;
     }
     .stTextInput input::placeholder, .stTextArea textarea::placeholder {
-        color: #6E7681 !important;
+        color: #64748B !important;
     }
 
     /* File uploader — the "Browse files" button ships with a hardcoded
@@ -462,13 +484,13 @@ _DARK_CSS = """
     .stFileUploader button,
     .stFileUploader [data-testid="stBaseButton-secondary"],
     [data-testid="stFileUploaderDropzone"] button {
-        background-color: #30363D !important;  /* var(--border), one step up from dropzone */
+        background-color: #1E293B !important;  /* var(--border), one step up from dropzone */
         color: var(--text-strong) !important;
-        border: 1px solid #484F58 !important;
+        border: 1px solid #334155 !important;
     }
     .stFileUploader button:hover,
     [data-testid="stFileUploaderDropzone"] button:hover {
-        background-color: #3D444D !important;
+        background-color: #334155 !important;
         border-color: var(--accent) !important;
         color: var(--accent) !important;
     }
@@ -480,7 +502,7 @@ _DARK_CSS = """
     }
     /* Uploaded-file chip background. */
     .stFileUploader [data-testid="stFileUploaderFile"] {
-        background-color: #1C2128 !important;
+        background-color: #111827 !important;
         color: var(--text-strong) !important;
         border: 1px solid var(--border) !important;
     }
@@ -493,12 +515,18 @@ _DARK_CSS = """
     .stSlider [data-baseweb="slider"] > div > div {
         background: var(--accent) !important;
     }
-    /* Brand mark retains gradient but glow tweaked for dark. */
+    /* Brand mark retains gradient but glow tweaked for dark (green). */
     .brand-header .mark {
         box-shadow:
-            0 1px 2px rgba(20, 184, 166, 0.15),
-            0 8px 24px -6px rgba(20, 184, 166, 0.35),
+            0 1px 2px rgba(34, 197, 94, 0.15),
+            0 8px 24px -6px rgba(34, 197, 94, 0.35),
             inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+    }
+    /* Demo tile: deeper shadow on dark canvas (Dimensional Layering). */
+    .demo-tile {
+        box-shadow:
+            0 1px 3px rgba(0, 0, 0, 0.5),
+            0 20px 40px -20px rgba(0, 0, 0, 0.7) !important;
     }
     /* Streamlit-generated alerts: darken bg, keep coloured text. */
     div[data-testid="stAlert"] {
@@ -508,9 +536,10 @@ _DARK_CSS = """
 </style>
 """
 
-# Initialise theme state once per session.
+# Initialise theme state once per session. Dark is the PRIMARY theme
+# (design system v2, Jun 2026) — light is the secondary toggle.
 if "theme" not in st.session_state:
-    st.session_state["theme"] = "light"
+    st.session_state["theme"] = "dark"
 
 if st.session_state["theme"] == "dark":
     st.markdown(_DARK_CSS, unsafe_allow_html=True)
@@ -669,56 +698,264 @@ def _render_top_brand() -> None:
     Linear / Stripe / Vercel product pages do with their logo. Persists
     across welcome + matches views so users always know where they are.
     """
+    # Phase 1 polish: tightened to a clean brand anchor (mark + wordmark).
+    # The prior eyebrow ("AI Job Application Studio") led with "AI" — against
+    # the brand's anti-positioning — and the descriptor line duplicated the
+    # hero sub-copy below. A bare wordmark reads more like Linear/Stripe.
     st.markdown(
-        '<div class="brand-header">'
-        '<div class="eyebrow">AI Job Application Studio</div>'
+        '<div class="brand-header brand-header--compact">'
         '<div class="mark">◈</div>'
-        '<div class="name">ApplySmart AI</div>'
-        '<div class="tag">Find, tailor, review, and ship applications with confidence</div>'
+        '<div class="name">ApplySmart</div>'
         '</div>',
         unsafe_allow_html=True,
     )
 
 
 def _render_welcome() -> None:
+    # Phase 1 polish (Jun 2026): hero rebuilt per Pattern #6 (Interactive
+    # Product Demo) + Pattern #4 (Minimal Single Column). Adds a static
+    # diff-viewer demo tile (the brand differentiator), the
+    # trust-through-transparency table (replaces the conventional 3-feature
+    # grid), and an FAQ accordion. No invented stats. No banned words.
     st.markdown(
         """
+        <style>
+        .hero-eyebrow {
+            font-size: 0.72rem; text-transform: uppercase;
+            letter-spacing: 0.12em; font-weight: 600;
+            color: var(--accent); margin-bottom: 0.85rem;
+            text-align: center;
+        }
+        .welcome h2 { text-align: center; }
+        .hero-sub-cta {
+            margin: 1.5rem auto 0; max-width: 540px;
+            text-align: center; font-size: 0.84rem;
+            color: var(--text-muted);
+        }
+
+        /* DEMO TILE — the in-hero proof. Static diff viewer that shows
+           exactly what the agent does: added / kept / rejected, with
+           reasoning. The hero differentiator. */
+        .demo-tile {
+            margin: 2.6rem auto 0; max-width: 880px;
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 24px; overflow: hidden;
+            box-shadow:
+                0 1px 3px rgba(15, 23, 42, 0.06),
+                0 20px 40px -20px rgba(15, 23, 42, 0.18);
+        }
+        .demo-jd {
+            padding: 14px 20px; border-bottom: 1px solid var(--border);
+            background: var(--bg-soft);
+            font-size: 0.78rem; color: var(--text-muted);
+            line-height: 1.5;
+        }
+        .demo-jd b { color: var(--text-strong); font-weight: 600; }
+        .demo-jd .meta-tag {
+            display: inline-block; font-size: 0.66rem;
+            text-transform: uppercase; letter-spacing: 0.1em;
+            font-weight: 600; color: var(--accent);
+            margin-right: 0.6rem;
+        }
+        .demo-diff {
+            font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+            font-size: 0.83rem; line-height: 1.75;
+            padding: 12px 0;
+        }
+        .demo-row {
+            display: grid; grid-template-columns: 40px 24px 1fr;
+            padding: 4px 20px;
+        }
+        .demo-row.row-add  { background: var(--green-bg); }
+        .demo-row.row-rej  { background: var(--red-bg); }
+        .demo-row.row-add  .demo-text { color: var(--green-text); }
+        .demo-row.row-rej  .demo-text { color: var(--red-text); text-decoration: line-through; }
+        .demo-row.row-keep .demo-text { color: var(--text-muted); }
+        .demo-ln  { color: var(--text-faint); text-align: right; padding-right: 8px; }
+        .demo-mark { color: var(--text-faint); text-align: center; font-weight: 700; }
+        .demo-row.row-add .demo-mark { color: var(--green-text); }
+        .demo-row.row-rej .demo-mark { color: var(--red-text); }
+        .demo-reason {
+            grid-column: 3 / 4;
+            font-family: -apple-system, "Inter", sans-serif;
+            font-size: 0.74rem; font-style: italic;
+            color: var(--text-muted);
+            margin: 2px 0 6px 0; padding-left: 4px;
+            border-left: 2px solid var(--border);
+            padding-left: 10px;
+        }
+
+        /* TRUST TABLE — replaces the conventional 3-feature grid. */
+        .trust-block {
+            margin: 5rem auto 0; max-width: 760px;
+            padding: 2.5rem 2rem;
+            background: var(--bg-soft); border: 1px solid var(--border);
+            border-radius: 24px;
+        }
+        .trust-block .trust-eyebrow {
+            font-size: 0.72rem; text-transform: uppercase;
+            letter-spacing: 0.12em; font-weight: 600;
+            color: var(--text-muted); text-align: center;
+        }
+        .trust-block h3 {
+            font-size: 1.7rem; font-weight: 650;
+            letter-spacing: -0.02em; text-align: center;
+            margin: 0.6rem auto 1.8rem; color: var(--text-strong);
+            max-width: 540px; line-height: 1.2;
+        }
+        .trust-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 0.9rem 0; border-top: 1px solid var(--border);
+            font-size: 0.95rem; color: var(--text-strong); gap: 1rem;
+        }
+        .trust-row:first-of-type { border-top: none; }
+        .trust-row .glyph {
+            font-family: "JetBrains Mono", monospace;
+            font-weight: 700; font-size: 1.1rem; flex-shrink: 0;
+        }
+        .trust-row .glyph-no  { color: var(--red-text); }
+        .trust-row .glyph-yes { color: var(--green-text); }
+        .trust-closer {
+            text-align: center; font-size: 0.85rem;
+            color: var(--text-muted); margin: 1.6rem auto 0;
+            font-style: italic;
+        }
+        </style>
+
         <div class="welcome">
-          <h2>From job search to tailored application, in one focused workflow.</h2>
-          <p>For every live job it finds, ApplySmart AI produces <b>a
-             role-aligned CV and a matching cover letter</b>, each one
-             tuned to the job description so you can review and apply in minutes
-             instead of rewriting documents for hours.</p>
-          <div class="feature-grid">
-            <div class="feature">
-              <div class="ft-icon">⌕</div>
-              <div class="ft-label">Search</div>
-              <div class="ft-title">Adaptive keyword search</div>
-              <div class="ft-body">Planner agent drafts up to 8 keyword
-                bundles (title variants, adjacent roles, broader locations).
-                Supervisor broadens automatically if matches are thin.</div>
+          <div class="hero-eyebrow">Tailoring your CV</div>
+          <h2>Show your work. Not someone else's.</h2>
+          <p>ApplySmart tailors your CV for each job — and shows you every
+             edit, with the reasoning. <b>Nothing invented. Nothing hidden.</b></p>
+          <div class="hero-sub-cta">
+            Free during beta &middot; Your CV is not training data
+          </div>
+
+          <!-- Static demo tile — the brand differentiator. -->
+          <div class="demo-tile" aria-label="Example tailoring diff with reasoning">
+            <div class="demo-jd">
+              <span class="meta-tag">Sample job</span>
+              <b>Senior Product Manager</b> &middot; Stripe &middot; Dublin (Hybrid)
+              <br>Owning payments infrastructure for B2B SaaS, partnering with
+              engineering on Stripe Connect adoption.
             </div>
-            <div class="feature">
-              <div class="ft-icon">✎</div>
-              <div class="ft-label">Tailor</div>
-              <div class="ft-title">CV + cover letter per role</div>
-              <div class="ft-body">Every matched job gets its own pair:
-                a replica-edit PDF of your CV (keeping your original fonts
-                and layout) plus a bespoke cover letter written from the JD.</div>
+            <div class="demo-diff">
+              <div class="demo-row row-rej">
+                <div class="demo-ln">3</div><div class="demo-mark">&minus;</div>
+                <div class="demo-text">Led cross-functional team to deliver projects on time</div>
+              </div>
+              <div class="demo-reason">
+                Replaced because the JD asks for measurable payments
+                experience &mdash; your CV proves it on line 12.
+              </div>
+              <div class="demo-row row-add">
+                <div class="demo-ln">3</div><div class="demo-mark">+</div>
+                <div class="demo-text">Led 5-engineer team to ship Stripe Connect integration in 9 weeks</div>
+              </div>
+              <div class="demo-row row-rej">
+                <div class="demo-ln">4</div><div class="demo-mark">&times;</div>
+                <div class="demo-text">Increased revenue 300% across the platform</div>
+              </div>
+              <div class="demo-reason">
+                Rejected &mdash; this metric is not in your CV. We don't add
+                claims you can't defend in the interview.
+              </div>
+              <div class="demo-row row-keep">
+                <div class="demo-ln">5</div><div class="demo-mark">&middot;</div>
+                <div class="demo-text">Kept: Shipped 12 features end-to-end across 2024.</div>
+              </div>
             </div>
-            <div class="feature">
-              <div class="ft-icon">✓</div>
-              <div class="ft-label">Review</div>
-              <div class="ft-title">Self-critique loop</div>
-              <div class="ft-body">A reviewer agent scores each tailored
-                CV against the JD; below threshold it's re-tailored with
-                the reviewer's own feedback before you see it.</div>
+          </div>
+
+          <!-- Trust through transparency — replaces the conventional logo wall + 3-feature grid. -->
+          <div class="trust-block">
+            <div class="trust-eyebrow">What we won't do</div>
+            <h3>Things every other AI CV tool gets wrong.</h3>
+            <div class="trust-row">
+              <div>Inflated stats &mdash; &ldquo;10,000 CVs in seconds&rdquo;</div>
+              <div class="glyph glyph-no">&times;</div>
+            </div>
+            <div class="trust-row">
+              <div>Logos of companies that never agreed to be there</div>
+              <div class="glyph glyph-no">&times;</div>
+            </div>
+            <div class="trust-row">
+              <div>Hidden AI reasoning &mdash; you see the output, not the why</div>
+              <div class="glyph glyph-no">&times;</div>
+            </div>
+            <div class="trust-row">
+              <div>Your CV silently used to train a model</div>
+              <div class="glyph glyph-no">&times;</div>
+            </div>
+            <div class="trust-row">
+              <div>The actual edits, line by line, with reasoning</div>
+              <div class="glyph glyph-yes">&check;</div>
+            </div>
+            <div class="trust-row">
+              <div>Rejected fabrications surfaced, not hidden</div>
+              <div class="glyph glyph-yes">&check;</div>
+            </div>
+            <div class="trust-row">
+              <div>Your CV stays in your session &mdash; never training data</div>
+              <div class="glyph glyph-yes">&check;</div>
+            </div>
+            <div class="trust-row">
+              <div>Open source &mdash; audit it yourself</div>
+              <div class="glyph glyph-yes">&check;</div>
+            </div>
+            <div class="trust-closer">
+              We didn't build a competitor to those products. We built the
+              one we'd trust ourselves.
             </div>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+    # FAQ — Streamlit-native expanders, styled by the global CSS.
+    st.markdown(
+        '<div style="max-width:760px;margin:4.5rem auto 0;">'
+        '<div style="font-size:0.72rem;text-transform:uppercase;'
+        'letter-spacing:0.12em;font-weight:600;color:var(--text-muted);'
+        'text-align:center;margin-bottom:0.5rem;">Frequently asked</div>'
+        '<h3 style="font-size:1.7rem;font-weight:650;letter-spacing:-0.02em;'
+        'text-align:center;margin:0 0 1.6rem;">A few questions, answered honestly.</h3>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    _faq = [
+        ("Does my CV get used to train your AI?",
+         "No. Your CV stays in your session folder; we delete it within 24 "
+         "hours. It is not used to fine-tune any model."),
+        ("Which file types work?",
+         "PDF and Word (.docx). Single-column, multi-column, tables, and "
+         "designer layouts are all handled — designer CVs are rebuilt into "
+         "an ATS-clean version with your content intact."),
+        ("Why do you reject some edits?",
+         "If the model tries to add a skill or metric that isn't in your "
+         "CV, our reviewer refuses it. You'll see the rejection with the "
+         "reasoning."),
+        ("Which job boards do you scrape?",
+         "LinkedIn, Indeed, Jobs.ie, and Builtin. If your first board "
+         "returns thin results, we automatically widen across the others."),
+        ("What happens to my data?",
+         "Stored in a session folder for up to 24 hours, then deleted. "
+         "Anonymous funnel events go to our own analytics; no PII. Full "
+         "details in docs/PRIVACY.md."),
+        ("Is the code open source?",
+         "Yes — github.com/rishav98sin-max/applysmart-ai. Audit the "
+         "fabrication guards yourself."),
+    ]
+    _faq_col = st.container()
+    with _faq_col:
+        st.markdown(
+            '<div style="max-width:760px;margin:0 auto;">',
+            unsafe_allow_html=True,
+        )
+        for q, a in _faq:
+            with st.expander(q, expanded=False):
+                st.write(a)
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -857,14 +1094,11 @@ with st.sidebar:
 
         st.markdown('<div class="sidebar-h">Run Settings</div>', unsafe_allow_html=True)
         num_jobs = st.slider("Jobs to scrape", 1, 20, 3)
-        # Static advice: inside a form the slider value isn't known until
-        # submit, so a conditional (num_jobs > 3) warning would always lag
-        # one run behind. An always-visible caption sets the expectation
-        # up-front instead.
-        st.info(
-            "Recommended: **3 jobs** for a trial run. Higher counts may "
-            "exhaust the daily LLM quota.",
-            icon="💡",
+        # Phase 1 polish: replaced the prior st.info() yellow banner with
+        # a quiet caption. The operator-speak ("daily LLM quota") leaked
+        # into the customer surface; a soft hint at the field is enough.
+        st.caption(
+            "Tip: start with 3 for a quick first run."
         )
         match_threshold = st.slider(
             "Minimum match score (JD vs CV %)",
