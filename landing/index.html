@@ -305,7 +305,23 @@
 
   <script>
     const APP_URL = "https://applysmart-ai.streamlit.app/";
-    document.querySelectorAll('[data-app-link]').forEach(a => { a.href = APP_URL; });
+    // The app opens in a new tab. (When embedded inside Streamlit, APP_URL is
+    // rewritten to "?app=1"; the host iframe's sandbox blocks top-frame
+    // navigation but allows popups, so a new tab is the reliable path.)
+    document.querySelectorAll('[data-app-link]').forEach(a => {
+      a.href = APP_URL;
+      a.target = '_blank';
+      a.rel = 'noopener';
+    });
+    // Grow the Streamlit component iframe to fit the full landing height so
+    // there is no scroll-within-scroll.
+    if (window.frameElement) {
+      const _fit = () => { try { window.frameElement.style.height = document.documentElement.scrollHeight + 'px'; } catch (e) {} };
+      _fit();
+      window.addEventListener('load', _fit);
+      window.addEventListener('resize', _fit);
+      if (window.ResizeObserver) new ResizeObserver(_fit).observe(document.body);
+    }
 
     const toggle = document.getElementById('navToggle');
     const menu = document.getElementById('mobileMenu');

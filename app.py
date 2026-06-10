@@ -615,6 +615,40 @@ if st.session_state["theme"] == "dark":
 
 
 # ═════════════════════════════════════════════════════════════════════════
+# LANDING — served at the app's own URL (default view)
+# The Streamlit URL opens the standalone HTML/Tailwind marketing site,
+# embedded via components.html (an iframe, so its Tailwind CDN + JS run —
+# st.markdown would strip them). The hero CTAs navigate the top frame to
+# ?app=1, which reveals the real tool below.
+# ═════════════════════════════════════════════════════════════════════════
+def _render_html_landing() -> None:
+    import streamlit.components.v1 as components
+    from pathlib import Path
+    try:
+        _html = Path(__file__).with_name("landing").joinpath("index.html").read_text(encoding="utf-8")
+    except Exception:
+        return  # landing file missing → fall through to the app
+    # Point CTAs at the in-app tool (relative param) instead of an external URL.
+    _html = _html.replace(
+        'const APP_URL = "https://applysmart-ai.streamlit.app/";',
+        'const APP_URL = "?app=1";',
+    )
+    # Full-bleed: drop Streamlit's container padding/max-width for the landing.
+    st.markdown(
+        "<style>.block-container{max-width:100%!important;padding:0!important;}"
+        "[data-testid='stAppViewContainer']>.main{padding:0!important;}"
+        "iframe{border:none!important;}</style>",
+        unsafe_allow_html=True,
+    )
+    components.html(_html, height=3850, scrolling=True)
+
+
+if st.query_params.get("app") != "1":
+    _render_html_landing()
+    st.stop()
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # BOOT GATE — preflight checks, optional password, session init
 # ═════════════════════════════════════════════════════════════════════════
 # Preflight runs ONCE per process. If GROQ_API_KEY is missing the app is
