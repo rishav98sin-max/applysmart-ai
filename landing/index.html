@@ -433,6 +433,41 @@
     toggle.addEventListener('click', () => { const open = !menu.classList.contains('hidden'); menu.classList.toggle('hidden'); toggle.setAttribute('aria-expanded', String(!open)); });
     menu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => menu.classList.add('hidden')));
 
+    // In-page anchor links: scroll manually. Inside the Streamlit iframe the
+    // srcdoc base URL is the parent app, so a bare "#section" would otherwise
+    // resolve to "<app-url>#section" and trigger a full navigation instead of
+    // an in-page scroll. Intercepting the click fixes nav/CTA anchors in both
+    // the standalone page and the embedded view.
+    // Find the parent's real scroll container (Streamlit scrolls a div, not
+    // the window). Returns null when not embedded / not reachable.
+    function topScroller() {
+      try {
+        const d = window.top.document;
+        const sels = ['[data-testid="stMain"]','section.main','[data-testid="stMainBlockContainer"]','[data-testid="stAppViewContainer"]'];
+        for (const s of sels) { const el = d.querySelector(s); if (el && el.scrollHeight > el.clientHeight + 5) return el; }
+      } catch (err) {}
+      return null;
+    }
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        const id = a.getAttribute('href').slice(1);
+        if (!id) return;
+        const el = document.getElementById(id);
+        if (!el) return;
+        e.preventDefault();
+        const sc = window.frameElement ? topScroller() : null;
+        if (sc) {
+          // The iframe is full-height (no inner scroll); scroll the parent
+          // container to the element's absolute position within it.
+          const frameTop = window.frameElement.getBoundingClientRect().top;
+          const target = sc.scrollTop + (frameTop + el.getBoundingClientRect().top - sc.getBoundingClientRect().top) - 16;
+          sc.scrollTo({ top: Math.max(0, target), behavior: reduce ? 'auto' : 'smooth' });
+        } else {
+          el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+        }
+      });
+    });
+
     // Scroll progress + nav state
     const nav = document.getElementById('nav'), prog = document.getElementById('progress');
     const onScroll = () => {
