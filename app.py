@@ -590,6 +590,11 @@ if "session_id" not in st.session_state:
     st.session_state["session_id"] = new_session_id()
 _SESSION_ID = st.session_state["session_id"]
 _UPLOADS_DIR, _OUTPUTS_DIR = session_dirs(_SESSION_ID)
+# Jun 2026 audit S6: reclaim disk from sessions older than 24h. Runs once
+# per process (guarded inside the helper) — without it a long-lived Cloud
+# container accumulates every visitor's CV+PDFs until the disk fills.
+from agents.runtime import sweep_stale_sessions as _sweep_stale_sessions
+_sweep_stale_sessions()
 # Distinct id is derived from the *persistent* anon id, not the per-tab
 # session id, so refreshes keep the same Mixpanel identity.
 _ANON_DISTINCT_ID = distinct_id(_ANON_AID)
@@ -1184,6 +1189,12 @@ if run_button:
             # raising — this handler only fires for errors thrown OUTSIDE the
             # graph (e.g. import failures). Still coerce into a final_state
             # shape so the downstream error banner + snapshot UI can render.
+            #
+            # Jun 2026 audit S7: the quota front-gate raises BEFORE any work
+            # happens — refund the session run credit so a refusal doesn't
+            # burn one of the visitor's daily tries.
+            if isinstance(e, RuntimeError) and "quota" in str(e).lower():
+                st.session_state["_runs_used"] = _runs_used_this_session
             final_state = {
                 "status": "crashed",
                 "matched_jobs": [],

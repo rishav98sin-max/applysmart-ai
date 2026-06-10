@@ -683,9 +683,9 @@ def generate_cv_pdf_styled(
         print(f"   🎨 CV rendered via WeasyPrint → {os.path.basename(weasy_path)}")
         return weasy_path
     # 2) Fall back to the legacy ReportLab renderer below.
-    safe_co = company.replace(" ", "_").replace("/", "-")
-    safe_title = job_title.replace(" ", "_").replace("/", "-")
-    filepath = os.path.join(output_dir, f"CV_{safe_co}_{safe_title}.pdf")
+    safe_co = re.sub(r"[^A-Za-z0-9._-]+", "_", company).strip("._") or "company"
+    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", job_title).strip("._") or "role"
+    filepath = os.path.join(output_dir, f"CV_{safe_co[:40]}_{safe_title[:60]}.pdf")
 
     lm = float(style_profile.get("left_margin_mm", 18))
     rm = float(style_profile.get("right_margin_mm", 18))
@@ -929,9 +929,9 @@ def generate_cover_letter_pdf_styled(
         print(f"   🎨 Cover letter rendered via WeasyPrint → {os.path.basename(weasy_path)}")
         return weasy_path
 
-    safe_co    = company.replace(" ", "_").replace("/", "-")
-    safe_title = job_title.replace(" ", "_").replace("/", "-")
-    filepath   = os.path.join(output_dir, f"CoverLetter_{safe_co}_{safe_title}.pdf")
+    safe_co    = re.sub(r"[^A-Za-z0-9._-]+", "_", company).strip("._") or "company"
+    safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", job_title).strip("._") or "role"
+    filepath   = os.path.join(output_dir, f"CoverLetter_{safe_co[:40]}_{safe_title[:60]}.pdf")
 
     lm = float(style_profile.get("left_margin_mm", 25))
     rm = float(style_profile.get("right_margin_mm", 25))

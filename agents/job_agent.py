@@ -1,5 +1,6 @@
 # agents/job_agent.py
 
+import hashlib
 import json
 import os
 import re
@@ -1372,6 +1373,19 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
         jd      = job.get("description", "")
         tag     = f"[{title[:20]}@{company[:15]}]"
 
+        # Per-job output subdir (Jun 2026 audit S3): two DISTINCT openings at
+        # the same company with the same title used to collide on
+        # CV_{co}_{title}.pdf — the 2nd job overwrote the 1st's PDFs and the
+        # email attached one file twice. The UI + email read absolute paths
+        # from the job dict, so a per-job dir is transparent to them. Keyed
+        # by the posting URL (stable per job). NOTE: this local `out_dir`
+        # shadows the node-level one for everything inside this closure.
+        _job_uniq = hashlib.sha1(
+            (job.get("url") or f"{company}|{title}").encode("utf-8", "ignore")
+        ).hexdigest()[:8]
+        out_dir = os.path.join(_resolve_output_dir(state), f"job_{_job_uniq}")
+        os.makedirs(out_dir, exist_ok=True)
+
         # May 13 (DOCX path): hoist the DOCX router above the strategist
         # call so the strategist sees the SAME outline the tailor will use.
         # The previous order ran the strategist on the PDF outline before
@@ -1557,9 +1571,12 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
             cv_pdf: Optional[str] = None
             tcv_text: str = state["cv_text"]
             rmode: str = "failed"
-            safe_co    = company.replace(" ", "_").replace("/", "-")
-            safe_title = title.replace(" ", "_").replace("/", "-")
-            replica_path = os.path.join(out_dir, f"CV_{safe_co}_{safe_title}.pdf")
+            # Whitelist sanitise (Jun 2026 audit S3): scraped titles can carry
+            # filesystem-hostile chars (`:?"*<>|`) — fine on Linux/Cloud,
+            # breaks Windows dev runs. Uniqueness comes from the per-job dir.
+            safe_co    = re.sub(r"[^A-Za-z0-9._-]+", "_", company).strip("._") or "company"
+            safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("._") or "role"
+            replica_path = os.path.join(out_dir, f"CV_{safe_co[:40]}_{safe_title[:60]}.pdf")
 
             best_diff:   Optional[Dict[str, Any]] = None
             best_review: Optional[Dict[str, Any]] = None
@@ -1887,14 +1904,19 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                     # without weakening the hard safety checks above
                     # (too_few_rewrites, fab_flag, all_reverted) — those
                     # still force retries when triggered.
+                    # Jun 2026 audit S5: read the source stamped on THIS diff
+                    # (set inside tailor_cv_diff at return time) instead of the
+                    # process-global last_llm_source(), which a concurrent
+                    # session's Groq call can overwrite between the tailor
+                    # returning and this read — flipping the accept band.
                     try:
-                        from agents.llm_client import last_llm_source
-                        _src = (last_llm_source() or "").upper()
-                        # Both direct DeepSeek and NVIDIA-hosted DeepSeek count
-                        # as "DeepSeek source" for the soft-accept threshold.
-                        _deepseek_src = (
-                            "DEEPSEEK" in _src or "NVIDIA NIM" in _src
-                        )
+                        _src = str(
+                            ((diff.get("_debug") or {}).get("llm_source") or "")
+                        ).upper()
+                        if not _src:
+                            from agents.llm_client import last_llm_source
+                            _src = (last_llm_source() or "").upper()
+                        _deepseek_src = "DEEPSEEK" in _src
                     except Exception:
                         _deepseek_src = False
                     # Tightened retry gate (May 5): when none of the hard
@@ -2394,9 +2416,19 @@ def tailor_and_generate_node(state: AgentState) -> AgentState:
                 break
             updated_jobs.append(_process_single_job(j))
     else:
+        # Jun 2026 audit S4: ContextVars do NOT propagate into pool threads —
+        # without copy_context the per-run LLM budget (runtime._CURRENT_BUDGET)
+        # and privacy PII vars silently become no-ops in workers, removing the
+        # cost ceiling exactly when parallelism multiplies spend. One context
+        # copy per job (a single Context object cannot be entered twice).
+        import contextvars as _ctxv
+        _ctxs = [_ctxv.copy_context() for _ in jobs_to_tailor]
         with ThreadPoolExecutor(max_workers=job_concurrency,
                                 thread_name_prefix="tailor-job") as outer_ex:
-            updated_jobs = list(outer_ex.map(_process_single_job, jobs_to_tailor))
+            updated_jobs = list(outer_ex.map(
+                lambda _cj: _cj[0].run(_process_single_job, _cj[1]),
+                zip(_ctxs, jobs_to_tailor),
+            ))
 
     ok_count = sum(
         1 for j in updated_jobs
@@ -2479,6 +2511,9 @@ def send_email_node(state: AgentState) -> AgentState:
                 pdf_paths.append(job["cv_pdf_path"])
             if job.get("cover_letter_path") and os.path.exists(job["cover_letter_path"]):
                 pdf_paths.append(job["cover_letter_path"])
+        # Jun 2026 audit S9: belt-and-braces dedupe — never attach the same
+        # file twice (historic company+title filename collisions).
+        pdf_paths = list(dict.fromkeys(pdf_paths))
 
         job_summary = "\n".join([
             f"• {j.get('title')} at {j.get('company')} "
@@ -2500,6 +2535,15 @@ def send_email_node(state: AgentState) -> AgentState:
             )
         )
 
+        # Jun 2026 audit S9: never claim attachments that don't exist.
+        attach_line = (
+            "Your tailored CVs and cover letters are attached."
+            if pdf_paths else
+            "Document generation did not complete for these matches, so "
+            "nothing is attached — please open the app to review the "
+            "matches and retry."
+        )
+
         email_body = f"""
 Hi {state['candidate_name']},
 
@@ -2510,7 +2554,7 @@ for "{state['job_title']}" in {state['location']}.
 MATCHED JOBS:
 {job_summary}
 
-Your tailored CVs and cover letters are attached.
+{attach_line}
 
 Good luck!
 Job Application Agent
@@ -2654,9 +2698,10 @@ def run_agent(
     # This is conservative to prevent wasting time on runs that will likely fail
     if quota.get("est_runs_left", 0) <= 1:
         raise RuntimeError(
-            "Both Gemini and Groq quotas exhausted. "
-            "Please try again tomorrow after the daily quota reset. "
-            "Your CV and cover letter have not been generated to avoid producing degraded output."
+            "Daily free LLM quota for this deployment is nearly exhausted — "
+            "not enough left to complete a full run. Please try again after "
+            "the daily reset. Your CV was NOT processed, so no degraded "
+            "documents were generated."
         )
 
     initial_state: AgentState = {

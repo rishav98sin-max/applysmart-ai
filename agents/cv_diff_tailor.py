@@ -5281,4 +5281,13 @@ def tailor_cv_diff(
     except Exception as _exc:
         print(f"   ⚠️  cv_diff_tailor: quality metrics failed ({_exc!r})")
 
+    # Jun 2026 audit S5: stamp which provider produced THIS diff so the
+    # caller's soft-accept band doesn't read the process-global
+    # last_llm_source() (which a concurrent session can overwrite).
+    try:
+        from agents.llm_client import last_llm_source as _lls
+        diff.setdefault("_debug", {})["llm_source"] = _lls() or "unknown"
+    except Exception:
+        pass
+
     return diff

@@ -173,7 +173,10 @@ def _sanitise_plan(raw: Dict[str, Any], user_inputs: Dict[str, Any]) -> Dict[str
     max_rounds  = int(qb_raw.get("max_scrape_rounds", default_rounds)) if isinstance(qb_raw, dict) else default_rounds
 
     min_matches = max(1, min(min_matches, 10))
-    min_score   = max(40, min(min_score, 95))
+    # Jun 2026 audit S2: the LLM may RAISE the bar but never LOWER the
+    # user's slider — match_jobs scores against this value, so a lowered
+    # min_score silently ships matches below the threshold the user chose.
+    min_score   = max(40, min(max(min_score, user_thr), 100))
     max_rounds  = max(1, min(max_rounds, len(bundles), 5))
 
     # ── emphasis_skills ──────────────────────────────────

@@ -97,6 +97,51 @@ def cleanup_session(sid: str, root: Optional[str] = None) -> None:
         pass
 
 
+# Jun 2026 audit S6: session dirs (uploaded CV + tailored PDFs per visitor)
+# were only deleted via the explicit reset button, so a long-lived Streamlit
+# Cloud container accumulated disk until everything failed. Swept once per
+# process at app startup.
+_SESSIONS_SWEPT: bool = False
+
+
+def sweep_stale_sessions(
+    max_age_hours: float = 24.0, root: Optional[str] = None,
+) -> int:
+    """
+    Best-effort deletion of session dirs older than `max_age_hours`.
+    Runs ONCE per process (subsequent calls are no-ops); never raises.
+    Returns the number of directories removed.
+
+    24h default: long enough that any genuinely active session keeps its
+    files (a run takes minutes), short enough that a traffic spike can't
+    fill the container disk. A swept-but-still-open tab degrades softly —
+    the next run recreates its dirs via session_dirs/_resolve_output_dir.
+    """
+    global _SESSIONS_SWEPT
+    if _SESSIONS_SWEPT:
+        return 0
+    _SESSIONS_SWEPT = True
+    removed = 0
+    try:
+        base = Path(root or _DEFAULT_ROOT).resolve()
+        if not base.exists():
+            return 0
+        cutoff = time.time() - max_age_hours * 3600.0
+        for d in base.iterdir():
+            try:
+                if d.is_dir() and d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+                    removed += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    if removed:
+        print(f"   🧹 swept {removed} stale session dir(s) "
+              f"(older than {max_age_hours:.0f}h)")
+    return removed
+
+
 # ─────────────────────────────────────────────────────────────
 # Filename sanitisation
 # ─────────────────────────────────────────────────────────────

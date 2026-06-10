@@ -2939,14 +2939,63 @@ def _apply_summary_edit(
     # summary (e.g. "Personal Projects" on tightly-spaced CVs), which
     # _next_y0_below would then skip — and the rect would redact it away.
     summary_bottom = max(ln["bbox"][3] for ln in sum_sec["lines"])
+    # Jun 2026 audit S1: heading bboxes live OUTSIDE section lines (stored
+    # as heading/heading_bbox), so they must be folded in here explicitly —
+    # otherwise a heading flush below the summary (the "Personal Projects"
+    # case) is invisible to this measurement and gets redacted.
+    _page_heading_rects_pre = [
+        fitz.Rect(*s["heading_bbox"]) for s in sections
+        if s.get("heading_bbox") and s.get("page", 0) == page_idx
+    ]
     next_tops = [ln["bbox"][1] for ln in other_lines
-                 if ln["bbox"][1] > summary_bottom + 0.3]
+                 if ln["bbox"][1] > summary_bottom + 0.3] + [
+        hr.y0 for hr in _page_heading_rects_pre
+        if hr.y0 > summary_bottom + 0.3
+    ]
     next_y0 = min(next_tops) if next_tops else (page.rect.height - 36.0)
     # Extend y1 down into the whitespace below the summary (up to 8pt —
     # invisible, gives _insert_fitted room to land the rewrite) but
     # HARD-CAP it 0.5pt short of the next line so adjacent content is
     # never touched by the redaction.
     rect.y1 = min(rect.y1 + 8.0, next_y0 - 0.5)
+    # Top-edge neighbour barrier (Jun 2026 audit S1): mirror of the bullets
+    # path's prev_y1 clamp at line ~3767. _union_rect pads the TOP by 1.5pt
+    # with no clamp — on dense layouts the line ABOVE (the "PROFESSIONAL
+    # SUMMARY" heading or a contact line) has a bbox that can overlap that
+    # padded edge, and apply_redactions() deletes any text whose bbox merely
+    # INTERSECTS the rect (the same pathology that wiped "Finance
+    # Administrator" and "IFDS" in the bullets path before its clamps).
+    # Never let the redact top reach into the previous line.
+    #
+    # CRITICAL: section headings are NOT in `other_lines` — extract_structure
+    # stores them separately as `heading`/`heading_bbox`, so the line-based
+    # neighbour math is blind to them. Fold every heading bbox on this page
+    # into the candidates (verified live: the mnjul corpus CV lost its
+    # "SKILLS" heading precisely because of this blind spot).
+    _page_heading_rects = _page_heading_rects_pre
+    summary_top = min(ln["bbox"][1] for ln in sum_sec["lines"])
+    _prev_bottoms = [
+        ln["bbox"][3] for ln in other_lines
+        if (ln["bbox"][1] + ln["bbox"][3]) / 2.0 < summary_top
+    ] + [
+        hr.y1 for hr in _page_heading_rects
+        if (hr.y0 + hr.y1) / 2.0 < summary_top
+    ]
+    if _prev_bottoms:
+        rect.y0 = max(rect.y0, max(_prev_bottoms) + 0.5)
+    # Side-label guard: some layouts print the section heading BESIDE the
+    # block (same y-band, e.g. right-aligned "SUMMARY") — no y-clamp can
+    # protect it. If any heading bbox still intersects the final redact
+    # rect, skip the in-place edit entirely: an untouched summary beats a
+    # wiped heading.
+    _hit = next((hr for hr in _page_heading_rects if hr.intersects(rect)), None)
+    if _hit is not None:
+        msg = ("summary: a section heading overlaps the redact area "
+               "(side-label layout) — skipping in-place summary edit "
+               "to protect it")
+        print(f"   \U0001f6e1️  pdf_editor: {msg}")
+        report["skipped"].append(msg)
+        return
 
     ref = _first_span_of_lines(sum_sec["lines"])
     if ref is None:
@@ -3636,6 +3685,14 @@ def apply_edits(
                     page_idx = bullets[0]["lines"][0]["page"]
                     page = doc[page_idx]
                     page_lines = _all_lines_on_page(sections, page_idx)
+                    # Jun 2026 audit S1: section headings are stored OUTSIDE
+                    # section lines (heading/heading_bbox), so the neighbour
+                    # clamps below are blind to them — fold their bboxes into
+                    # the prev/next candidates (same fix as summary/skills).
+                    _sec_heading_rects = [
+                        fitz.Rect(*s["heading_bbox"]) for s in sections
+                        if s.get("heading_bbox") and s.get("page", 0) == page_idx
+                    ]
 
                     # PER-BULLET IN-PLACE INSERTION (May 2026 rewrite).
                     # Each rewritten bullet is redacted + re-inserted in
@@ -3739,13 +3796,18 @@ def apply_edits(
                         # extent), so a top-edge filter (y_top > text_y1)
                         # drops it. Its CENTROID is unambiguously below.
                         prev_y1 = max(
-                            (ln["bbox"][3] for ln in other_lines
-                             if (ln["bbox"][1] + ln["bbox"][3]) / 2.0 < text_y0),
-                            default=text_y0 - 6.0,
+                            [ln["bbox"][3] for ln in other_lines
+                             if (ln["bbox"][1] + ln["bbox"][3]) / 2.0 < text_y0]
+                            + [hr.y1 for hr in _sec_heading_rects
+                               if (hr.y0 + hr.y1) / 2.0 < text_y0]
+                            or [text_y0 - 6.0]
                         )
                         _next_below = [
                             ln["bbox"][1] for ln in other_lines
                             if (ln["bbox"][1] + ln["bbox"][3]) / 2.0 > text_y1
+                        ] + [
+                            hr.y0 for hr in _sec_heading_rects
+                            if (hr.y0 + hr.y1) / 2.0 > text_y1
                         ]
                         next_y0 = (
                             min(_next_below) if _next_below
@@ -3978,10 +4040,58 @@ def apply_edits(
                     if not (own_y_min <= ln["bbox"][1] <= own_y_max)
                 ]
                 rect.x1 = max(rect.x1, _measured_right_margin(other_lines, page.rect.width))
-                next_y0 = _next_y0_below(rect, other_lines, page.rect.height)
+                # Jun 2026 audit S1: measure the next line from the TRUE text
+                # bottom (un-padded) — _union_rect's 1.5pt pad can otherwise
+                # reach a flush heading which _next_y0_below would then skip,
+                # and the redaction would wipe it (same intersect-delete
+                # pathology as the bullets-path clamps at ~3767/3782).
+                # Section headings are NOT in `other_lines` (extract_structure
+                # stores them as heading/heading_bbox) — fold them into the
+                # neighbour candidates or the clamps are blind to them
+                # (verified live: mnjul corpus CV lost its "SKILLS" heading).
+                _sk_heading_rects = [
+                    fitz.Rect(*s["heading_bbox"]) for s in sections
+                    if s.get("heading_bbox") and s.get("page", 0) == page_idx
+                ]
+                _sk_bottom = max(ln["bbox"][3] for ln in sk_sec["lines"])
+                _sk_next_tops = [ln["bbox"][1] for ln in other_lines
+                                 if ln["bbox"][1] > _sk_bottom + 0.3] + [
+                    hr.y0 for hr in _sk_heading_rects
+                    if hr.y0 > _sk_bottom + 0.3
+                ]
+                next_y0 = (min(_sk_next_tops) if _sk_next_tops
+                           else (page.rect.height - 36.0))
                 rect.y1 = max(rect.y1, next_y0 - 2.0)
+                # HARD barriers — never let the redact rect touch the line
+                # below or the line above (usually the "SKILLS" heading).
+                rect.y1 = min(rect.y1, next_y0 - 0.5)
+                _sk_top = min(ln["bbox"][1] for ln in sk_sec["lines"])
+                _sk_prev_bottoms = [
+                    ln["bbox"][3] for ln in other_lines
+                    if (ln["bbox"][1] + ln["bbox"][3]) / 2.0 < _sk_top
+                ] + [
+                    hr.y1 for hr in _sk_heading_rects
+                    if (hr.y0 + hr.y1) / 2.0 < _sk_top
+                ]
+                if _sk_prev_bottoms:
+                    rect.y0 = max(rect.y0, max(_sk_prev_bottoms) + 0.5)
+                # Side-label guard: a heading printed BESIDE the skills band
+                # (same y, e.g. right-aligned "SKILLS") can't be protected by
+                # any y-clamp. If a heading bbox still intersects the final
+                # rect, skip the reorder — it's cosmetic; a wiped heading
+                # is not.
+                _sk_hit = next(
+                    (hr for hr in _sk_heading_rects if hr.intersects(rect)),
+                    None,
+                )
                 ref = _first_span_of_lines(sk_sec["lines"])
-                if ref is not None:
+                if _sk_hit is not None:
+                    msg = ("skills: a section heading overlaps the redact "
+                           "area (side-label layout) — skipping reorder to "
+                           "protect it")
+                    print(f"   \U0001f6e1️  pdf_editor: {msg}")
+                    report["skipped"].append(msg)
+                elif ref is not None:
                     reordered = ", ".join(s.strip() for s in skills_order if s.strip())
                     _redact_rect(page, rect)
                     # Run 19 audit fix #34: also check the return value on
