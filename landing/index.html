@@ -8,7 +8,6 @@
   <title>ApplySmart AI — CV tailoring that shows its work</title>
   <meta name="description" content="ApplySmart AI tailors your CV for each job and shows you every edit, with the reasoning. Nothing invented. Nothing hidden. Open source." />
 
-  <!-- Open Graph / LinkedIn / Twitter -->
   <meta property="og:type" content="website" />
   <meta property="og:title" content="ApplySmart AI — CV tailoring that shows its work" />
   <meta property="og:description" content="Tailors your CV for each job and shows every edit, with the reasoning. Nothing invented. Nothing hidden. Open source." />
@@ -24,349 +23,391 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
 
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            canvas: '#020617', card: '#0B1220',
-            accent: '#22C55E', accentHover: '#16A34A', accentRing: '#4ADE80', accentSoft: '#052E16',
-            strong: '#F8FAFC', muted: '#94A3B8', faint: '#64748B',
-            line: '#1E293B', lineStrong: '#334155',
-            greenBg: '#052E16', greenText: '#86EFAC', redBg: '#2A0E0E', redText: '#FCA5A5',
-          },
-          fontFamily: { sans: ['Inter','system-ui','sans-serif'], mono: ['JetBrains Mono','ui-monospace','monospace'] },
+      theme: { extend: {
+        colors: {
+          canvas:'#020617', card:'#0B1220', accent:'#22C55E', accentHover:'#16A34A',
+          accentRing:'#4ADE80', accentSoft:'#052E16', strong:'#F8FAFC', muted:'#94A3B8',
+          faint:'#64748B', line:'#1E293B', lineStrong:'#334155',
+          greenBg:'#052E16', greenText:'#86EFAC', redBg:'#2A0E0E', redText:'#FCA5A5',
         },
-      },
+        fontFamily: { sans:['Inter','system-ui','sans-serif'], mono:['JetBrains Mono','ui-monospace','monospace'] },
+      }},
     };
   </script>
 
   <style>
-    body { background:#020617; color:#F8FAFC; font-family:'Inter',system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
-    ::selection { background:#22C55E; color:#020617; }
-    .hero-glow { background: radial-gradient(60% 50% at 50% 0%, rgba(34,197,94,0.10) 0%, rgba(34,197,94,0) 70%); }
-    .grid-fade {
-      background-image:
-        linear-gradient(to right, rgba(30,41,59,0.45) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(30,41,59,0.45) 1px, transparent 1px);
-      background-size: 56px 56px;
-      -webkit-mask-image: radial-gradient(70% 60% at 50% 25%, #000 0%, transparent 75%);
-      mask-image: radial-gradient(70% 60% at 50% 25%, #000 0%, transparent 75%);
-    }
-    .diff-row, .diff-reason { opacity:0; transform:translateY(6px); }
-    .demo-live .diff-row, .demo-live .diff-reason { animation: revealRow .5s ease forwards; }
-    .demo-live .r1{animation-delay:.2s} .demo-live .r2{animation-delay:.85s} .demo-live .r3{animation-delay:1.5s}
-    .demo-live .r4{animation-delay:2.15s} .demo-live .r5{animation-delay:2.8s}
-    @keyframes revealRow { to { opacity:1; transform:none; } }
-    .reveal { opacity:0; transform:translateY(18px); transition: opacity .6s ease, transform .6s ease; }
-    .reveal.in { opacity:1; transform:none; }
-    @media (min-width:768px){
-      .step-line::before{ content:""; position:absolute; top:28px; left:50%; right:-50%; height:1px; background:linear-gradient(to right,#1E293B,#334155); }
-      .step:last-child .step-line::before{ display:none; }
-    }
+    :root { --mx:50%; --my:0%; }
+    *{ box-sizing:border-box; }
+    body{ background:#020617; color:#F8FAFC; font-family:'Inter',system-ui,sans-serif; -webkit-font-smoothing:antialiased; overflow-x:hidden; }
+    ::selection{ background:#22C55E; color:#020617; }
+
+    /* ── Ambient background: animated gradient mesh + grid + noise ── */
+    .bg-layer{ position:fixed; inset:0; z-index:-2; pointer-events:none; }
+    .mesh{ position:absolute; border-radius:9999px; filter:blur(100px); opacity:.20; mix-blend-mode:screen; }
+    .mesh-1{ width:640px; height:640px; background:#22C55E; top:-220px; left:-80px; animation:float1 24s ease-in-out infinite; }
+    .mesh-2{ width:520px; height:520px; background:#16A34A; top:8%; right:-120px; animation:float2 30s ease-in-out infinite; }
+    .mesh-3{ width:560px; height:560px; background:#0EA5E9; opacity:.10; bottom:-200px; left:20%; animation:float3 34s ease-in-out infinite; }
+    @keyframes float1{ 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(120px,80px) scale(1.15)} }
+    @keyframes float2{ 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-100px,120px) scale(1.1)} }
+    @keyframes float3{ 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(80px,-90px) scale(1.2)} }
+    .grid-layer{ position:fixed; inset:0; z-index:-2; pointer-events:none;
+      background-image: linear-gradient(rgba(148,163,184,.05) 1px,transparent 1px), linear-gradient(90deg,rgba(148,163,184,.05) 1px,transparent 1px);
+      background-size:64px 64px;
+      -webkit-mask-image:radial-gradient(120% 80% at 50% 0%,#000 0%,transparent 70%); mask-image:radial-gradient(120% 80% at 50% 0%,#000 0%,transparent 70%); }
+    .noise{ position:fixed; inset:0; z-index:-1; pointer-events:none; opacity:.035; mix-blend-mode:overlay;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+    /* Cursor spotlight */
+    .spotlight{ position:fixed; inset:0; z-index:-1; pointer-events:none; transition:opacity .3s;
+      background:radial-gradient(420px circle at var(--mx) var(--my), rgba(34,197,94,.10), transparent 60%); }
+
+    /* ── Glass ── */
+    .glass{ background:rgba(255,255,255,.045); backdrop-filter:blur(18px) saturate(160%); -webkit-backdrop-filter:blur(18px) saturate(160%);
+      border:1px solid rgba(255,255,255,.09); box-shadow:0 10px 40px -12px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.06); }
+    .glass-strong{ background:rgba(11,18,32,.55); backdrop-filter:blur(24px) saturate(170%); -webkit-backdrop-filter:blur(24px) saturate(170%);
+      border:1px solid rgba(255,255,255,.10); box-shadow:0 20px 60px -20px rgba(0,0,0,.75), inset 0 1px 0 rgba(255,255,255,.07); }
+    .glass-green{ background:rgba(34,197,94,.06); border:1px solid rgba(34,197,94,.18); box-shadow:0 16px 50px -18px rgba(34,197,94,.22), inset 0 1px 0 rgba(255,255,255,.06); }
+
+    /* Gradient text */
+    .grad{ background:linear-gradient(120deg,#22C55E 0%,#4ADE80 45%,#86EFAC 100%); -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .grad-sheen{ background:linear-gradient(110deg,#F8FAFC 30%,#86EFAC 50%,#F8FAFC 70%); background-size:200% auto; -webkit-background-clip:text; background-clip:text; color:transparent; animation:sheen 6s linear infinite; }
+    @keyframes sheen{ to{ background-position:-200% center; } }
+
+    /* Scroll progress */
+    #progress{ position:fixed; top:0; left:0; height:2px; width:0; z-index:60; background:linear-gradient(90deg,#16A34A,#22C55E,#86EFAC); box-shadow:0 0 12px rgba(34,197,94,.6); }
+
+    /* Navbar */
+    #nav{ transition:background .3s, backdrop-filter .3s, border-color .3s, padding .3s; }
+    #nav.scrolled{ background:rgba(2,6,23,.6); backdrop-filter:blur(16px) saturate(160%); -webkit-backdrop-filter:blur(16px) saturate(160%); border-bottom-color:rgba(255,255,255,.08); }
+    .navlink{ position:relative; }
+    .navlink::after{ content:""; position:absolute; left:0; bottom:-4px; height:1.5px; width:0; background:#22C55E; transition:width .25s ease; }
+    .navlink:hover::after{ width:100%; }
+
+    /* Buttons: shine sweep + arrow */
+    .btn-shine{ position:relative; overflow:hidden; }
+    .btn-shine::before{ content:""; position:absolute; top:0; left:-120%; width:60%; height:100%; transform:skewX(-20deg);
+      background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent); transition:left .6s ease; }
+    .btn-shine:hover::before{ left:140%; }
+    .cta-arrow{ transition:transform .2s ease; }
+    a:hover > .cta-arrow{ transform:translateX(4px); }
+
+    /* Reveal on scroll */
+    .reveal{ opacity:0; transform:translateY(26px); filter:blur(6px); transition:opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1), filter .7s; }
+    .reveal.in{ opacity:1; transform:none; filter:none; }
+    .reveal[data-d="1"]{ transition-delay:.08s } .reveal[data-d="2"]{ transition-delay:.16s }
+    .reveal[data-d="3"]{ transition-delay:.24s } .reveal[data-d="4"]{ transition-delay:.32s }
+
+    /* 3D tilt */
+    .tilt{ transform-style:preserve-3d; transition:transform .15s ease; will-change:transform; }
+    .tilt-glow{ position:relative; }
+    .tilt-glow::after{ content:""; position:absolute; inset:0; border-radius:inherit; opacity:0; transition:opacity .3s;
+      background:radial-gradient(300px circle at var(--gx,50%) var(--gy,50%), rgba(34,197,94,.16), transparent 60%); }
+    .tilt-glow:hover::after{ opacity:1; }
+
+    /* Demo */
+    #demoTile{ animation:floaty 7s ease-in-out infinite; }
+    @keyframes floaty{ 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
+    .diff-row,.diff-reason{ opacity:0; transform:translateY(8px); }
+    .demo-live .diff-row,.demo-live .diff-reason{ animation:revealRow .55s cubic-bezier(.2,.7,.2,1) forwards; }
+    .demo-live .r1{animation-delay:.2s}.demo-live .r2{animation-delay:.85s}.demo-live .r3{animation-delay:1.5s}
+    .demo-live .r4{animation-delay:2.15s}.demo-live .r5{animation-delay:2.8s}
+    @keyframes revealRow{ to{opacity:1; transform:none} }
+    .sweep{ position:relative; overflow:hidden; }
+    .demo-live .sweep::after{ content:""; position:absolute; inset:0; transform:translateX(-100%);
+      background:linear-gradient(90deg,transparent,rgba(134,239,172,.22),transparent); animation:sweep 1.4s ease 2.6s 1; }
+    @keyframes sweep{ to{ transform:translateX(100%); } }
+
+    .step-line::before{ content:""; position:absolute; top:34px; left:60%; right:-40%; height:1px; background:linear-gradient(90deg,rgba(34,197,94,.5),rgba(51,65,85,.1)); }
+    @media (max-width:767px){ .step-line::before{ display:none; } }
+
     details>summary{ list-style:none; cursor:pointer; } details>summary::-webkit-details-marker{ display:none; }
     details[open] .faq-chevron{ transform:rotate(180deg); }
-
-    /* ── Dynamic / fluid layer ──────────────────────────────────────── */
-    /* Gradient-accent words inside headings (green, on-brand). */
-    .grad {
-      background: linear-gradient(120deg, #22C55E 0%, #4ADE80 45%, #86EFAC 100%);
-      -webkit-background-clip: text; background-clip: text; color: transparent;
-    }
-    /* Drifting aurora glow behind the hero. */
-    .aurora { position:absolute; border-radius:9999px; filter:blur(90px); opacity:.16; pointer-events:none; }
-    .aurora-a { width:520px; height:520px; background:#22C55E; top:-160px; left:6%; animation:drift 20s ease-in-out infinite; }
-    .aurora-b { width:420px; height:420px; background:#16A34A; top:40px; right:4%; animation:drift 26s ease-in-out infinite reverse; }
-    @keyframes drift { 0%,100%{ transform:translate(0,0) scale(1); } 50%{ transform:translate(36px,44px) scale(1.08); } }
-    /* Floating demo tile. */
-    #demoTile { animation: floaty 6s ease-in-out infinite; }
-    @keyframes floaty { 0%,100%{ transform:translateY(0); } 50%{ transform:translateY(-9px); } }
-    /* Hover-lift on the how-it-works steps. */
-    .step { transition: transform .25s ease; }
-    .step:hover { transform: translateY(-5px); }
-    /* CTA arrow slides on hover. */
-    .cta-arrow { transition: transform .2s ease; }
-    a:hover > .cta-arrow { transform: translateX(4px); }
-    /* Nav links: animated underline. */
-    .navlink { position:relative; }
-    .navlink::after { content:""; position:absolute; left:0; bottom:-4px; height:1px; width:0; background:#22C55E; transition:width .2s ease; }
-    .navlink:hover::after { width:100%; }
+    details[open]{ background:rgba(34,197,94,.04); }
 
     @media (prefers-reduced-motion: reduce){
-      .diff-row,.diff-reason,.reveal,.aurora,#demoTile{ opacity:1!important; transform:none!important; animation:none!important; }
+      .mesh,.spotlight,#demoTile,.grad-sheen{ animation:none!important; }
+      .reveal,.diff-row,.diff-reason{ opacity:1!important; transform:none!important; filter:none!important; animation:none!important; }
+      html{ scroll-behavior:auto; }
     }
   </style>
 </head>
 
 <body class="font-sans antialiased">
+  <div id="progress"></div>
+  <div class="bg-layer"><div class="mesh mesh-1"></div><div class="mesh mesh-2"></div><div class="mesh mesh-3"></div></div>
+  <div class="grid-layer"></div>
+  <div class="noise"></div>
+  <div class="spotlight" id="spot"></div>
 
   <!-- NAVBAR -->
-  <header class="fixed top-0 inset-x-0 z-50 border-b border-line/70 bg-canvas/80 backdrop-blur-md">
+  <header id="nav" class="fixed top-0 inset-x-0 z-50 border-b border-transparent">
     <nav class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-      <a href="#top" class="flex items-center gap-2.5">
-        <span class="grid place-items-center w-8 h-8 rounded-lg bg-accent text-canvas shadow-lg shadow-accent/20">
+      <a href="#top" class="flex items-center gap-2.5 group">
+        <span class="grid place-items-center w-8 h-8 rounded-lg bg-accent text-canvas shadow-lg shadow-accent/30 transition-transform group-hover:rotate-[8deg]">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3l9 9-9 9-9-9z"/></svg>
         </span>
         <span class="text-[15px] font-semibold tracking-tight text-strong">ApplySmart<span class="text-accent"> AI</span></span>
       </a>
       <div class="hidden md:flex items-center gap-8 text-sm text-muted">
         <a href="#how" class="navlink hover:text-strong transition-colors">How it works</a>
-        <a href="#trust" class="navlink hover:text-strong transition-colors">What we won't do</a>
+        <a href="#bento" class="navlink hover:text-strong transition-colors">Why it's different</a>
         <a href="#faq" class="navlink hover:text-strong transition-colors">FAQ</a>
         <a href="https://github.com/rishav98sin-max/applysmart-ai" target="_blank" rel="noopener" class="inline-flex items-center gap-1.5 hover:text-strong transition-colors" aria-label="GitHub">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.37.5 0 5.78 0 12.29c0 5.2 3.44 9.6 8.21 11.16.6.11.82-.25.82-.57v-2.23c-3.34.7-4.04-1.41-4.04-1.41-.55-1.37-1.34-1.74-1.34-1.74-1.09-.73.08-.72.08-.72 1.2.08 1.84 1.21 1.84 1.21 1.07 1.79 2.81 1.27 3.5.97.11-.76.42-1.27.76-1.56-2.67-.3-5.47-1.31-5.47-5.81 0-1.28.47-2.33 1.24-3.15-.13-.3-.54-1.51.11-3.15 0 0 1.01-.32 3.3 1.2a11.6 11.6 0 0 1 6.01 0c2.29-1.52 3.3-1.2 3.3-1.2.65 1.64.24 2.85.12 3.15.77.82 1.23 1.87 1.23 3.15 0 4.51-2.81 5.5-5.49 5.79.43.36.81 1.08.81 2.18v3.23c0 .32.22.69.83.57A12.02 12.02 0 0 0 24 12.29C24 5.78 18.63.5 12 .5z"/></svg>
         </a>
-        <a data-app-link href="#" target="_blank" rel="noopener" class="inline-flex items-center rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-canvas hover:bg-accentHover transition-colors">Open the app</a>
+        <a data-app-link href="#" target="_blank" rel="noopener" class="btn-shine inline-flex items-center rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-canvas hover:bg-accentHover transition-colors">Open the app</a>
       </div>
       <button id="navToggle" class="md:hidden grid place-items-center w-10 h-10 -mr-2 text-muted hover:text-strong" aria-label="Menu" aria-expanded="false">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round"/></svg>
       </button>
     </nav>
-    <div id="mobileMenu" class="hidden md:hidden border-t border-line bg-canvas px-4 py-4 space-y-1">
-      <a href="#how" class="block rounded-lg px-3 py-2.5 text-muted hover:bg-card hover:text-strong">How it works</a>
-      <a href="#trust" class="block rounded-lg px-3 py-2.5 text-muted hover:bg-card hover:text-strong">What we won't do</a>
-      <a href="#faq" class="block rounded-lg px-3 py-2.5 text-muted hover:bg-card hover:text-strong">FAQ</a>
-      <a href="https://github.com/rishav98sin-max/applysmart-ai" target="_blank" rel="noopener" class="block rounded-lg px-3 py-2.5 text-muted hover:bg-card hover:text-strong">GitHub</a>
+    <div id="mobileMenu" class="hidden md:hidden glass-strong mx-3 rounded-2xl px-4 py-4 space-y-1">
+      <a href="#how" class="block rounded-lg px-3 py-2.5 text-muted hover:text-strong">How it works</a>
+      <a href="#bento" class="block rounded-lg px-3 py-2.5 text-muted hover:text-strong">Why it's different</a>
+      <a href="#faq" class="block rounded-lg px-3 py-2.5 text-muted hover:text-strong">FAQ</a>
+      <a href="https://github.com/rishav98sin-max/applysmart-ai" target="_blank" rel="noopener" class="block rounded-lg px-3 py-2.5 text-muted hover:text-strong">GitHub</a>
       <a data-app-link href="#" target="_blank" rel="noopener" class="block rounded-lg bg-accent px-3 py-2.5 text-center font-semibold text-canvas mt-2">Open the app</a>
     </div>
   </header>
 
   <main id="top">
     <!-- HERO -->
-    <section class="relative overflow-hidden pt-28 sm:pt-36 pb-20">
-      <div class="absolute inset-0 grid-fade pointer-events-none" aria-hidden="true"></div>
-      <div class="absolute inset-0 hero-glow pointer-events-none" aria-hidden="true"></div>
-      <div class="aurora aurora-a" aria-hidden="true"></div>
-      <div class="aurora aurora-b" aria-hidden="true"></div>
+    <section class="relative pt-32 sm:pt-44 pb-24">
       <div class="relative mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 text-center">
-        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-accent mb-5">CV tailoring, shown line by line</p>
-        <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.05] text-strong" style="letter-spacing:-0.03em;">
-          Show your <span class="grad">work.</span><br class="hidden sm:block" /> Not someone else's.
+        <div class="reveal inline-flex items-center gap-2 rounded-full glass px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.14em] text-accent mb-7">
+          <span class="relative flex h-2 w-2"><span class="absolute inline-flex h-full w-full rounded-full bg-accent opacity-75 animate-ping"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-accent"></span></span>
+          CV tailoring, shown line by line
+        </div>
+        <h1 class="reveal text-5xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight leading-[1.02]" style="letter-spacing:-0.035em;">
+          <span class="grad-sheen">Show your work.</span><br /> Not someone else's.
         </h1>
-        <p class="mx-auto mt-6 max-w-xl text-base sm:text-lg leading-relaxed text-muted">
+        <p class="reveal mx-auto mt-7 max-w-xl text-lg leading-relaxed text-muted">
           ApplySmart AI tailors your CV for each job — and shows you every edit, with the reasoning.
           <span class="text-strong font-medium">Nothing invented. Nothing hidden.</span>
         </p>
-        <div class="mt-9 flex flex-col sm:flex-row items-center justify-center gap-3">
-          <a data-app-link href="#" target="_blank" rel="noopener" class="inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl bg-accent px-7 py-3.5 text-base font-semibold text-canvas hover:bg-accentHover transition-colors">
+        <div class="reveal mt-10 flex flex-col sm:flex-row items-center justify-center gap-3">
+          <a data-app-link href="#" target="_blank" rel="noopener" class="btn-shine inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl bg-accent px-8 py-4 text-base font-semibold text-canvas shadow-xl shadow-accent/25 hover:bg-accentHover transition-colors">
             Tailor my CV — free
             <svg class="cta-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </a>
-          <a href="#demo" class="inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl border border-lineStrong px-7 py-3.5 text-base font-medium text-strong hover:border-accent hover:text-accent transition-colors">
+          <a href="#demo" class="glass inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl px-8 py-4 text-base font-medium text-strong hover:text-accent transition-colors">
             See how it works
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </a>
         </div>
-        <ul class="mt-12 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 text-sm text-muted">
-          <li class="inline-flex items-center gap-2"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" aria-hidden="true"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>Open source · Apache-2.0</li>
-          <li class="inline-flex items-center gap-2"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/></svg>4 job boards, live</li>
-          <li class="inline-flex items-center gap-2"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke-linecap="round" stroke-linejoin="round"/></svg>CVs deleted in 24h</li>
-          <li class="inline-flex items-center gap-2"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Every edit explained</li>
+        <ul class="reveal mt-12 flex flex-wrap items-center justify-center gap-2.5">
+          <li class="glass inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm text-muted"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>Open source · Apache-2.0</li>
+          <li class="glass inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm text-muted"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/></svg>4 job boards, live</li>
+          <li class="glass inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm text-muted"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke-linecap="round" stroke-linejoin="round"/></svg>CVs deleted in 24h</li>
+          <li class="glass inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-sm text-muted"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Every edit explained</li>
         </ul>
       </div>
     </section>
 
-    <!-- DEMO TILE -->
-    <section id="demo" class="relative px-4 sm:px-6 lg:px-8 -mt-4 pb-24">
-      <div id="demoTile" class="mx-auto max-w-3xl rounded-2xl border border-line bg-card overflow-hidden shadow-2xl shadow-black/60">
-        <div class="flex items-center gap-2 px-4 py-3 border-b border-line bg-canvas/40">
-          <span class="w-3 h-3 rounded-full bg-redText/60"></span>
-          <span class="w-3 h-3 rounded-full bg-amber-300/60"></span>
-          <span class="w-3 h-3 rounded-full bg-greenText/60"></span>
+    <!-- DEMO TILE (glass + tilt + sweep) -->
+    <section id="demo" class="relative px-4 sm:px-6 lg:px-8 -mt-6 pb-28">
+      <div id="demoTile" class="tilt mx-auto max-w-3xl rounded-3xl glass-strong overflow-hidden">
+        <div class="flex items-center gap-2 px-5 py-3 border-b border-white/5">
+          <span class="w-3 h-3 rounded-full bg-redText/60"></span><span class="w-3 h-3 rounded-full bg-amber-300/60"></span><span class="w-3 h-3 rounded-full bg-greenText/60"></span>
           <span class="ml-3 text-xs text-faint font-mono">tailoring · live diff</span>
         </div>
-        <div class="px-5 py-3.5 border-b border-line bg-canvas/30 text-sm text-muted leading-relaxed">
+        <div class="px-6 py-4 border-b border-white/5 text-sm text-muted leading-relaxed">
           <span class="text-[11px] uppercase tracking-[0.1em] font-semibold text-accent mr-2">Sample job</span>
           <span class="text-strong font-semibold">Senior Product Manager</span> · Stripe · Dublin (Hybrid)<br />
           Owning payments infrastructure for B2B SaaS, partnering with engineering on Stripe Connect adoption.
         </div>
         <div class="font-mono text-[13px] leading-relaxed py-3">
-          <div class="diff-row r1 grid grid-cols-[40px_24px_1fr] px-5 py-1 bg-redBg/60">
-            <span class="text-faint text-right pr-2">3</span><span class="text-center font-bold text-redText">−</span>
-            <span class="text-redText line-through">Led cross-functional team to deliver projects on time</span>
-          </div>
-          <div class="diff-reason r1 px-5 pl-[74px] py-1 text-[12px] italic text-muted border-l-2 border-line ml-[58px]">Replaced — the JD asks for measurable payments experience; your CV proves it on line 12.</div>
-          <div class="diff-row r2 grid grid-cols-[40px_24px_1fr] px-5 py-1 bg-greenBg/60">
-            <span class="text-faint text-right pr-2">3</span><span class="text-center font-bold text-greenText">+</span>
-            <span class="text-greenText">Led 5-engineer team to ship Stripe Connect integration in 9 weeks</span>
-          </div>
-          <div class="diff-row r3 grid grid-cols-[40px_24px_1fr] px-5 py-1 bg-redBg/60">
-            <span class="text-faint text-right pr-2">4</span><span class="text-center font-bold text-redText">×</span>
-            <span class="text-redText line-through">Increased revenue 300% across the platform</span>
-          </div>
-          <div class="diff-reason r4 px-5 pl-[74px] py-1 text-[12px] italic text-muted border-l-2 border-line ml-[58px]">Rejected — this metric isn't in your CV. We don't add claims you can't defend in the interview.</div>
-          <div class="diff-row r5 grid grid-cols-[40px_24px_1fr] px-5 py-1">
-            <span class="text-faint text-right pr-2">5</span><span class="text-center font-bold text-faint">·</span>
-            <span class="text-muted">Kept: Shipped 12 features end-to-end across 2024.</span>
-          </div>
+          <div class="diff-row r1 grid grid-cols-[44px_24px_1fr] px-6 py-1 bg-redBg/50"><span class="text-faint text-right pr-2">3</span><span class="text-center font-bold text-redText">−</span><span class="text-redText line-through">Led cross-functional team to deliver projects on time</span></div>
+          <div class="diff-reason r1 px-6 pl-[80px] py-1 text-[12px] italic text-muted border-l-2 border-accent/30 ml-[62px]">Replaced — the JD asks for measurable payments experience; your CV proves it on line 12.</div>
+          <div class="diff-row r2 sweep grid grid-cols-[44px_24px_1fr] px-6 py-1 bg-greenBg/50"><span class="text-faint text-right pr-2">3</span><span class="text-center font-bold text-greenText">+</span><span class="text-greenText">Led 5-engineer team to ship Stripe Connect integration in 9 weeks</span></div>
+          <div class="diff-row r3 grid grid-cols-[44px_24px_1fr] px-6 py-1 bg-redBg/50"><span class="text-faint text-right pr-2">4</span><span class="text-center font-bold text-redText">×</span><span class="text-redText line-through">Increased revenue 300% across the platform</span></div>
+          <div class="diff-reason r4 px-6 pl-[80px] py-1 text-[12px] italic text-muted border-l-2 border-accent/30 ml-[62px]">Rejected — this metric isn't in your CV. We don't add claims you can't defend in the interview.</div>
+          <div class="diff-row r5 grid grid-cols-[44px_24px_1fr] px-6 py-1"><span class="text-faint text-right pr-2">5</span><span class="text-center font-bold text-faint">·</span><span class="text-muted">Kept: Shipped 12 features end-to-end across 2024.</span></div>
         </div>
       </div>
-      <p class="mx-auto max-w-3xl mt-3 text-center text-xs text-faint">A real example of the diff you see for every tailored CV — additions, rejections, and what was kept, each with a reason.</p>
+      <p class="mx-auto max-w-3xl mt-4 text-center text-xs text-faint">A real example of the diff you see for every tailored CV — additions, rejections, and what was kept, each with a reason.</p>
     </section>
 
-    <!-- HOW IT WORKS -->
-    <section id="how" class="border-t border-line/60 bg-canvas py-20 sm:py-24">
+    <!-- HOW IT WORKS (glass tilt cards) -->
+    <section id="how" class="relative py-24">
       <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
         <div class="text-center reveal">
           <p class="text-xs font-semibold uppercase tracking-[0.12em] text-muted">How it works</p>
-          <h2 class="mt-3 text-3xl sm:text-4xl font-bold tracking-tight text-strong" style="letter-spacing:-0.02em;">From one CV to a <span class="grad">tailored</span> application.</h2>
+          <h2 class="mt-3 text-3xl sm:text-5xl font-bold tracking-tight" style="letter-spacing:-0.025em;">From one CV to a <span class="grad">tailored</span> application.</h2>
         </div>
-        <div class="mt-14 grid grid-cols-1 md:grid-cols-4 gap-10 md:gap-6">
-          <div class="step relative text-center reveal">
-            <div class="step-line relative"><div class="mx-auto grid place-items-center w-14 h-14 rounded-2xl border border-line bg-card text-accent relative z-10"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V4M7 9l5-5 5 5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v2a1 1 0 001 1h14a1 1 0 001-1v-2" stroke-linecap="round"/></svg></div></div>
+        <div class="mt-16 grid grid-cols-1 md:grid-cols-4 gap-5">
+          <div class="step relative reveal" data-d="1"><div class="tilt tilt-glow glass rounded-2xl p-6 h-full">
+            <div class="step-line relative"><div class="grid place-items-center w-12 h-12 rounded-xl glass-green text-accent"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V4M7 9l5-5 5 5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v2a1 1 0 001 1h14a1 1 0 001-1v-2" stroke-linecap="round"/></svg></div></div>
             <h3 class="mt-5 text-base font-semibold text-strong">1 · Upload any CV</h3>
             <p class="mt-2 text-sm text-muted leading-relaxed">PDF or Word. Single-column, multi-column, tables, even designer layouts — all handled.</p>
-          </div>
-          <div class="step relative text-center reveal">
-            <div class="step-line relative"><div class="mx-auto grid place-items-center w-14 h-14 rounded-2xl border border-line bg-card text-accent relative z-10"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/></svg></div></div>
+          </div></div>
+          <div class="step relative reveal" data-d="2"><div class="tilt tilt-glow glass rounded-2xl p-6 h-full">
+            <div class="step-line relative"><div class="grid place-items-center w-12 h-12 rounded-xl glass-green text-accent"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/></svg></div></div>
             <h3 class="mt-5 text-base font-semibold text-strong">2 · We scrape live jobs</h3>
             <p class="mt-2 text-sm text-muted leading-relaxed">LinkedIn, Indeed, Jobs.ie and Builtin — widening automatically if results are thin.</p>
-          </div>
-          <div class="step relative text-center reveal">
-            <div class="step-line relative"><div class="mx-auto grid place-items-center w-14 h-14 rounded-2xl border border-line bg-card text-accent relative z-10"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 014 4 4 4 0 01.9 7.9A4 4 0 0112 22a4 4 0 01-4.9-8.1A4 4 0 018 6a4 4 0 014-4z"/><path d="M12 8v8" stroke-linecap="round"/></svg></div></div>
+          </div></div>
+          <div class="step relative reveal" data-d="3"><div class="tilt tilt-glow glass rounded-2xl p-6 h-full">
+            <div class="step-line relative"><div class="grid place-items-center w-12 h-12 rounded-xl glass-green text-accent"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 014 4 4 4 0 01.9 7.9A4 4 0 0112 22a4 4 0 01-4.9-8.1A4 4 0 018 6a4 4 0 014-4z"/><path d="M12 8v8" stroke-linecap="round"/></svg></div></div>
             <h3 class="mt-5 text-base font-semibold text-strong">3 · Agents tailor it</h3>
             <p class="mt-2 text-sm text-muted leading-relaxed">Per-job edits land where they help — and guards reject any claim that isn't in your CV.</p>
-          </div>
-          <div class="step relative text-center reveal">
-            <div class="step-line relative"><div class="mx-auto grid place-items-center w-14 h-14 rounded-2xl border border-line bg-card text-accent relative z-10"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v12M7 11l5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 20h16" stroke-linecap="round"/></svg></div></div>
+          </div></div>
+          <div class="step relative reveal" data-d="4"><div class="tilt tilt-glow glass rounded-2xl p-6 h-full">
+            <div class="step-line relative"><div class="grid place-items-center w-12 h-12 rounded-xl glass-green text-accent"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v12M7 11l5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 20h16" stroke-linecap="round"/></svg></div></div>
             <h3 class="mt-5 text-base font-semibold text-strong">4 · Download, ATS-clean</h3>
             <p class="mt-2 text-sm text-muted leading-relaxed">Export to PDF or DOCX — original layout preserved, or rebuilt ATS-safe when needed.</p>
-          </div>
+          </div></div>
         </div>
       </div>
     </section>
 
-    <!-- TRUST -->
-    <section id="trust" class="border-t border-line/60 py-20 sm:py-24">
-      <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
+    <!-- BENTO: why it's different -->
+    <section id="bento" class="relative py-24">
+      <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
         <div class="text-center reveal">
           <p class="text-xs font-semibold uppercase tracking-[0.12em] text-muted">What we won't do</p>
-          <h2 class="mt-3 text-3xl sm:text-4xl font-bold tracking-tight text-strong" style="letter-spacing:-0.02em;">Things every other AI CV tool gets <span class="grad">wrong.</span></h2>
+          <h2 class="mt-3 text-3xl sm:text-5xl font-bold tracking-tight" style="letter-spacing:-0.025em;">Built <span class="grad">different</span> on purpose.</h2>
         </div>
-        <div class="mt-12 rounded-2xl border border-line bg-card/40 divide-y divide-line reveal">
-          <div class="flex items-center justify-between gap-4 px-5 sm:px-7 py-4"><span class="text-strong">Inflated stats — "10,000 CVs in seconds"</span><svg class="shrink-0 text-redText" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
-          <div class="flex items-center justify-between gap-4 px-5 sm:px-7 py-4"><span class="text-strong">Logos of companies that never agreed to be there</span><svg class="shrink-0 text-redText" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
-          <div class="flex items-center justify-between gap-4 px-5 sm:px-7 py-4"><span class="text-strong">Hidden AI reasoning — you see output, not the why</span><svg class="shrink-0 text-redText" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
-          <div class="flex items-center justify-between gap-4 px-5 sm:px-7 py-4"><span class="text-strong">Your CV silently used to train a model</span><svg class="shrink-0 text-redText" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
-          <div class="flex items-center justify-between gap-4 px-5 sm:px-7 py-4"><span class="text-strong">The actual edits, line by line, with reasoning</span><svg class="shrink-0 text-greenText" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-          <div class="flex items-center justify-between gap-4 px-5 sm:px-7 py-4"><span class="text-strong">Rejected fabrications surfaced, not hidden</span><svg class="shrink-0 text-greenText" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-          <div class="flex items-center justify-between gap-4 px-5 sm:px-7 py-4"><span class="text-strong">Your CV stays in your session — never training data</span><svg class="shrink-0 text-greenText" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-          <div class="flex items-center justify-between gap-4 px-5 sm:px-7 py-4"><span class="text-strong">Open source — audit it yourself</span><svg class="shrink-0 text-greenText" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div class="mt-16 grid grid-cols-1 md:grid-cols-3 gap-5 auto-rows-[1fr]">
+          <!-- big cell -->
+          <div class="reveal md:col-span-2 md:row-span-2"><div class="tilt tilt-glow glass-strong rounded-3xl p-8 h-full flex flex-col justify-between">
+            <div>
+              <div class="grid place-items-center w-12 h-12 rounded-xl glass-green text-accent mb-5"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <h3 class="text-2xl font-bold tracking-tight text-strong">Every edit, line by line — with the reasoning.</h3>
+              <p class="mt-3 text-muted leading-relaxed max-w-lg">No black box. You see exactly what was added, what was kept, and what was <span class="text-redText font-medium">rejected</span> — and why. Other tools hand you an output and hope you trust it.</p>
+            </div>
+            <div class="mt-6 flex flex-wrap gap-2">
+              <span class="glass rounded-full px-3 py-1 text-xs text-muted">No inflated stats</span>
+              <span class="glass rounded-full px-3 py-1 text-xs text-muted">No fake logos</span>
+              <span class="glass rounded-full px-3 py-1 text-xs text-muted">No hidden reasoning</span>
+            </div>
+          </div></div>
+          <!-- small cells -->
+          <div class="reveal" data-d="1"><div class="tilt tilt-glow glass rounded-3xl p-6 h-full">
+            <div class="grid place-items-center w-11 h-11 rounded-xl glass-green text-accent mb-4"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <h3 class="font-semibold text-strong">Open source</h3>
+            <p class="mt-1.5 text-sm text-muted leading-relaxed">Audit the fabrication guards yourself. Apache-2.0.</p>
+          </div></div>
+          <div class="reveal" data-d="2"><div class="tilt tilt-glow glass rounded-3xl p-6 h-full">
+            <div class="grid place-items-center w-11 h-11 rounded-xl glass-green text-accent mb-4"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <h3 class="font-semibold text-strong">Deleted in 24h</h3>
+            <p class="mt-1.5 text-sm text-muted leading-relaxed">Your CV stays in your session — never training data.</p>
+          </div></div>
+          <div class="reveal md:col-span-3" data-d="1"><div class="tilt tilt-glow glass rounded-3xl p-6 h-full flex flex-col sm:flex-row sm:items-center gap-5">
+            <div class="grid place-items-center w-11 h-11 rounded-xl glass-green text-accent shrink-0"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 014 4 4 4 0 01.9 7.9A4 4 0 0112 22a4 4 0 01-4.9-8.1A4 4 0 018 6a4 4 0 014-4z"/></svg></div>
+            <div><h3 class="font-semibold text-strong">Fabrication guards that actually fire.</h3>
+            <p class="mt-1 text-sm text-muted leading-relaxed">If the model invents a skill or metric not in your CV, the reviewer refuses it — and surfaces the rejection. We didn't build a competitor to those products. We built the one we'd trust ourselves.</p></div>
+          </div></div>
         </div>
-        <p class="mt-8 text-center text-sm italic text-muted reveal">We didn't build a competitor to those products. We built the one we'd trust ourselves.</p>
       </div>
     </section>
 
     <!-- FAQ -->
-    <section id="faq" class="border-t border-line/60 py-20 sm:py-24">
+    <section id="faq" class="relative py-24">
       <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
         <div class="text-center reveal">
           <p class="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Frequently asked</p>
-          <h2 class="mt-3 text-3xl sm:text-4xl font-bold tracking-tight text-strong" style="letter-spacing:-0.02em;">A few questions, answered <span class="grad">honestly.</span></h2>
+          <h2 class="mt-3 text-3xl sm:text-5xl font-bold tracking-tight" style="letter-spacing:-0.025em;">Answered <span class="grad">honestly.</span></h2>
         </div>
-        <div class="mt-12 space-y-3 reveal">
-          <details class="group rounded-xl border border-line bg-card/40 px-5 py-4"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Does my CV get used to train your AI?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">No. Your CV stays in your session folder; we delete it within 24 hours. It is not used to fine-tune any model.</p></details>
-          <details class="group rounded-xl border border-line bg-card/40 px-5 py-4"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Which file types work?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">PDF and Word (.docx). Single-column, multi-column, tables, and designer layouts are all handled — designer CVs are rebuilt into an ATS-clean version with your content intact.</p></details>
-          <details class="group rounded-xl border border-line bg-card/40 px-5 py-4"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Why do you reject some edits?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">If the model tries to add a skill or metric that isn't in your CV, our reviewer refuses it. You'll see the rejection with the reasoning.</p></details>
-          <details class="group rounded-xl border border-line bg-card/40 px-5 py-4"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Which job boards do you scrape?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">LinkedIn, Indeed, Jobs.ie, and Builtin. If your first board returns thin results, we automatically widen across the others.</p></details>
-          <details class="group rounded-xl border border-line bg-card/40 px-5 py-4"><summary class="flex items-center justify-between gap-4 text-strong font-medium">What happens to my data?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">Stored in a session folder for up to 24 hours, then deleted. Anonymous funnel events go to our own analytics; no PII. Full details in the repo's PRIVACY.md.</p></details>
-          <details class="group rounded-xl border border-line bg-card/40 px-5 py-4"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Is the code open source?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">Yes — <a href="https://github.com/rishav98sin-max/applysmart-ai" target="_blank" rel="noopener" class="text-accent hover:underline">github.com/rishav98sin-max/applysmart-ai</a>. Audit the fabrication guards yourself.</p></details>
+        <div class="mt-14 space-y-3 reveal">
+          <details class="glass rounded-2xl px-6 py-5"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Does my CV get used to train your AI?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">No. Your CV stays in your session folder; we delete it within 24 hours. It is not used to fine-tune any model.</p></details>
+          <details class="glass rounded-2xl px-6 py-5"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Which file types work?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">PDF and Word (.docx). Single-column, multi-column, tables, and designer layouts are all handled — designer CVs are rebuilt into an ATS-clean version with your content intact.</p></details>
+          <details class="glass rounded-2xl px-6 py-5"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Why do you reject some edits?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">If the model tries to add a skill or metric that isn't in your CV, our reviewer refuses it. You'll see the rejection with the reasoning.</p></details>
+          <details class="glass rounded-2xl px-6 py-5"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Which job boards do you scrape?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">LinkedIn, Indeed, Jobs.ie, and Builtin. If your first board returns thin results, we automatically widen across the others.</p></details>
+          <details class="glass rounded-2xl px-6 py-5"><summary class="flex items-center justify-between gap-4 text-strong font-medium">What happens to my data?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">Stored in a session folder for up to 24 hours, then deleted. Anonymous funnel events go to our own analytics; no PII. Full details in the repo's PRIVACY.md.</p></details>
+          <details class="glass rounded-2xl px-6 py-5"><summary class="flex items-center justify-between gap-4 text-strong font-medium">Is the code open source?<svg class="faq-chevron shrink-0 text-muted transition-transform" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary><p class="mt-3 text-sm text-muted leading-relaxed">Yes — <a href="https://github.com/rishav98sin-max/applysmart-ai" target="_blank" rel="noopener" class="text-accent hover:underline">github.com/rishav98sin-max/applysmart-ai</a>. Audit the fabrication guards yourself.</p></details>
         </div>
       </div>
     </section>
 
     <!-- FINAL CTA -->
-    <section class="border-t border-line/60">
-      <div class="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 py-20 sm:py-24 text-center">
-        <h2 class="text-3xl sm:text-4xl font-bold tracking-tight text-strong" style="letter-spacing:-0.02em;">Tailor your next application — and see <span class="grad">exactly what changed.</span></h2>
-        <p class="mt-4 text-muted">Free during beta. Your CV is not training data.</p>
-        <div class="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
-          <a data-app-link href="#" target="_blank" rel="noopener" class="inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl bg-accent px-7 py-3.5 text-base font-semibold text-canvas hover:bg-accentHover transition-colors">
-            Open the app
-            <svg class="cta-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </a>
-          <a href="https://github.com/rishav98sin-max/applysmart-ai" target="_blank" rel="noopener" class="inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl border border-lineStrong px-7 py-3.5 text-base font-medium text-strong hover:border-accent hover:text-accent transition-colors">Open source — read the code</a>
+    <section class="relative py-24">
+      <div class="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
+        <div class="reveal glass-green rounded-[2rem] px-6 sm:px-12 py-16 text-center relative overflow-hidden">
+          <h2 class="text-3xl sm:text-5xl font-bold tracking-tight" style="letter-spacing:-0.025em;">Tailor your next application — and see <span class="grad">exactly what changed.</span></h2>
+          <p class="mt-4 text-muted">Free during beta. Your CV is not training data.</p>
+          <div class="mt-9 flex flex-col sm:flex-row items-center justify-center gap-3">
+            <a data-app-link href="#" target="_blank" rel="noopener" class="btn-shine inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl bg-accent px-8 py-4 text-base font-semibold text-canvas shadow-xl shadow-accent/25 hover:bg-accentHover transition-colors">Open the app<svg class="cta-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+            <a href="https://github.com/rishav98sin-max/applysmart-ai" target="_blank" rel="noopener" class="glass inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl px-8 py-4 text-base font-medium text-strong hover:text-accent transition-colors">Read the code</a>
+          </div>
         </div>
       </div>
     </section>
   </main>
 
   <!-- FOOTER -->
-  <footer class="border-t border-line bg-card/30">
-    <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-12">
+  <footer class="relative border-t border-white/5">
+    <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-14">
       <div class="grid grid-cols-2 md:grid-cols-4 gap-8">
         <div class="col-span-2 md:col-span-1">
-          <div class="flex items-center gap-2.5">
-            <span class="grid place-items-center w-7 h-7 rounded-lg bg-accent text-canvas"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3l9 9-9 9-9-9z"/></svg></span>
-            <span class="text-sm font-semibold text-strong">ApplySmart<span class="text-accent"> AI</span></span>
-          </div>
+          <div class="flex items-center gap-2.5"><span class="grid place-items-center w-7 h-7 rounded-lg bg-accent text-canvas"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l9 9-9 9-9-9z"/></svg></span><span class="text-sm font-semibold text-strong">ApplySmart<span class="text-accent"> AI</span></span></div>
           <p class="mt-3 text-sm text-muted leading-relaxed max-w-xs">CV tailoring that shows its work. Built in the open.</p>
         </div>
-        <div>
-          <h3 class="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Product</h3>
-          <ul class="mt-3 space-y-2 text-sm">
-            <li><a data-app-link href="#" target="_blank" rel="noopener" class="text-muted hover:text-strong transition-colors">Open the app</a></li>
-            <li><a href="#how" class="text-muted hover:text-strong transition-colors">How it works</a></li>
-            <li><a href="https://github.com/rishav98sin-max/applysmart-ai" target="_blank" rel="noopener" class="text-muted hover:text-strong transition-colors">GitHub</a></li>
-          </ul>
-        </div>
-        <div>
-          <h3 class="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Trust</h3>
-          <ul class="mt-3 space-y-2 text-sm">
-            <li><a href="https://github.com/rishav98sin-max/applysmart-ai/blob/main/docs/PRIVACY.md" target="_blank" rel="noopener" class="text-muted hover:text-strong transition-colors">Privacy</a></li>
-            <li><a href="#trust" class="text-muted hover:text-strong transition-colors">What we won't do</a></li>
-            <li><a href="#faq" class="text-muted hover:text-strong transition-colors">FAQ</a></li>
-          </ul>
-        </div>
-        <div>
-          <h3 class="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Contact</h3>
-          <ul class="mt-3 space-y-2 text-sm"><li><a href="mailto:rishav98sin@gmail.com" class="text-muted hover:text-strong transition-colors">Email us</a></li></ul>
-        </div>
+        <div><h3 class="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Product</h3><ul class="mt-3 space-y-2 text-sm"><li><a data-app-link href="#" target="_blank" rel="noopener" class="text-muted hover:text-strong transition-colors">Open the app</a></li><li><a href="#how" class="text-muted hover:text-strong transition-colors">How it works</a></li><li><a href="https://github.com/rishav98sin-max/applysmart-ai" target="_blank" rel="noopener" class="text-muted hover:text-strong transition-colors">GitHub</a></li></ul></div>
+        <div><h3 class="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Trust</h3><ul class="mt-3 space-y-2 text-sm"><li><a href="https://github.com/rishav98sin-max/applysmart-ai/blob/main/docs/PRIVACY.md" target="_blank" rel="noopener" class="text-muted hover:text-strong transition-colors">Privacy</a></li><li><a href="#bento" class="text-muted hover:text-strong transition-colors">Why it's different</a></li><li><a href="#faq" class="text-muted hover:text-strong transition-colors">FAQ</a></li></ul></div>
+        <div><h3 class="text-xs font-semibold uppercase tracking-[0.1em] text-faint">Contact</h3><ul class="mt-3 space-y-2 text-sm"><li><a href="mailto:rishav98sin@gmail.com" class="text-muted hover:text-strong transition-colors">Email us</a></li></ul></div>
       </div>
-      <div class="mt-10 pt-6 border-t border-line flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-faint">
-        <span>© 2026 ApplySmart AI · Apache-2.0</span>
-        <span>Built in the open · Free during beta</span>
+      <div class="mt-10 pt-6 border-t border-white/5 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-faint">
+        <span>© 2026 ApplySmart AI · Apache-2.0</span><span>Built in the open · Free during beta</span>
       </div>
     </div>
   </footer>
 
   <script>
     const APP_URL = "https://applysmart-ai.streamlit.app/";
-    // The app opens in a new tab. (When embedded inside Streamlit, APP_URL is
-    // rewritten to "?app=1"; the host iframe's sandbox blocks top-frame
-    // navigation but allows popups, so a new tab is the reliable path.)
-    document.querySelectorAll('[data-app-link]').forEach(a => {
-      a.href = APP_URL;
-      a.target = '_blank';
-      a.rel = 'noopener';
-    });
-    // Grow the Streamlit component iframe to fit the full landing height so
-    // there is no scroll-within-scroll.
+    document.querySelectorAll('[data-app-link]').forEach(a => { a.href = APP_URL; a.target = '_blank'; a.rel = 'noopener'; });
     if (window.frameElement) {
-      const _fit = () => { try { window.frameElement.style.height = document.documentElement.scrollHeight + 'px'; } catch (e) {} };
-      _fit();
-      window.addEventListener('load', _fit);
-      window.addEventListener('resize', _fit);
-      if (window.ResizeObserver) new ResizeObserver(_fit).observe(document.body);
+      const fit = () => { try { window.frameElement.style.height = document.documentElement.scrollHeight + 'px'; } catch(e){} };
+      fit(); window.addEventListener('load', fit); window.addEventListener('resize', fit);
+      if (window.ResizeObserver) new ResizeObserver(fit).observe(document.body);
     }
 
-    const toggle = document.getElementById('navToggle');
-    const menu = document.getElementById('mobileMenu');
-    toggle.addEventListener('click', () => {
-      const open = !menu.classList.contains('hidden');
-      menu.classList.toggle('hidden');
-      toggle.setAttribute('aria-expanded', String(!open));
-    });
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // Mobile nav
+    const toggle = document.getElementById('navToggle'), menu = document.getElementById('mobileMenu');
+    toggle.addEventListener('click', () => { const open = !menu.classList.contains('hidden'); menu.classList.toggle('hidden'); toggle.setAttribute('aria-expanded', String(!open)); });
     menu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => menu.classList.add('hidden')));
 
-    const tile = document.getElementById('demoTile');
-    new IntersectionObserver((es, o) => es.forEach(e => { if (e.isIntersecting) { tile.classList.add('demo-live'); o.unobserve(tile); } }), { threshold: 0.3 }).observe(tile);
+    // Scroll progress + nav state
+    const nav = document.getElementById('nav'), prog = document.getElementById('progress');
+    const onScroll = () => {
+      const h = document.documentElement.scrollHeight - window.innerHeight;
+      prog.style.width = (h > 0 ? (window.scrollY / h) * 100 : 0) + '%';
+      nav.classList.toggle('scrolled', window.scrollY > 24);
+    };
+    window.addEventListener('scroll', onScroll, { passive:true }); onScroll();
 
-    const ro = new IntersectionObserver((es) => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); ro.unobserve(e.target); } }), { threshold: 0.15 });
+    // Cursor spotlight
+    if (!reduce) {
+      const root = document.documentElement;
+      window.addEventListener('pointermove', e => { root.style.setProperty('--mx', e.clientX + 'px'); root.style.setProperty('--my', e.clientY + 'px'); }, { passive:true });
+    }
+
+    // Scroll reveal
+    const ro = new IntersectionObserver((es) => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); ro.unobserve(e.target); } }), { threshold:0.12 });
     document.querySelectorAll('.reveal').forEach(el => ro.observe(el));
+
+    // Demo reveal
+    const tile = document.getElementById('demoTile');
+    new IntersectionObserver((es,o)=>es.forEach(e=>{ if(e.isIntersecting){ tile.classList.add('demo-live'); o.unobserve(tile); } }),{threshold:0.3}).observe(tile);
+
+    // 3D tilt + glow follow
+    if (!reduce && window.matchMedia('(pointer:fine)').matches) {
+      document.querySelectorAll('.tilt').forEach(el => {
+        el.addEventListener('pointermove', e => {
+          const r = el.getBoundingClientRect();
+          const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+          const rx = (py - .5) * -8, ry = (px - .5) * 8;
+          el.style.transform = `perspective(900px) rotateX(${rx}deg) rotateY(${ry}deg)`;
+          el.style.setProperty('--gx', px*100 + '%'); el.style.setProperty('--gy', py*100 + '%');
+        });
+        el.addEventListener('pointerleave', () => { el.style.transform = ''; });
+      });
+    }
   </script>
 </body>
 </html>
