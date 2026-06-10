@@ -1044,7 +1044,7 @@ def _render_hero_top() -> None:
 
         <div class="welcome">
           <div class="hero-eyebrow">Tailoring your CV</div>
-          <h2>Show your work. Not someone else's.</h2>
+          <h2>Show your <span class="grad">work.</span> Not someone else's.</h2>
           <p>ApplySmart AI tailors your CV for each job — and shows you every
              edit, with the reasoning. <b>Nothing invented. Nothing hidden.</b></p>
           <div class="hero-sub-cta">
@@ -1248,6 +1248,75 @@ st.markdown(
     "[data-testid='collapsedControl']{display:none!important;}"
     ".block-container{max-width:1080px!important;}"
     "</style>",
+    unsafe_allow_html=True,
+)
+
+# ── Glass + ambient styling for the tool view (matches the landing) ──────
+# CSS-only (Streamlit strips <script>): animated gradient-mesh background,
+# frosted-glass surfaces/inputs, button glow, gradient accents. Reduced-
+# motion safe.
+st.markdown(
+    """
+    <style>
+      .stApp{
+        background:
+          radial-gradient(720px circle at 10% -6%, rgba(34,197,94,.10), transparent 55%),
+          radial-gradient(620px circle at 90% 3%, rgba(22,163,74,.08), transparent 55%),
+          var(--bg-page) !important;
+      }
+      [data-testid="stAppViewContainer"]::before{
+        content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+        background-image:
+          linear-gradient(rgba(148,163,184,.04) 1px,transparent 1px),
+          linear-gradient(90deg,rgba(148,163,184,.04) 1px,transparent 1px);
+        background-size:64px 64px;
+        -webkit-mask-image:radial-gradient(120% 70% at 50% 0%,#000,transparent 70%);
+        mask-image:radial-gradient(120% 70% at 50% 0%,#000,transparent 70%);
+      }
+      .app-bg{ position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden; }
+      .app-mesh{ position:absolute; border-radius:9999px; filter:blur(110px); opacity:.15; }
+      .app-mesh.m1{ width:600px;height:600px; background:#22C55E; top:-220px; left:-100px; animation:appfloat1 26s ease-in-out infinite; }
+      .app-mesh.m2{ width:480px;height:480px; background:#16A34A; top:6%; right:-140px; animation:appfloat2 32s ease-in-out infinite; }
+      @keyframes appfloat1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(100px,70px) scale(1.12)}}
+      @keyframes appfloat2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-90px,100px) scale(1.1)}}
+      /* keep real content above the ambient layers */
+      .block-container{ position:relative; z-index:1; }
+
+      .grad{ background:linear-gradient(120deg,#22C55E,#4ADE80 45%,#86EFAC);
+             -webkit-background-clip:text; background-clip:text; color:transparent; }
+
+      /* Frosted-glass surfaces */
+      .job-card, .kpi, .feature, .plan-bundle, .trust-block, .demo-tile,
+      .stTabs [data-baseweb="tab-panel"]{
+        background:rgba(255,255,255,.045) !important;
+        backdrop-filter:blur(16px) saturate(150%); -webkit-backdrop-filter:blur(16px) saturate(150%);
+        border:1px solid rgba(255,255,255,.09) !important;
+        box-shadow:0 10px 40px -14px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.05) !important;
+      }
+      .job-card, .feature{ transition:transform .2s ease, border-color .2s ease; }
+      .job-card:hover, .feature:hover{ border-color:rgba(34,197,94,.35) !important; transform:translateY(-3px); }
+
+      /* Frosted inputs */
+      .stTextInput input, .stTextArea textarea, .stSelectbox [data-baseweb="select"]>div,
+      [data-testid="stFileUploaderDropzone"]{
+        background:rgba(255,255,255,.04) !important;
+        backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+        border:1px solid rgba(255,255,255,.10) !important;
+      }
+      .stTextInput input:focus, .stTextArea textarea:focus{
+        border-color:var(--accent) !important; box-shadow:0 0 0 3px rgba(34,197,94,.15) !important;
+      }
+
+      /* Primary-button glow */
+      .stButton>button[data-testid="stBaseButton-primary"], .stButton>button[kind="primary"],
+      .stForm button[data-testid="stBaseButton-primaryFormSubmit"]{
+        box-shadow:0 12px 32px -8px rgba(34,197,94,.5) !important;
+      }
+
+      @media (prefers-reduced-motion: reduce){ .app-mesh{ animation:none !important; } }
+    </style>
+    <div class="app-bg"><div class="app-mesh m1"></div><div class="app-mesh m2"></div></div>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -1504,9 +1573,16 @@ if not run_button:
         # Fall through to post-run rendering below; the validation + agent
         # block is gated on `run_button` so it won't re-fire.
     else:
-        # One page: marketing sections render below the inline form.
-        _render_welcome_body()
-        _render_faq()
+        # Tool view: the marketing now lives on the landing page (served at
+        # the bare URL), so here we show only a slim in-context prompt — no
+        # duplicate hero/demo/trust wall.
+        st.markdown(
+            '<div style="max-width:640px;margin:1.5rem auto 0;text-align:center;'
+            'color:var(--text-muted);font-size:0.95rem;">'
+            'Upload your CV and target role above, then run a tailoring pass — '
+            'every edit is shown to you, line by line.</div>',
+            unsafe_allow_html=True,
+        )
 
         # If the user has prior history, preview it (even before a new run).
         if user_email and user_email.strip():
