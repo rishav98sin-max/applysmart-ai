@@ -73,11 +73,12 @@ st.set_page_config(
     page_title = "ApplySmart AI — Job Application Agent",
     page_icon  = "◈",
     layout     = "wide",
-    initial_sidebar_state = "expanded",
+    initial_sidebar_state = "collapsed",
 )
 
 _CUSTOM_CSS = """
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
     :root {
         /* Design system v2 (Jun 2026) — Linear/Vercel/Stripe class.
            Locked stack: Minimalism & Swiss Style (#1) + Bento (#21) +
@@ -136,7 +137,7 @@ _CUSTOM_CSS = """
 
     /* Typography */
     html, body, [class*="css"] {
-        font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
                      Roboto, Helvetica, Arial, sans-serif;
         color: var(--text-strong);
     }
@@ -161,6 +162,74 @@ _CUSTOM_CSS = """
     }
     .stTextInput input::placeholder, .stTextArea textarea::placeholder {
         color: #94A3B8 !important;
+    }
+
+    /* ──────────────────────────────────────────────────────────────
+       BUTTONS — global theme (Jun 2026 Phase-1 fix).
+       Bug: the global `div/span/p → --text-strong` rule recolours every
+       button label, but only the sidebar + uploader button BACKGROUNDS
+       were themed — so main-area buttons (consent, stop, retry, send,
+       download) kept Streamlit's default white bg → white-on-white text
+       in dark mode (readable only on hover). These rules theme ALL
+       buttons via CSS variables, so they auto-adapt to light + dark.
+       Sidebar rules below are more specific and still win there.
+       ────────────────────────────────────────────────────────────── */
+    .stButton > button, .stDownloadButton > button,
+    .stFormSubmitButton > button {
+        background: var(--bg-card) !important;
+        color: var(--text-strong) !important;
+        border: 1px solid var(--border-strong) !important;
+        border-radius: 10px !important;
+        font-weight: 500;
+        transition: background 200ms ease, border-color 200ms ease,
+                    color 200ms ease;
+    }
+    .stButton > button *, .stDownloadButton > button *,
+    .stFormSubmitButton > button * { color: var(--text-strong) !important; }
+    .stButton > button:hover, .stDownloadButton > button:hover,
+    .stFormSubmitButton > button:hover {
+        border-color: var(--accent) !important;
+        color: var(--accent) !important;
+        background: var(--bg-soft) !important;
+    }
+    .stButton > button:hover *, .stDownloadButton > button:hover *,
+    .stFormSubmitButton > button:hover * { color: var(--accent) !important; }
+    /* Primary buttons (type="primary") — solid accent, white label, in
+       both themes. testid covers both st.button and form-submit primaries. */
+    [data-testid="stBaseButton-primary"],
+    [data-testid="stBaseButton-primaryFormSubmit"] {
+        background: var(--accent) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 10px !important;
+        font-weight: 600;
+    }
+    [data-testid="stBaseButton-primary"] *,
+    [data-testid="stBaseButton-primaryFormSubmit"] * { color: #FFFFFF !important; }
+    [data-testid="stBaseButton-primary"]:hover,
+    [data-testid="stBaseButton-primaryFormSubmit"]:hover {
+        background: var(--accent-hover) !important;
+        border: none !important;
+    }
+    [data-testid="stBaseButton-primary"]:hover *,
+    [data-testid="stBaseButton-primaryFormSubmit"]:hover * { color: #FFFFFF !important; }
+    /* Specificity reinforcement: the base `.stButton > button` rule above
+       (0,1,1 + !important) was out-weighing the primary testid rule
+       (0,1,0 + !important), so type="primary" buttons rendered as the dark
+       secondary style. These higher-specificity selectors restore the solid
+       green primary across the app (incl. the landing CTA). */
+    .stButton > button[data-testid="stBaseButton-primary"],
+    .stButton > button[kind="primary"],
+    .stForm button[data-testid="stBaseButton-primaryFormSubmit"] {
+        background: var(--accent) !important; color: #FFFFFF !important;
+        border: none !important;
+    }
+    .stButton > button[data-testid="stBaseButton-primary"] *,
+    .stButton > button[kind="primary"] * { color: #FFFFFF !important; }
+    .stButton > button[data-testid="stBaseButton-primary"]:hover,
+    .stButton > button[kind="primary"]:hover,
+    .stForm button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
+        background: var(--accent-hover) !important; border: none !important;
     }
 
     /* ──────────────────────────────────────────────────────────────
@@ -511,10 +580,10 @@ _DARK_CSS = """
         background: var(--bg-card) !important;
         border-color: var(--border) !important;
     }
-    /* Slider track + thumb glow warmer against dark. */
-    .stSlider [data-baseweb="slider"] > div > div {
-        background: var(--accent) !important;
-    }
+    /* Slider styling now comes from .streamlit/config.toml (base=dark,
+       primaryColor=#22C55E). The old hand-painted track rule here coloured
+       the ENTIRE track green (filled + unfilled) and put the min/max
+       labels on a green chip — WCAG 2.18:1. Removed Jun 2026. */
     /* Brand mark retains gradient but glow tweaked for dark (green). */
     .brand-header .mark {
         box-shadow:
@@ -650,8 +719,8 @@ if "trace_consent_prompted" not in st.session_state:
 if not st.session_state["trace_consent_prompted"]:
     st.warning(
         "**Privacy choice required (this session):**\n\n"
-        "- ApplySmart uses Groq/Google LLM APIs to generate results.\n"
-        "- Optional LangSmith tracing helps debugging.\n"
+        "- ApplySmart uses Groq and DeepSeek LLM APIs to generate results.\n"
+        "- Optional anonymized tracing helps us debug issues.\n"
         "- Tracing is **off by default** unless you explicitly allow it."
     )
     c1, c2, c3 = st.columns(3)
@@ -704,14 +773,54 @@ def _render_top_brand() -> None:
     # hero sub-copy below. A bare wordmark reads more like Linear/Stripe.
     st.markdown(
         '<div class="brand-header brand-header--compact">'
-        '<div class="mark">◈</div>'
+        '<div class="mark">'
+        '<svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" '
+        'aria-hidden="true"><path d="M12 2l10 10-10 10L2 12z"/></svg>'
+        '</div>'
         '<div class="name">ApplySmart</div>'
         '</div>',
         unsafe_allow_html=True,
     )
 
 
-def _render_welcome() -> None:
+def _render_welcome_cta(landing_mode: bool) -> None:
+    """Render the hero call-to-action.
+
+    Landing mode uses a real Streamlit button (the only thing that can flip
+    the landing→app gate, since injected HTML can't run Python). The in-app
+    empty state keeps lightweight HTML anchor buttons that scroll to the
+    sidebar uploader / demo tile.
+    """
+    if landing_mode:
+        cols = st.columns([1, 1.4, 1])
+        with cols[1]:
+            if st.button(
+                "Upload your CV — free",
+                type="primary",
+                use_container_width=True,
+                key="landing_enter",
+            ):
+                st.session_state["started"] = True
+                st.rerun()
+        st.markdown(
+            '<div style="text-align:center;margin-top:0.6rem;">'
+            '<a href="#demo" style="color:var(--text-muted);font-size:0.85rem;'
+            'text-decoration:none;">See how it works &darr;</a></div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="hero-cta-row">'
+            '<a class="btn-primary" href="#cv-upload">Upload your CV '
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>'
+            '<a class="btn-ghost" href="#demo">See how it works '
+            '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_hero_top() -> None:
     # Phase 1 polish (Jun 2026): hero rebuilt per Pattern #6 (Interactive
     # Product Demo) + Pattern #4 (Minimal Single Column). Adds a static
     # diff-viewer demo tile (the brand differentiator), the
@@ -820,6 +929,83 @@ def _render_welcome() -> None:
             color: var(--text-muted); margin: 1.6rem auto 0;
             font-style: italic;
         }
+
+        /* HERO CTA buttons — the primary action was previously sidebar-only. */
+        .hero-cta-row {
+            display: flex; gap: 0.7rem; justify-content: center;
+            flex-wrap: wrap; margin-top: 1.9rem;
+        }
+        .hero-cta-row a {
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            padding: 0.8rem 1.55rem; border-radius: 12px;
+            font-size: 0.95rem; font-weight: 600; text-decoration: none;
+            cursor: pointer;
+            transition: background 200ms ease, border-color 200ms ease, color 200ms ease;
+        }
+        .hero-cta-row .btn-primary {
+            background: var(--accent); color: #fff; border: 1px solid transparent;
+            box-shadow: 0 8px 22px -10px rgba(34, 197, 94, 0.55);
+        }
+        .hero-cta-row .btn-primary:hover { background: var(--accent-hover); color: #fff; }
+        .hero-cta-row .btn-ghost {
+            background: transparent; color: var(--text-strong);
+            border: 1px solid var(--border-strong);
+        }
+        .hero-cta-row .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* Verifiable proof strip — only claims we can prove. */
+        .proof-strip {
+            display: flex; flex-wrap: wrap; gap: 0.55rem 1.7rem;
+            justify-content: center; margin: 2.4rem auto 0; max-width: 760px;
+            font-size: 0.82rem; color: var(--text-muted);
+        }
+        .proof-strip span { display: inline-flex; align-items: center; gap: 0.45rem; }
+        .proof-strip svg { color: var(--accent); flex-shrink: 0; }
+
+        /* HOW IT WORKS — 4-step strip. */
+        .how-block { margin: 5.5rem auto 0; max-width: 980px; }
+        .how-eyebrow {
+            font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.12em;
+            font-weight: 600; color: var(--text-muted); text-align: center;
+        }
+        .how-block h3 {
+            font-size: 1.7rem; font-weight: 650; letter-spacing: -0.02em;
+            text-align: center; margin: 0.6rem auto 2.6rem; color: var(--text-strong);
+        }
+        .how-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; }
+        .how-step { text-align: center; }
+        .how-icon {
+            width: 52px; height: 52px; border-radius: 14px; margin: 0 auto 1rem;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--accent-soft); color: var(--accent);
+            border: 1px solid var(--accent-ring);
+        }
+        .how-step .s-title { font-size: 0.95rem; font-weight: 600; color: var(--text-strong); }
+        .how-step .s-body {
+            font-size: 0.83rem; color: var(--text-muted);
+            line-height: 1.5; margin-top: 0.4rem;
+        }
+
+        /* DEMO TILE — CSS-only staged reveal (no JS available in Streamlit). */
+        .demo-diff > div {
+            opacity: 0; transform: translateY(6px);
+            animation: demoReveal 0.5s ease forwards;
+        }
+        .demo-diff > div:nth-child(1) { animation-delay: 0.30s; }
+        .demo-diff > div:nth-child(2) { animation-delay: 0.85s; }
+        .demo-diff > div:nth-child(3) { animation-delay: 1.40s; }
+        .demo-diff > div:nth-child(4) { animation-delay: 1.95s; }
+        .demo-diff > div:nth-child(5) { animation-delay: 2.50s; }
+        .demo-diff > div:nth-child(6) { animation-delay: 3.05s; }
+        @keyframes demoReveal { to { opacity: 1; transform: none; } }
+
+        @media (max-width: 820px) {
+            .how-grid { grid-template-columns: repeat(2, 1fr); gap: 1.6rem 1.2rem; }
+        }
+        @media (max-width: 520px) {
+            .how-grid { grid-template-columns: 1fr; }
+            .hero-cta-row a { width: 100%; justify-content: center; }
+        }
         </style>
 
         <div class="welcome">
@@ -830,9 +1016,29 @@ def _render_welcome() -> None:
           <div class="hero-sub-cta">
             Free during beta &middot; Your CV is not training data
           </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-          <!-- Static demo tile — the brand differentiator. -->
-          <div class="demo-tile" aria-label="Example tailoring diff with reasoning">
+    # (One-page layout: the inline upload form sits directly below the hero,
+    # so the marketing body renders separately, beneath the form.)
+
+
+def _render_welcome_body() -> None:
+    st.markdown(
+        """
+        <div class="welcome">
+          <!-- Verifiable proof strip — no invented numbers. -->
+          <div class="proof-strip">
+            <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>Open source &middot; Apache-2.0</span>
+            <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/></svg>4 job boards, live</span>
+            <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke-linecap="round" stroke-linejoin="round"/></svg>CVs deleted in 24h</span>
+            <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>Every edit explained</span>
+          </div>
+
+          <!-- Animated demo tile — the brand differentiator. -->
+          <div class="demo-tile" id="demo" aria-label="Example tailoring diff with reasoning">
             <div class="demo-jd">
               <span class="meta-tag">Sample job</span>
               <b>Senior Product Manager</b> &middot; Stripe &middot; Dublin (Hybrid)
@@ -867,41 +1073,69 @@ def _render_welcome() -> None:
             </div>
           </div>
 
+          <!-- How it works — mirrors the real pipeline. -->
+          <div class="how-block">
+            <div class="how-eyebrow">How it works</div>
+            <h3>From one CV to a tailored application.</h3>
+            <div class="how-grid">
+              <div class="how-step">
+                <div class="how-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17v2a1 1 0 001 1h14a1 1 0 001-1v-2" stroke-linecap="round"/></svg></div>
+                <div class="s-title">1 &middot; Upload any CV</div>
+                <div class="s-body">PDF or Word. Single-column, multi-column, tables, even designer layouts — all handled.</div>
+              </div>
+              <div class="how-step">
+                <div class="how-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3" stroke-linecap="round"/></svg></div>
+                <div class="s-title">2 &middot; We scrape live jobs</div>
+                <div class="s-body">LinkedIn, Indeed, Jobs.ie and Builtin — widening automatically if results are thin.</div>
+              </div>
+              <div class="how-step">
+                <div class="how-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2a4 4 0 014 4 4 4 0 01.9 7.9A4 4 0 0112 22a4 4 0 01-4.9-8.1A4 4 0 018 6a4 4 0 014-4z"/><path d="M12 8v8" stroke-linecap="round"/></svg></div>
+                <div class="s-title">3 &middot; Agents tailor it</div>
+                <div class="s-body">Per-job edits land where they help — and guards reject any claim that isn't in your CV.</div>
+              </div>
+              <div class="how-step">
+                <div class="how-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 20h16" stroke-linecap="round"/></svg></div>
+                <div class="s-title">4 &middot; Download, ATS-clean</div>
+                <div class="s-body">Export to PDF or DOCX — original layout preserved, or rebuilt ATS-safe when needed.</div>
+              </div>
+            </div>
+          </div>
+
           <!-- Trust through transparency — replaces the conventional logo wall + 3-feature grid. -->
           <div class="trust-block">
             <div class="trust-eyebrow">What we won't do</div>
             <h3>Things every other AI CV tool gets wrong.</h3>
             <div class="trust-row">
               <div>Inflated stats &mdash; &ldquo;10,000 CVs in seconds&rdquo;</div>
-              <div class="glyph glyph-no">&times;</div>
+              <div class="glyph glyph-no"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
             </div>
             <div class="trust-row">
               <div>Logos of companies that never agreed to be there</div>
-              <div class="glyph glyph-no">&times;</div>
+              <div class="glyph glyph-no"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
             </div>
             <div class="trust-row">
               <div>Hidden AI reasoning &mdash; you see the output, not the why</div>
-              <div class="glyph glyph-no">&times;</div>
+              <div class="glyph glyph-no"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
             </div>
             <div class="trust-row">
               <div>Your CV silently used to train a model</div>
-              <div class="glyph glyph-no">&times;</div>
+              <div class="glyph glyph-no"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
             </div>
             <div class="trust-row">
               <div>The actual edits, line by line, with reasoning</div>
-              <div class="glyph glyph-yes">&check;</div>
+              <div class="glyph glyph-yes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             </div>
             <div class="trust-row">
               <div>Rejected fabrications surfaced, not hidden</div>
-              <div class="glyph glyph-yes">&check;</div>
+              <div class="glyph glyph-yes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             </div>
             <div class="trust-row">
               <div>Your CV stays in your session &mdash; never training data</div>
-              <div class="glyph glyph-yes">&check;</div>
+              <div class="glyph glyph-yes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             </div>
             <div class="trust-row">
               <div>Open source &mdash; audit it yourself</div>
-              <div class="glyph glyph-yes">&check;</div>
+              <div class="glyph glyph-yes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             </div>
             <div class="trust-closer">
               We didn't build a competitor to those products. We built the
@@ -912,6 +1146,7 @@ def _render_welcome() -> None:
         """,
         unsafe_allow_html=True,
     )
+def _render_faq() -> None:
     # FAQ — Streamlit-native expanders, styled by the global CSS.
     st.markdown(
         '<div style="max-width:760px;margin:4.5rem auto 0;">'
@@ -968,10 +1203,28 @@ _render_top_brand()
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# SIDEBAR — inputs + run
+# ONE-PAGE LAYOUT — no sidebar. Hero, then the inline upload + run form
+# (centered), then the marketing sections, then results — all on a single
+# scrollable page so the deployed URL reads as a product, not a tool.
 # ═════════════════════════════════════════════════════════════════════════
 
-with st.sidebar:
+st.markdown(
+    "<style>"
+    "section[data-testid='stSidebar']{display:none!important;}"
+    "[data-testid='collapsedControl']{display:none!important;}"
+    ".block-container{max-width:1080px!important;}"
+    "</style>",
+    unsafe_allow_html=True,
+)
+
+_render_hero_top()
+
+# Inline input form in a centered column directly under the hero. The block
+# below is the former sidebar content, unchanged — only its container moved
+# from st.sidebar to this centered column.
+_form_l, _form_mid, _form_r = st.columns([1, 2, 1])
+
+with _form_mid:
     # ─── Theme toggle ────────────────────────────────────────────────
     # Segmented control at the very top of the sidebar. Writes to
     # `st.session_state["theme"]`; the conditional dark CSS block above
@@ -994,7 +1247,7 @@ with st.sidebar:
         )
         st.rerun()
 
-    st.markdown('<div class="sidebar-h">Upload</div>', unsafe_allow_html=True)
+    st.markdown('<div id="cv-upload"></div><div class="sidebar-h">Upload</div>', unsafe_allow_html=True)
     uploaded_cv = st.file_uploader(
         "Your CV (PDF or DOCX)",
         type=["pdf", "docx"],
@@ -1182,7 +1435,7 @@ with st.sidebar:
         trace_opt_in = st.toggle(
             "Allow anonymized tracing",
             value=bool(st.session_state.get("trace_consent", False)),
-            help="When enabled, LangSmith tracing is turned on for debugging. "
+            help="When enabled, anonymized tracing is turned on for debugging. "
                  "Tracing stays off by default for this session.",
         )
         if trace_opt_in != bool(st.session_state.get("trace_consent", False)):
@@ -1217,7 +1470,9 @@ if not run_button:
         # Fall through to post-run rendering below; the validation + agent
         # block is gated on `run_button` so it won't re-fire.
     else:
-        _render_welcome()
+        # One page: marketing sections render below the inline form.
+        _render_welcome_body()
+        _render_faq()
 
         # If the user has prior history, preview it (even before a new run).
         if user_email and user_email.strip():

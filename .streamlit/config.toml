@@ -1,9 +1,14 @@
+# Design system v2 (Jun 2026) — dark is the PRIMARY theme, so the native
+# Streamlit widgets (slider fill, radio dot, checkbox, toggle, focus ring)
+# are themed dark+green here. The in-app light toggle is CSS-only and is
+# the secondary theme; native widgets stay dark-tuned under it (acceptable
+# for the secondary mode). Green accent = #22C55E (matches app CSS vars).
 [theme]
-base              = "light"
-primaryColor      = "#0F766E"
-backgroundColor   = "#FAFAF9"
-secondaryBackgroundColor = "#F5F5F4"
-textColor         = "#1C1917"
+base              = "dark"
+primaryColor      = "#22C55E"
+backgroundColor   = "#020617"
+secondaryBackgroundColor = "#0B1220"
+textColor         = "#F8FAFC"
 font              = "sans serif"
 
 [server]
