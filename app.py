@@ -1043,14 +1043,11 @@ def _render_hero_top() -> None:
         </style>
 
         <div class="welcome">
-          <div class="hero-eyebrow">Honest job-application automation</div>
+          <div class="hero-eyebrow">Apply smart &middot; stay honest</div>
           <h2>Jobs found. CV tailored. Letter written. True to your layout. <span class="grad">True to your facts.</span></h2>
           <p>ApplySmart AI finds matching jobs, tailors your real CV to each — in
              place, keeping your layout — and writes the cover letter. Every
              change shown, with the reasoning. <b>Nothing hidden.</b></p>
-          <div class="hero-sub-cta">
-            Free during beta &middot; Deleted in 24h, never sold
-          </div>
         </div>
         """,
         unsafe_allow_html=True,
