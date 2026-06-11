@@ -1049,7 +1049,7 @@ def _render_hero_top() -> None:
              place, keeping your layout — and writes the cover letter. Every
              change shown, with the reasoning. <b>Nothing hidden.</b></p>
           <div class="hero-sub-cta">
-            Free during beta &middot; Your CV is not training data
+            Free during beta &middot; Deleted in 24h, never sold
           </div>
         </div>
         """,
@@ -1153,7 +1153,7 @@ def _render_welcome_body() -> None:
               <div class="glyph glyph-no"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
             </div>
             <div class="trust-row">
-              <div>Your CV silently used to train a model</div>
+              <div>Your CV sold to recruiters, advertisers or data brokers</div>
               <div class="glyph glyph-no"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="No"><path d="M18 6L6 18M6 6l12 12" stroke-linecap="round"/></svg></div>
             </div>
             <div class="trust-row">
@@ -1165,7 +1165,7 @@ def _render_welcome_body() -> None:
               <div class="glyph glyph-yes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             </div>
             <div class="trust-row">
-              <div>Your CV stays in your session &mdash; never training data</div>
+              <div>Your CV stays in your session &mdash; deleted in 24h, never sold</div>
               <div class="glyph glyph-yes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-label="Yes"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
             </div>
             <div class="trust-row">
@@ -1194,9 +1194,12 @@ def _render_faq() -> None:
         unsafe_allow_html=True,
     )
     _faq = [
-        ("Does my CV get used to train your AI?",
-         "No. Your CV stays in your session folder; we delete it within 24 "
-         "hours. It is not used to fine-tune any model."),
+        ("What happens to my CV, exactly?",
+         "It's stored in your session folder and deleted within 24 hours. We "
+         "never sell it and we don't train any ApplySmart model on it. To "
+         "tailor it, its text is sent to our LLM provider purely to generate "
+         "your output — see docs/PRIVACY.md for which providers we use and "
+         "their data terms."),
         ("Which file types work?",
          "PDF and Word (.docx). Single-column, multi-column, tables, and "
          "designer layouts are all handled — designer CVs are rebuilt into "
@@ -1498,8 +1501,9 @@ with _form_mid:
         )
 
     st.caption(
-        "Your CV is processed locally. Nothing leaves your machine except "
-        "the anonymised prompts sent to the language model. "
+        "To tailor your CV, its text is sent to our LLM provider to generate "
+        "your output. We delete it from your session within 24 hours, never "
+        "sell it, and don't train any ApplySmart model on it. "
         "See `docs/PRIVACY.md` for full details."
     )
 
