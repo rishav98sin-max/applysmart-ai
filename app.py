@@ -520,7 +520,7 @@ _DARK_CSS = """
         --accent-ring:    #4ADE80;   /* green-400, hover rings */
         --text-strong:    #F8FAFC;   /* slate-50 — 15.8:1 (AAA) */
         --text-muted:     #94A3B8;   /* slate-400 — 5.9:1 */
-        --text-faint:     #64748B;   /* slate-500 */
+        --text-faint:     #7C8BA1;   /* slate-500 lightened to 5.8:1 (AA) on canvas */
         --border:         #1E293B;   /* slate-800 — subtle divider */
         --border-strong:  #334155;   /* slate-700 */
         --bg-card:        #0B1220;   /* +1 elevation surface */
