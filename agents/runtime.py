@@ -137,8 +137,14 @@ def sweep_stale_sessions(
     except Exception:
         pass
     if removed:
-        print(f"   🧹 swept {removed} stale session dir(s) "
-              f"(older than {max_age_hours:.0f}h)")
+        # ASCII only: this print runs at module import; a non-cp1252 char
+        # (the old broom emoji) crashed the whole app at boot on Windows
+        # consoles (UnicodeEncodeError in charmap codec).
+        try:
+            print(f"   [sweep] removed {removed} stale session dir(s) "
+                  f"(older than {max_age_hours:.0f}h)")
+        except Exception:
+            pass
     return removed
 
 

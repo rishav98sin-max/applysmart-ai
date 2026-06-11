@@ -1321,6 +1321,74 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ── Light-mode correction layer ──────────────────────────────────────────
+# The glass surfaces above are tuned for the dark canvas (white-alpha fills,
+# white-alpha borders) and config.toml keeps NATIVE BaseWeb widgets (select
+# popovers, uploader button) dark-themed, while the global light CSS forces
+# text dark — producing dark-on-dark dropdowns and invisible glass in light
+# mode. This block re-skins those surfaces for light only (skill rule:
+# light-mode glass needs solid-ish white + visible gray borders).
+if st.session_state.get("theme") == "light":
+    st.markdown(
+        """
+        <style>
+          .stApp{
+            background:
+              radial-gradient(720px circle at 10% -6%, rgba(34,197,94,.07), transparent 55%),
+              radial-gradient(620px circle at 90% 3%, rgba(22,163,74,.05), transparent 55%),
+              var(--bg-page) !important;
+          }
+          .app-mesh{ opacity:.07 !important; }
+
+          /* Glass cards → solid white cards with visible borders. */
+          .job-card, .kpi, .feature, .plan-bundle, .trust-block, .demo-tile,
+          .stTabs [data-baseweb="tab-panel"]{
+            background:rgba(255,255,255,.88) !important;
+            border:1px solid #E2E8F0 !important;
+            box-shadow:0 10px 30px -16px rgba(15,23,42,.18) !important;
+          }
+
+          /* Inputs → white with visible borders. */
+          .stTextInput input, .stTextArea textarea,
+          .stSelectbox [data-baseweb="select"]>div,
+          [data-testid="stFileUploaderDropzone"]{
+            background:#FFFFFF !important;
+            border:1px solid #CBD5E1 !important;
+            color:#0F172A !important;
+          }
+
+          /* Native select POPOVER (rendered in a portal, stays dark-themed
+             from config.toml): force white menu + dark options in light. */
+          div[data-baseweb="popover"] > div,
+          div[data-baseweb="popover"] ul,
+          ul[role="listbox"], [data-baseweb="menu"]{
+            background:#FFFFFF !important;
+            border:1px solid #E2E8F0 !important;
+          }
+          ul[role="listbox"] li, li[role="option"], [role="option"],
+          div[data-baseweb="popover"] li *{
+            color:#0F172A !important;
+          }
+          li[role="option"]:hover, [role="option"][aria-selected="true"]{
+            background:#F1F5F9 !important;
+          }
+
+          /* Uploader 'Upload/Browse' button (BaseWeb, dark-themed natively). */
+          .stFileUploader button,
+          [data-testid="stFileUploaderDropzone"] button,
+          .stFileUploader [data-testid="stBaseButton-secondary"]{
+            background:#FFFFFF !important;
+            color:#0F172A !important;
+            border:1px solid #CBD5E1 !important;
+          }
+          .stFileUploader button:hover{
+            border-color:var(--accent) !important; color:var(--accent) !important;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 _render_hero_top()
 
 # Inline input form in a centered column directly under the hero. The block
