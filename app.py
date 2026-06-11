@@ -1451,11 +1451,18 @@ with _form_mid:
 
         st.markdown('<div class="sidebar-h">Run Settings</div>', unsafe_allow_html=True)
         num_jobs = st.slider("Jobs to scrape", 1, 20, 3)
-        # Phase 1 polish: replaced the prior st.info() yellow banner with
-        # a quiet caption. The operator-speak ("daily LLM quota") leaked
-        # into the customer surface; a soft hint at the field is enough.
-        st.caption(
-            "Tip: start with 3 for a quick first run."
+        # Prominent beta guidance: 3 jobs keeps the shared free token pool
+        # healthy. A quiet caption was getting missed, so this is a clear,
+        # bold, on-brand callout (no operator-speak).
+        st.markdown(
+            '<div style="margin:0.45rem 0 0.3rem; padding:0.7rem 0.9rem;'
+            ' border-radius:10px; background:rgba(34,197,94,0.08);'
+            ' border:1px solid rgba(34,197,94,0.25); font-size:0.85rem;'
+            ' line-height:1.45;">'
+            '<b style="color:var(--text-strong);">We recommend 3 jobs during beta.</b><br>'
+            '<span style="color:var(--text-muted);">More uses up the shared free '
+            'quota faster — start with 3 to try it out, then run again.</span></div>',
+            unsafe_allow_html=True,
         )
         match_threshold = st.slider(
             "Minimum match score (JD vs CV %)",
