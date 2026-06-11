@@ -1518,7 +1518,10 @@ with _form_mid:
         )
 
         st.markdown('<div class="sidebar-h">Run Settings</div>', unsafe_allow_html=True)
-        num_jobs = st.slider("Jobs to scrape", 1, 20, 3)
+        # Max 6 (was 20): a single user maxing the slider could burn a large
+        # share of the daily free quota in one run. 6 keeps exploration
+        # possible while protecting the shared pool during beta.
+        num_jobs = st.slider("Jobs to scrape", 1, 6, 3)
         # Prominent beta guidance: 3 jobs keeps the shared free token pool
         # healthy. A quiet caption was getting missed, so this is a clear,
         # bold, on-brand callout (no operator-speak).
