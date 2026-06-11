@@ -1043,7 +1043,7 @@ def _render_hero_top() -> None:
         </style>
 
         <div class="welcome">
-          <div class="hero-eyebrow">Apply smart &middot; stay honest</div>
+          <div class="hero-eyebrow">Your end-to-end application co-pilot</div>
           <h2>Jobs found. CV tailored. Letter written. True to your layout. <span class="grad">True to your facts.</span></h2>
           <p>ApplySmart AI finds matching jobs, tailors your real CV to each — in
              place, keeping your layout — and writes the cover letter. Every
