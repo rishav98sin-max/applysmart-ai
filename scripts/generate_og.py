@@ -55,11 +55,11 @@ asw = draw.textlength("ApplySmart", font=f_word)
 draw.text((wx + asw, my + 12), " AI", font=f_word, fill=ACCENT)
 
 # ── eyebrow ───────────────────────────────────────────────────────────────
-draw.text((PAD, 232), "H O N E S T   C V   T A I L O R I N G", font=f_eyebrow, fill=ACCENT)
+draw.text((PAD, 232), "H O N E S T   ·   E N D - T O - E N D", font=f_eyebrow, fill=ACCENT)
 
 # ── headline ──────────────────────────────────────────────────────────────
 y = 280
-for line, col in [("Tailored to the job.", STRONG),
+for line, col in [("Found. Tailored. Written.", STRONG),
                   ("True to your layout.", STRONG),
                   ("Nothing invented.", ACCENT2)]:
     draw.text((PAD, y), line, font=f_head, fill=col)

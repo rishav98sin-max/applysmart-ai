@@ -1043,11 +1043,11 @@ def _render_hero_top() -> None:
         </style>
 
         <div class="welcome">
-          <div class="hero-eyebrow">Honest CV tailoring</div>
-          <h2>Tailored to the job. True to your layout. <span class="grad">Nothing invented.</span></h2>
-          <p>ApplySmart AI re-aims your real CV for each role — editing it in
-             place, keeping your layout — and shows you every change, with the
-             reasoning. <b>Nothing hidden.</b></p>
+          <div class="hero-eyebrow">Honest job-application automation</div>
+          <h2>Found, tailored, written. True to your layout. <span class="grad">Nothing invented.</span></h2>
+          <p>ApplySmart AI finds matching jobs, tailors your real CV to each — in
+             place, keeping your layout — and writes the cover letter. Every
+             change shown, with the reasoning. <b>Nothing hidden.</b></p>
           <div class="hero-sub-cta">
             Free during beta &middot; Your CV is not training data
           </div>
