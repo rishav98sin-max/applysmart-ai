@@ -61,7 +61,7 @@ draw.text((PAD, 232), "H O N E S T   ·   E N D - T O - E N D", font=f_eyebrow, 
 y = 280
 for line, col in [("Found. Tailored. Written.", STRONG),
                   ("True to your layout.", STRONG),
-                  ("Nothing invented.", ACCENT2)]:
+                  ("True to your facts.", ACCENT2)]:
     draw.text((PAD, y), line, font=f_head, fill=col)
     y += 86
 
